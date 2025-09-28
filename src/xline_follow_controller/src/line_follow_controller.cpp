@@ -18,6 +18,17 @@ namespace xline
 namespace follow_controller
 {
 
+// Remove dependency on daosnrs_common logger by defining no-op macros.
+#ifndef LOG_INFO
+#define LOG_INFO(...) do {} while(0)
+#endif
+#ifndef LOG_WARN
+#define LOG_WARN(...) do {} while(0)
+#endif
+#ifndef LOG_ERROR
+#define LOG_ERROR(...) do {} while(0)
+#endif
+
 // =========================== 构造函数 ===========================
 LineFollowController::LineFollowController()
   : current_state_(ControlState::IDLE)
@@ -186,10 +197,10 @@ void LineFollowController::initializeDefaultParameters()
 
 void LineFollowController::updateParameters()
 {
-  std::string package_share_directory = ament_index_cpp::get_package_share_directory("follow_controller");
+  std::string package_share_directory = ament_index_cpp::get_package_share_directory("xline_follow_controller");
   std::string config_file_path = package_share_directory + "/config/line.yaml";
 
-  daosnrs::YamlParser::YamlParser parser(config_file_path);
+  xline::YamlParser::YamlParser parser(config_file_path);
 
   auto all_keys = parser.getAllKeys();
 
@@ -531,21 +542,7 @@ bool LineFollowController::setPlan(const nav_msgs::msg::Path& orig_global_plan)
   return true;
 }
 
-bool LineFollowController::setPlanForBasePath(const std::shared_ptr<daosnrs::geometry::BasePath>& path_object)
-{
-  if (!path_object)
-  {
-    LOG_ERROR("路径对象为空");
-    return false;
-  }
-
-  startImuThread();
-
-  path_length_ = path_object->length();
-
-  auto ros_path = path_object->toPathMsg();
-  return setPlan(ros_path);
-}
+// Removed: setPlanForBasePath using daosnrs_common BasePath
 
 bool LineFollowController::setPlan(const std::shared_ptr<std::vector<geometry_msgs::msg::PoseStamped>>& plan)
 {

@@ -10,7 +10,10 @@
                 "/usr/include/**",
                 "/usr/include/opencv4",
                 "/usr/include/jsoncpp",
-                "${workspaceFolder}/src/follow_controller/include/**"
+                "${workspaceFolder}/src/follow_controller/include/**",
+                "/root/xline_ws/xline_msgs/install/xline_msgs/include/**",
+                "${workspaceFolder}/src/xline_base_controller/include/**",
+                "/root/xline_ws/xline_msgs/install/xline_msgs/include/xline_msgs"
             ],
             "name": "ros2",
             "intelliSenseMode": "gcc-x64",

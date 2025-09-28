@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>follow_controller</name>
+  <name>xline_follow_controller</name>
   <version>0.0.0</version>
   <description>TODO: Package description</description>
   <maintainer email="zyq@aliyun.com">baul</maintainer>
@@ -11,7 +11,6 @@
 
   <depend>rclcpp</depend>
   <depend>geometry_msgs</depend>
-  <depend>daosnrs_common</depend>
   <depend>visualization_msgs</depend>
   <depend>nav_msgs</depend>
   <depend>tf2</depend>

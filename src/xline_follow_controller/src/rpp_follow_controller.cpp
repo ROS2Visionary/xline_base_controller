@@ -81,9 +81,9 @@ void RPPController::initialize()
 
 void RPPController::updateParameters(std::string file_path)
 {
-  std::string package_share_directory = ament_index_cpp::get_package_share_directory("follow_controller");
+  std::string package_share_directory = ament_index_cpp::get_package_share_directory("xline_follow_controller");
   std::string config_file_path = package_share_directory + file_path;
-  daosnrs::YamlParser::YamlParser parser(config_file_path);
+  xline::YamlParser::YamlParser parser(config_file_path);
 
   // 基本参数 - 曲率和接近约束
   regulated_min_radius_ = parser.getParameter<double>("regulated_min_radius");
@@ -172,6 +172,7 @@ void RPPController::updateParameters(std::string file_path)
   RCLCPP_INFO(get_logger(), "%s", ss.str().c_str());
 }
 
+#if 0 // Removed BasePath-based API (daosnrs_common)
 bool RPPController::setPlanForBasePath(const std::shared_ptr<daosnrs::geometry::BasePath>& path_object)
 {
   if (!initialized_)
@@ -434,6 +435,7 @@ bool RPPController::setPlanForBasePath(const std::shared_ptr<daosnrs::geometry::
     return false;
   }
 }
+#endif
 
 void RPPController::setAngleRange(double start_angle, double end_anngle)
 {

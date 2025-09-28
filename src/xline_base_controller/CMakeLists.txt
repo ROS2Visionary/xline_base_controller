@@ -8,6 +8,9 @@ endif()
 # find dependencies
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_action REQUIRED)
+find_package(action_msgs REQUIRED)
+find_package(xline_msgs REQUIRED)
 
 add_executable(base_controller_node src/base_controller_node.cpp)
 target_include_directories(base_controller_node PUBLIC
@@ -16,7 +19,10 @@ target_include_directories(base_controller_node PUBLIC
 target_compile_features(base_controller_node PUBLIC c_std_99 cxx_std_17)  # Require C99 and C++17
 ament_target_dependencies(
   base_controller_node
-  "rclcpp"
+  rclcpp
+  rclcpp_action
+  action_msgs
+  xline_msgs
 )
 
 install(TARGETS base_controller_node
