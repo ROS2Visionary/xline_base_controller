@@ -12,14 +12,17 @@ find_package(visualization_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
+find_package(tf2_geometry_msgs REQUIRED)
 find_package(angles REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(yaml-cpp REQUIRED)
+find_package(Eigen3 REQUIRED)
 
 include_directories(
  include
- include/follow_controller
+ include/${PROJECT_NAME}
  ${OpenCV_INCLUDE_DIRS}
+ ${EIGEN3_INCLUDE_DIRS}
 )
 
 set(dependencies
@@ -29,6 +32,7 @@ set(dependencies
  nav_msgs
  tf2
  tf2_ros
+ tf2_geometry_msgs
  angles
  OpenCV
  yaml-cpp

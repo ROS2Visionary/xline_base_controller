@@ -12,7 +12,10 @@ find_package(rclcpp_action REQUIRED)
 find_package(action_msgs REQUIRED)
 find_package(xline_msgs REQUIRED)
 
-add_executable(base_controller_node src/base_controller_node.cpp)
+add_executable(base_controller_node
+  src/base_controller_node.cpp
+  src/motion_control_center.cpp
+)
 target_include_directories(base_controller_node PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)

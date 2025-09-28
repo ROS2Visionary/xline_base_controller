@@ -1,0 +1,17 @@
+# Goal
+string   plan_json           # 完整的JSON字符串
+string   plan_uid            # 计划唯一标识
+---
+# Result
+bool     success             # 是否成功
+string   error_message       # 错误信息
+---
+# Feedback
+uint32   current_order       # 当前执行的order
+uint8    status              # 执行状态
+
+# Status constants
+uint8 STATUS_IDLE = 0        # 准备开始
+uint8 STATUS_EXECUTING = 1   # 正在执行
+uint8 STATUS_PAUSED = 2      # 已暂停
+
