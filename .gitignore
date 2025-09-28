@@ -39,3 +39,13 @@
 
 # debug information files
 *.dwo
+
+
+build/
+install/
+log/
+*/*/.claude/
+*/.claude/
+.vscode/browse.vc.db
+.vscode/browse.vc.db-shm
+.vscode/browse.vc.db-wal

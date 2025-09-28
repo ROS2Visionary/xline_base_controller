@@ -1,0 +1,1 @@
+ros2 pkg create xline_base_controller --build-type ament_cmake --dependencies rclcpp --node-name base_controller_node --description "XLine 运动执行器"
