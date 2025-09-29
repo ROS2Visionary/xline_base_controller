@@ -29,7 +29,21 @@ MotionControlCenter::MotionControlCenter(const rclcpp::NodeOptions & options)
       std::bind(&MotionControlCenter::handleCancel, this, _1),
       std::bind(&MotionControlCenter::handleAccepted, this, _1));
 
+  // 创建 IMU 订阅器
+  imu_subscriber_ = this->create_subscription<sensor_msgs::msg::Imu>(
+      "imu",                                // 话题名
+      10,                                   // QoS 队列大小
+      std::bind(&MotionControlCenter::imuCallback, this, _1));
+
+  // 创建反射板位置订阅器
+  reflector_position_subscriber_ = this->create_subscription<geometry_msgs::msg::PointStamped>(
+      "/reflector_position",                // 话题名
+      10,                                   // QoS 队列大小
+      std::bind(&MotionControlCenter::reflectorPositionCallback, this, _1));
+
   RCLCPP_INFO(get_logger(), "MotionControlCenter 动作服务器已就绪: 'execute_plan'");
+  RCLCPP_INFO(get_logger(), "IMU 订阅器已创建: 'imu'");
+  RCLCPP_INFO(get_logger(), "反射板位置订阅器已创建: '/reflector_position'");
   line_follow_controller_ = std::make_shared<xline::follow_controller::LineFollowController>();
   rpp_follow_controller_ = std::make_shared<xline::follow_controller::RPPController>();
   base_follow_controller_ = nullptr;
@@ -110,7 +124,7 @@ void MotionControlCenter::execute(const std::shared_ptr<GoalHandleExecutePlan> g
   // 设置执行标志
   is_executing_.store(true);
   // 使用RAII确保函数退出时清除标志
-  auto cleanup = [this]() { is_executing_.store(false); };
+  auto cleanup = [this](void*) { is_executing_.store(false); };
   std::unique_ptr<void, decltype(cleanup)> guard(reinterpret_cast<void*>(1), cleanup);
 
   const auto goal = goal_handle->get_goal();
@@ -268,6 +282,36 @@ MotionControlCenter::ArcData MotionControlCenter::extractArcData(const Json::Val
                "提取Arc数据: 圆心(%.2f, %.2f), 半径%.2f, 起始角%.2f rad, 结束角%.2f rad",
                data.center_x, data.center_y, data.radius, data.start_angle, data.end_angle);
   return data;
+}
+
+/**
+ * IMU 数据回调函数
+ * 接收并处理来自 IMU 传感器的数据
+ */
+void MotionControlCenter::imuCallback(const sensor_msgs::msg::Imu::SharedPtr msg)
+{
+  // 打印 IMU 数据（可根据需要修改）
+  RCLCPP_DEBUG(get_logger(),
+               "IMU 数据 - 角速度: [%.3f, %.3f, %.3f], 线加速度: [%.3f, %.3f, %.3f]",
+               msg->angular_velocity.x, msg->angular_velocity.y, msg->angular_velocity.z,
+               msg->linear_acceleration.x, msg->linear_acceleration.y, msg->linear_acceleration.z);
+
+  // TODO: 在此处添加 IMU 数据处理逻辑
+  // 例如：姿态估计、速度积分、状态更新等
+}
+
+/**
+ * 反射板位置回调函数
+ * - 接收激光雷达检测到的反射板位置数据
+ */
+void MotionControlCenter::reflectorPositionCallback(const geometry_msgs::msg::PointStamped::SharedPtr msg)
+{
+  RCLCPP_DEBUG(get_logger(),
+               "反射板位置 - 坐标: [%.3f, %.3f, %.3f]",
+               msg->point.x, msg->point.y, msg->point.z);
+
+  // TODO: 在此处添加反射板位置数据处理逻辑
+  // 例如：目标跟踪、路径规划调整等
 }
 
 }  // namespace base_controller

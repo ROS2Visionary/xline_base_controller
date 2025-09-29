@@ -1,0 +1,9 @@
+# LN150 Driver Command Service
+# 用于向 LN150 全站仪发送控制命令
+
+# Request
+int32 command_type  # 命令类型: 1-初始化设备, 2-自动跟踪, 3-自动调平
+---
+# Response
+bool success        # 命令是否执行成功
+string message      # 执行结果消息

@@ -18,7 +18,15 @@
                 "${workspaceFolder}/src/xline_follow_controller/include/xline_follow_controller",
                 "/opt/ros/humble/include/nav_msgs",
                 "/opt/ros/humble/include/sensor_msgs",
-                "${workspaceFolder}/src/xline_base_controller/include"
+                "${workspaceFolder}/src/xline_base_controller/include",
+                "/opt/ros/humble/include/rclcpp",
+                "${workspaceFolder}/src/xline_ln150_driver/include",
+                "${workspaceFolder}/install/xline_msgs/include/xline_msgs",
+                "/opt/ros/humble/include/ament_index_cpp",
+                "/opt/ros/humble/include/geometry_msgs",
+                "/opt/ros/humble/include/rosidl_runtime_cpp",
+                "/opt/ros/humble/include/rosidl_typesupport_interface",
+                "/opt/ros/humble/include/std_msgs"
             ],
             "name": "ros2",
             "intelliSenseMode": "gcc-x64",
