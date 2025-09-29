@@ -512,6 +512,8 @@ private:
     void logTrackingData(double measured_x, double measured_y, double error_x, double error_y,
                         double gain, TerrainType terrain_type)
     {
+      // 避免未使用参数的编译器告警
+      (void)measured_x; (void)measured_y; (void)error_x; (void)error_y; (void)gain; (void)terrain_type;
       // 可以在这里添加详细的日志记录逻辑
       // 例如写入文件或发布到ROS话题
     }

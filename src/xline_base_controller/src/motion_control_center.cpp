@@ -1,5 +1,9 @@
 #include "xline_base_controller/motion_control_center.hpp"
 
+#include <cmath>
+#include <sstream>
+#include <algorithm>
+
 // 为 std::bind 预留占位符
 using std::placeholders::_1;
 using std::placeholders::_2;
@@ -26,6 +30,9 @@ MotionControlCenter::MotionControlCenter(const rclcpp::NodeOptions & options)
       std::bind(&MotionControlCenter::handleAccepted, this, _1));
 
   RCLCPP_INFO(get_logger(), "MotionControlCenter 动作服务器已就绪: 'execute_plan'");
+  line_follow_controller_ = std::make_shared<xline::follow_controller::LineFollowController>();
+  rpp_follow_controller_ = std::make_shared<xline::follow_controller::RPPController>();
+  base_follow_controller_ = nullptr;
 }
 
 MotionControlCenter::~MotionControlCenter() = default;
@@ -101,11 +108,37 @@ void MotionControlCenter::execute(const std::shared_ptr<GoalHandleExecutePlan> g
   feedback->status = ExecutePlan::Feedback::STATUS_IDLE;
   goal_handle->publish_feedback(feedback);
 
-  // 模拟执行：共 10 个步骤（order），每个步骤发布一次反馈
-  const uint32_t total_orders = 10;  // 示例占位
+  // 解析JSON字符串
+  Json::CharReaderBuilder reader_builder;
+  Json::Value root;
+  std::string parse_errors;
+  std::istringstream json_stream(goal->plan_json);
 
+  if (!Json::parseFromStream(reader_builder, json_stream, &root, &parse_errors)) {
+    result->success = false;
+    result->error_message = "JSON解析失败: " + parse_errors;
+    goal_handle->abort(result);
+    RCLCPP_ERROR(get_logger(), "JSON解析失败：%s", parse_errors.c_str());
+    return;
+  }
+
+  // 提取lines数组
+  if (!root.isMember("lines") || !root["lines"].isArray()) {
+    result->success = false;
+    result->error_message = "JSON中缺少lines数组";
+    goal_handle->abort(result);
+    RCLCPP_ERROR(get_logger(), "JSON中缺少lines数组");
+    return;
+  }
+
+  const Json::Value & lines = root["lines"];
+  const uint32_t total_orders = lines.size();
+
+  RCLCPP_INFO(get_logger(), "开始执行计划，共 %u 个路径元素", total_orders);
+
+  // 遍历每个路径元素
   rclcpp::Rate loop_rate(20);  // 20Hz 发布反馈
-  for (uint32_t order = 1; order <= total_orders; ++order) {
+  for (uint32_t order = 0; order < total_orders; ++order) {
     // 支持取消：收到取消则返回 canceled
     if (goal_handle->is_canceling()) {
       result->success = false;
@@ -115,10 +148,47 @@ void MotionControlCenter::execute(const std::shared_ptr<GoalHandleExecutePlan> g
       return;
     }
 
-    feedback->current_order = order;
+    const Json::Value & line_element = lines[static_cast<int>(order)];
+    std::string type = line_element["type"].asString();
+
+    // 根据类型提取数据
+    if (type == "line") {
+      LineData line_data = extractLineData(line_element);
+      RCLCPP_INFO(get_logger(),
+                  "第 %u/%u 个元素[line]: 起点(%.2f, %.2f) -> 终点(%.2f, %.2f)",
+                  order + 1, total_orders,
+                  line_data.start_x, line_data.start_y,
+                  line_data.end_x, line_data.end_y);
+      // TODO: 使用line_data进行路径跟踪
+
+    } else if (type == "circle") {
+      CircleData circle_data = extractCircleData(line_element);
+      RCLCPP_INFO(get_logger(),
+                  "第 %u/%u 个元素[circle]: 圆心(%.2f, %.2f), 半径%.2f",
+                  order + 1, total_orders,
+                  circle_data.center_x, circle_data.center_y, circle_data.radius);
+      // TODO: 使用circle_data进行路径跟踪
+
+    } else if (type == "arc") {
+      ArcData arc_data = extractArcData(line_element);
+      RCLCPP_INFO(get_logger(),
+                  "第 %u/%u 个元素[arc]: 圆心(%.2f, %.2f), 半径%.2f, 角度[%.2f, %.2f] rad",
+                  order + 1, total_orders,
+                  arc_data.center_x, arc_data.center_y, arc_data.radius,
+                  arc_data.start_angle, arc_data.end_angle);
+      // TODO: 使用arc_data进行路径跟踪
+
+    } else {
+      RCLCPP_WARN(get_logger(), "第 %u/%u 个元素: 未知类型 %s，跳过",
+                  order + 1, total_orders, type.c_str());
+    }
+
+    // 发布反馈
+    feedback->current_order = order + 1;
     feedback->status = ExecutePlan::Feedback::STATUS_EXECUTING;
     goal_handle->publish_feedback(feedback);
 
+    // 模拟执行时间(实际应该等待路径跟踪完成)
     loop_rate.sleep();
   }
 
@@ -127,6 +197,63 @@ void MotionControlCenter::execute(const std::shared_ptr<GoalHandleExecutePlan> g
   result->error_message = "";
   goal_handle->succeed(result);
   RCLCPP_INFO(get_logger(), "目标执行完成：plan_uid=%s", goal->plan_uid.c_str());
+}
+
+/**
+ * 提取line数据
+ * line包含: start{x,y}, end{x,y}
+ */
+MotionControlCenter::LineData MotionControlCenter::extractLineData(const Json::Value & line_obj)
+{
+  LineData data;
+  data.start_x = line_obj["start"]["x"].asDouble();
+  data.start_y = line_obj["start"]["y"].asDouble();
+  data.end_x = line_obj["end"]["x"].asDouble();
+  data.end_y = line_obj["end"]["y"].asDouble();
+
+  RCLCPP_DEBUG(get_logger(),
+               "提取Line数据: 起点(%.2f, %.2f) -> 终点(%.2f, %.2f)",
+               data.start_x, data.start_y, data.end_x, data.end_y);
+  return data;
+}
+
+/**
+ * 提取circle数据
+ * circle包含: start{x,y}作为圆心, radius
+ */
+MotionControlCenter::CircleData MotionControlCenter::extractCircleData(const Json::Value & circle_obj)
+{
+  CircleData data;
+  data.center_x = circle_obj["start"]["x"].asDouble();
+  data.center_y = circle_obj["start"]["y"].asDouble();
+  data.radius = circle_obj["radius"].asDouble();
+
+  RCLCPP_DEBUG(get_logger(),
+               "提取Circle数据: 圆心(%.2f, %.2f), 半径%.2f",
+               data.center_x, data.center_y, data.radius);
+  return data;
+}
+
+/**
+ * 提取arc数据
+ * arc包含: center{x,y}, radius, start_angle, end_angle
+ * 注意: JSON中角度为度,转换为弧度
+ */
+MotionControlCenter::ArcData MotionControlCenter::extractArcData(const Json::Value & arc_obj)
+{
+  ArcData data;
+  data.center_x = arc_obj["center"]["x"].asDouble();
+  data.center_y = arc_obj["center"]["y"].asDouble();
+  data.radius = arc_obj["radius"].asDouble();
+
+  // 度转弧度
+  data.start_angle = arc_obj["start_angle"].asDouble() * M_PI / 180.0;
+  data.end_angle = arc_obj["end_angle"].asDouble() * M_PI / 180.0;
+
+  RCLCPP_DEBUG(get_logger(),
+               "提取Arc数据: 圆心(%.2f, %.2f), 半径%.2f, 起始角%.2f rad, 结束角%.2f rad",
+               data.center_x, data.center_y, data.radius, data.start_angle, data.end_angle);
+  return data;
 }
 
 }  // namespace base_controller

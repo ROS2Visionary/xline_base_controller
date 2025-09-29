@@ -14,7 +14,11 @@
                 "/root/xline_ws/xline_msgs/install/xline_msgs/include/**",
                 "${workspaceFolder}/src/xline_base_controller/include/**",
                 "/root/xline_ws/xline_msgs/install/xline_msgs/include/xline_msgs",
-                "${workspaceFolder}/src/xline_follow_controller/include/**"
+                "${workspaceFolder}/src/xline_follow_controller/include/**",
+                "${workspaceFolder}/src/xline_follow_controller/include/xline_follow_controller",
+                "/opt/ros/humble/include/nav_msgs",
+                "/opt/ros/humble/include/sensor_msgs",
+                "${workspaceFolder}/src/xline_base_controller/include"
             ],
             "name": "ros2",
             "intelliSenseMode": "gcc-x64",

@@ -37,13 +37,13 @@ public:
   {
     // 更新滑动窗口
     window.push_back(new_value);
-    if (window.size() > window_size)
+    if (static_cast<int>(window.size()) > window_size)
     {
       window.pop_front();
     }
 
     // 窗口未填满时直接返回原始值
-    if (window.size() < window_size)
+    if (static_cast<int>(window.size()) < window_size)
     {
       return new_value;
     }
@@ -143,14 +143,14 @@ public:
   double filter(double new_value)
   {
     // 更新滑动窗口
-    if (window_data_.size() >= window_size_)
+    if (static_cast<int>(window_data_.size()) >= window_size_)
     {
       window_data_.pop_front();
     }
     window_data_.push_back(new_value);
 
     // 如果窗口数据还不足，直接返回原始值
-    if (window_data_.size() < window_size_)
+    if (static_cast<int>(window_data_.size()) < window_size_)
     {
       return new_value;
     }
@@ -942,11 +942,11 @@ protected:
 
 public:
   FourthOrderLowpassFilter()
-    : output_limit_(1000.0)
+    : use_biquad_cascade_(false)
+    , output_limit_(1000.0)
     , rate_limit_(100.0)
     , previous_output_(0.0)
     , use_rate_limit_(true)
-    , use_biquad_cascade_(false)
     , output_offset_(0.0)
     , use_offset_limit_(false)
   {

@@ -7,6 +7,9 @@
 #include <rclcpp_action/rclcpp_action.hpp>
 
 #include <xline_msgs/action/execute_plan.hpp>
+#include <json/json.h>
+#include <xline_follow_controller/line_follow_controller.hpp>
+#include <xline_follow_controller/rpp_follow_controller.hpp>
 
 /**
  * MotionControlCenter 运动控制中心
@@ -40,6 +43,9 @@ public:
 private:
   // ExecutePlan 动作服务器实例
   rclcpp_action::Server<ExecutePlan>::SharedPtr action_server_;
+  xline::follow_controller::BaseFollowController::SharedPtr base_follow_controller_;
+  xline::follow_controller::LineFollowController::SharedPtr line_follow_controller_;
+  xline::follow_controller::RPPController::SharedPtr rpp_follow_controller_;
 
   /**
    * 目标处理回调：决定是否接受/拒绝目标
@@ -63,6 +69,43 @@ private:
    * 执行主循环：发布反馈、响应取消、完成结果
    */
   void execute(const std::shared_ptr<GoalHandleExecutePlan> goal_handle);
+
+  // 数据结构定义
+  struct LineData {
+    double start_x;
+    double start_y;
+    double end_x;
+    double end_y;
+  };
+
+  struct CircleData {
+    double center_x;
+    double center_y;
+    double radius;
+  };
+
+  struct ArcData {
+    double center_x;
+    double center_y;
+    double radius;
+    double start_angle;  // 弧度
+    double end_angle;    // 弧度
+  };
+
+  /**
+   * 提取line数据
+   */
+  LineData extractLineData(const Json::Value & line_obj);
+
+  /**
+   * 提取circle数据
+   */
+  CircleData extractCircleData(const Json::Value & circle_obj);
+
+  /**
+   * 提取arc数据
+   */
+  ArcData extractArcData(const Json::Value & arc_obj);
 };
 
 }  // namespace base_controller

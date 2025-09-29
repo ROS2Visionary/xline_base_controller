@@ -26,11 +26,11 @@ public:
 
   virtual ~BaseFollowController() = default;
 
-  virtual bool setPlan(const std::vector<geometry_msgs::msg::PoseStamped>& orig_global_plan){
+  virtual bool setPlan(const std::vector<geometry_msgs::msg::PoseStamped>& /*orig_global_plan*/){
     return false;
   }
 
-  virtual bool setPlan(const nav_msgs::msg::Path& orig_global_plan){
+  virtual bool setPlan(const nav_msgs::msg::Path& /*orig_global_plan*/){
     return false;
   }
 
@@ -40,9 +40,11 @@ public:
 
   virtual bool isGoalReached() = 0;
 
-  virtual bool cancel(){}
+  virtual bool cancel(){
+    return false;
+  }
 
-  virtual void setSpeedLimit(const double& speed_limit){}
+  virtual void setSpeedLimit(const double& /*speed_limit*/){}
 
 protected:
 };

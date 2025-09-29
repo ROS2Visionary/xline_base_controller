@@ -11,6 +11,8 @@ find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(action_msgs REQUIRED)
 find_package(xline_msgs REQUIRED)
+find_package(xline_follow_controller REQUIRED)
+find_package(jsoncpp REQUIRED)
 
 add_executable(base_controller_node
   src/base_controller_node.cpp
@@ -26,7 +28,9 @@ ament_target_dependencies(
   rclcpp_action
   action_msgs
   xline_msgs
+  xline_follow_controller
 )
+target_link_libraries(base_controller_node jsoncpp_lib)
 
 install(TARGETS base_controller_node
   DESTINATION lib/${PROJECT_NAME})
