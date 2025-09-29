@@ -39,6 +39,7 @@ MotionControlCenter::~MotionControlCenter() = default;
 
 /**
  * 目标处理回调：
+ * - 检查是否有正在执行的action
  * - 基础合法性检查（plan_uid / plan_json 不能为空）
  * - 通过则返回 ACCEPT_AND_EXECUTE，进入执行流程
  */
@@ -47,6 +48,13 @@ MotionControlCenter::handleGoal(const rclcpp_action::GoalUUID & uuid,
                                 std::shared_ptr<const ExecutePlan::Goal> goal)
 {
   (void)uuid;
+
+  // 检查是否有action正在执行
+  if (is_executing_.load()) {
+    RCLCPP_WARN(get_logger(), "拒绝目标：当前有action正在执行中");
+    return rclcpp_action::GoalResponse::REJECT;
+  }
+
   // 基础校验：goal 不能为空
   if (!goal) {
     RCLCPP_WARN(get_logger(), "拒绝目标：收到空的 goal");
@@ -99,6 +107,12 @@ void MotionControlCenter::handleAccepted(const std::shared_ptr<GoalHandleExecute
  */
 void MotionControlCenter::execute(const std::shared_ptr<GoalHandleExecutePlan> goal_handle)
 {
+  // 设置执行标志
+  is_executing_.store(true);
+  // 使用RAII确保函数退出时清除标志
+  auto cleanup = [this]() { is_executing_.store(false); };
+  std::unique_ptr<void, decltype(cleanup)> guard(reinterpret_cast<void*>(1), cleanup);
+
   const auto goal = goal_handle->get_goal();
   auto feedback = std::make_shared<ExecutePlan::Feedback>();
   auto result = std::make_shared<ExecutePlan::Result>();

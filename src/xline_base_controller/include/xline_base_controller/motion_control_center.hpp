@@ -2,6 +2,8 @@
 
 #include <memory>
 #include <thread>
+#include <atomic>
+#include <mutex>
 
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
@@ -46,6 +48,10 @@ private:
   xline::follow_controller::BaseFollowController::SharedPtr base_follow_controller_;
   xline::follow_controller::LineFollowController::SharedPtr line_follow_controller_;
   xline::follow_controller::RPPController::SharedPtr rpp_follow_controller_;
+
+  // 执行状态标志及互斥锁
+  std::atomic<bool> is_executing_{false};
+  std::mutex execution_mutex_;
 
   /**
    * 目标处理回调：决定是否接受/拒绝目标
