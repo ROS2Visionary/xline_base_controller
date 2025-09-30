@@ -29,21 +29,14 @@ MotionControlCenter::MotionControlCenter(const rclcpp::NodeOptions & options)
       std::bind(&MotionControlCenter::handleCancel, this, _1),
       std::bind(&MotionControlCenter::handleAccepted, this, _1));
 
-  // 创建 IMU 订阅器
-  imu_subscriber_ = this->create_subscription<sensor_msgs::msg::Imu>(
-      "imu",                                // 话题名
+  // 创建位姿订阅器(订阅状态估计器发布的融合位姿)
+  pose_subscriber_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
+      "/robot_pose",                    // 话题名
       10,                                   // QoS 队列大小
-      std::bind(&MotionControlCenter::imuCallback, this, _1));
-
-  // 创建反射板位置订阅器
-  reflector_position_subscriber_ = this->create_subscription<geometry_msgs::msg::PointStamped>(
-      "/reflector_position",                // 话题名
-      10,                                   // QoS 队列大小
-      std::bind(&MotionControlCenter::reflectorPositionCallback, this, _1));
+      std::bind(&MotionControlCenter::poseCallback, this, _1));
 
   RCLCPP_INFO(get_logger(), "MotionControlCenter 动作服务器已就绪: 'execute_plan'");
-  RCLCPP_INFO(get_logger(), "IMU 订阅器已创建: 'imu'");
-  RCLCPP_INFO(get_logger(), "反射板位置订阅器已创建: '/reflector_position'");
+  RCLCPP_INFO(get_logger(), "位姿订阅器已创建: '/estimated_pose'");
   line_follow_controller_ = std::make_shared<xline::follow_controller::LineFollowController>();
   rpp_follow_controller_ = std::make_shared<xline::follow_controller::RPPController>();
   base_follow_controller_ = nullptr;
@@ -285,33 +278,19 @@ MotionControlCenter::ArcData MotionControlCenter::extractArcData(const Json::Val
 }
 
 /**
- * IMU 数据回调函数
- * 接收并处理来自 IMU 传感器的数据
+ * 位姿数据回调函数
+ * - 接收状态估计器融合后的位姿信息
  */
-void MotionControlCenter::imuCallback(const sensor_msgs::msg::Imu::SharedPtr msg)
-{
-  // 打印 IMU 数据（可根据需要修改）
-  RCLCPP_DEBUG(get_logger(),
-               "IMU 数据 - 角速度: [%.3f, %.3f, %.3f], 线加速度: [%.3f, %.3f, %.3f]",
-               msg->angular_velocity.x, msg->angular_velocity.y, msg->angular_velocity.z,
-               msg->linear_acceleration.x, msg->linear_acceleration.y, msg->linear_acceleration.z);
-
-  // TODO: 在此处添加 IMU 数据处理逻辑
-  // 例如：姿态估计、速度积分、状态更新等
-}
-
-/**
- * 反射板位置回调函数
- * - 接收激光雷达检测到的反射板位置数据
- */
-void MotionControlCenter::reflectorPositionCallback(const geometry_msgs::msg::PointStamped::SharedPtr msg)
+void MotionControlCenter::poseCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
 {
   RCLCPP_DEBUG(get_logger(),
-               "反射板位置 - 坐标: [%.3f, %.3f, %.3f]",
-               msg->point.x, msg->point.y, msg->point.z);
+               "位姿数据 - 位置: [%.3f, %.3f, %.3f], 姿态: [%.3f, %.3f, %.3f, %.3f]",
+               msg->pose.position.x, msg->pose.position.y, msg->pose.position.z,
+               msg->pose.orientation.w, msg->pose.orientation.x,
+               msg->pose.orientation.y, msg->pose.orientation.z);
 
-  // TODO: 在此处添加反射板位置数据处理逻辑
-  // 例如：目标跟踪、路径规划调整等
+  // TODO: 在此处添加位姿数据处理逻辑
+  // 例如：更新控制器状态、路径跟踪计算等
 }
 
 }  // namespace base_controller

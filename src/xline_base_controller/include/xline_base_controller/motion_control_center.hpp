@@ -9,8 +9,7 @@
 #include <rclcpp_action/rclcpp_action.hpp>
 
 #include <xline_msgs/action/execute_plan.hpp>
-#include <sensor_msgs/msg/imu.hpp>
-#include <geometry_msgs/msg/point_stamped.hpp>
+#include <geometry_msgs/msg/pose_stamped.hpp>
 #include <json/json.h>
 #include <xline_follow_controller/line_follow_controller.hpp>
 #include <xline_follow_controller/rpp_follow_controller.hpp>
@@ -51,11 +50,12 @@ private:
   xline::follow_controller::LineFollowController::SharedPtr line_follow_controller_;
   xline::follow_controller::RPPController::SharedPtr rpp_follow_controller_;
 
-  // IMU 订阅器
-  rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_subscriber_;
-
-  // 反射板位置订阅器
-  rclcpp::Subscription<geometry_msgs::msg::PointStamped>::SharedPtr reflector_position_subscriber_;
+  // 位姿订阅器(从状态估计器获取融合后的位姿)
+  rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pose_subscriber_;
+  // 最新位姿缓存与同步
+  geometry_msgs::msg::PoseStamped latest_pose_;
+  std::atomic<bool> has_latest_pose_{false};
+  std::mutex pose_mutex_;
 
   // 执行状态标志及互斥锁
   std::atomic<bool> is_executing_{false};
@@ -85,14 +85,9 @@ private:
   void execute(const std::shared_ptr<GoalHandleExecutePlan> goal_handle);
 
   /**
-   * IMU 数据回调函数
+   * 位姿数据回调函数(接收融合后的位姿)
    */
-  void imuCallback(const sensor_msgs::msg::Imu::SharedPtr msg);
-
-  /**
-   * 反射板位置回调函数
-   */
-  void reflectorPositionCallback(const geometry_msgs::msg::PointStamped::SharedPtr msg);
+  void poseCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg);
 
   // 数据结构定义
   struct LineData {

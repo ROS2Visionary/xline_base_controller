@@ -1816,6 +1816,68 @@ bool LineFollowController::computeVelocityCommands(const geometry_msgs::msg::Pos
   return true;
 }
 
+// 通过起点/终点坐标直接生成直线路径并复用现有setPlan(Path)逻辑
+bool LineFollowController::setPlan(double start_x, double start_y, double end_x, double end_y)
+{
+  nav_msgs::msg::Path path;
+  path.header.stamp = this->now();
+  // 与现有代码保持一致，使用"world"坐标系
+  path.header.frame_id = "world";
+
+  // 计算总长度与方向
+  const double dx = end_x - start_x;
+  const double dy = end_y - start_y;
+  const double length = std::hypot(dx, dy);
+
+  // 统一航向
+  const double yaw = std::atan2(dy, dx);
+  tf2::Quaternion q;
+  q.setRPY(0.0, 0.0, yaw);
+
+  // 起点
+  geometry_msgs::msg::PoseStamped start_pose;
+  start_pose.header = path.header;
+  start_pose.pose.position.x = start_x;
+  start_pose.pose.position.y = start_y;
+  start_pose.pose.position.z = 0.0;
+  start_pose.pose.orientation = tf2::toMsg(q);
+  path.poses.push_back(start_pose);
+
+  // 沿直线插值，间隔0.003m
+  constexpr double interval = 0.003;  // 3mm 间隔
+  if (length > 1e-9)
+  {
+    const int steps = static_cast<int>(length / interval);
+    // 单位方向
+    const double ux = dx / length;
+    const double uy = dy / length;
+
+    // i=1..steps-1，避免重复起点；保证最后单独压入终点
+    for (int i = 1; i < steps; ++i)
+    {
+      geometry_msgs::msg::PoseStamped p;
+      p.header = path.header;
+      const double s = interval * static_cast<double>(i);
+      p.pose.position.x = start_x + ux * s;
+      p.pose.position.y = start_y + uy * s;
+      p.pose.position.z = 0.0;
+      p.pose.orientation = tf2::toMsg(q);
+      path.poses.push_back(p);
+    }
+  }
+
+  // 终点
+  geometry_msgs::msg::PoseStamped end_pose;
+  end_pose.header = path.header;
+  end_pose.pose.position.x = end_x;
+  end_pose.pose.position.y = end_y;
+  end_pose.pose.position.z = 0.0;
+  end_pose.pose.orientation = tf2::toMsg(q);
+  path.poses.push_back(end_pose);
+
+  return setPlan(path);
+}
+
 bool LineFollowController::isGoalReached()
 {
   return goal_reached_;

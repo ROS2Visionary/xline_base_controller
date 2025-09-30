@@ -26,7 +26,8 @@
                 "/opt/ros/humble/include/geometry_msgs",
                 "/opt/ros/humble/include/rosidl_runtime_cpp",
                 "/opt/ros/humble/include/rosidl_typesupport_interface",
-                "/opt/ros/humble/include/std_msgs"
+                "/opt/ros/humble/include/std_msgs",
+                "${workspaceFolder}/src/xline_localization/include"
             ],
             "name": "ros2",
             "intelliSenseMode": "gcc-x64",

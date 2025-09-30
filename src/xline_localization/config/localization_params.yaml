@@ -1,0 +1,7 @@
+localization:
+  ros__parameters:
+    # 反射板到机器人基座的坐标偏移量 (单位: 米)
+    # 这些参数定义了反射板(激光靶球)相对于机器人基座(base_link)的位置
+    reflector_to_base_x: 0.0
+    reflector_to_base_y: 0.0
+    reflector_to_base_z: 0.0

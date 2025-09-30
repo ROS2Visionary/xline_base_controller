@@ -54,6 +54,8 @@ public:
   bool cancel() override;
 
   // 扩展接口
+  // 通过起点/终点坐标直接生成直线路径
+  bool setPlan(double start_x, double start_y, double end_x, double end_y);
   bool setPlan(const std::shared_ptr<std::vector<geometry_msgs::msg::PoseStamped>>& plan);
   void setSpeedLimit(const double& speed_limit);
   void setWorkState(bool state);
