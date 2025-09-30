@@ -188,8 +188,8 @@ void LocalizationNode::calibratePoseCallback(
   }
 
   // 等待10秒收集数据
-  RCLCPP_INFO(get_logger(), "正在收集位置数据,持续10秒...");
-  rclcpp::sleep_for(std::chrono::seconds(10));
+  RCLCPP_INFO(get_logger(), "正在收集位置数据,持续3秒...");
+  rclcpp::sleep_for(std::chrono::seconds(3));
 
   // 停止收集
   {

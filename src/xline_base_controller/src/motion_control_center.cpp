@@ -35,8 +35,19 @@ MotionControlCenter::MotionControlCenter(const rclcpp::NodeOptions & options)
       10,                                   // QoS 队列大小
       std::bind(&MotionControlCenter::poseCallback, this, _1));
 
+  // 创建 cmd_vel 发布器(用于校准时控制机器人移动)
+  cmd_vel_publisher_ = this->create_publisher<geometry_msgs::msg::Twist>(
+      "/cmd_vel",                           // 话题名
+      10);                                  // QoS 队列大小
+
+  // 创建定位校准服务客户端
+  calibration_client_ = this->create_client<std_srvs::srv::Trigger>(
+      "/localization/calibrate_pose");      // 服务名
+
   RCLCPP_INFO(get_logger(), "MotionControlCenter 动作服务器已就绪: 'execute_plan'");
-  RCLCPP_INFO(get_logger(), "位姿订阅器已创建: '/estimated_pose'");
+  RCLCPP_INFO(get_logger(), "位姿订阅器已创建: '/robot_pose'");
+  RCLCPP_INFO(get_logger(), "cmd_vel 发布器已创建: '/cmd_vel'");
+  RCLCPP_INFO(get_logger(), "校准服务客户端已创建: '/localization/calibrate_pose'");
   line_follow_controller_ = std::make_shared<xline::follow_controller::LineFollowController>();
   rpp_follow_controller_ = std::make_shared<xline::follow_controller::RPPController>();
   base_follow_controller_ = nullptr;
@@ -291,6 +302,79 @@ void MotionControlCenter::poseCallback(const geometry_msgs::msg::PoseStamped::Sh
 
   // TODO: 在此处添加位姿数据处理逻辑
   // 例如：更新控制器状态、路径跟踪计算等
+}
+
+/**
+ * 执行定位系统校准
+ * - 等待校准服务可用
+ * - 异步调用校准服务
+ * - 控制机器人沿直线前进
+ * - 等待服务完成并返回结果
+ */
+bool MotionControlCenter::executeLocalizationCalibration(double linear_velocity, double duration)
+{
+  RCLCPP_INFO(get_logger(), "开始定位系统校准流程...");
+  RCLCPP_INFO(get_logger(), "校准参数: 速度=%.2f m/s, 持续时间=%.1f秒", linear_velocity, duration);
+
+  // 1. 等待校准服务可用
+  RCLCPP_INFO(get_logger(), "等待校准服务 '/localization/calibrate_pose' 可用...");
+  if (!calibration_client_->wait_for_service(std::chrono::seconds(5))) {
+    RCLCPP_ERROR(get_logger(), "校准服务不可用，请确保 localization 节点已启动");
+    return false;
+  }
+  RCLCPP_INFO(get_logger(), "校准服务已就绪");
+
+  // 2. 异步调用校准服务
+  auto request = std::make_shared<std_srvs::srv::Trigger::Request>();
+  auto future = calibration_client_->async_send_request(request);
+
+  // 等待一小段时间，确保服务开始处理
+  // std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+  // 3. 控制机器人沿直线前进
+  RCLCPP_INFO(get_logger(), "控制机器人前进 %.1f 秒...", duration);
+  auto twist_msg = geometry_msgs::msg::Twist();
+  twist_msg.linear.x = linear_velocity;
+  twist_msg.linear.y = 0.0;
+  twist_msg.linear.z = 0.0;
+  twist_msg.angular.x = 0.0;
+  twist_msg.angular.y = 0.0;
+  twist_msg.angular.z = 0.0;
+
+  // 以 20Hz 频率发布 cmd_vel
+  rclcpp::Rate loop_rate(20);
+  auto start_time = this->now();
+  auto target_duration = rclcpp::Duration::from_seconds(duration);
+
+  while ((this->now() - start_time) < target_duration) {
+    cmd_vel_publisher_->publish(twist_msg);
+    loop_rate.sleep();
+  }
+
+  // 4. 停止机器人
+  RCLCPP_INFO(get_logger(), "停止机器人移动");
+  twist_msg.linear.x = 0.0;
+  cmd_vel_publisher_->publish(twist_msg);
+
+  // 5. 等待校准服务返回结果
+  RCLCPP_INFO(get_logger(), "等待校准服务完成...");
+
+  // 等待最多5秒
+  auto wait_status = future.wait_for(std::chrono::seconds(5));
+  if (wait_status != std::future_status::ready) {
+    RCLCPP_ERROR(get_logger(), "校准服务超时");
+    return false;
+  }
+
+  // 获取结果
+  auto response = future.get();
+  if (response->success) {
+    RCLCPP_INFO(get_logger(), "校准成功: %s", response->message.c_str());
+    return true;
+  } else {
+    RCLCPP_ERROR(get_logger(), "校准失败: %s", response->message.c_str());
+    return false;
+  }
 }
 
 }  // namespace base_controller

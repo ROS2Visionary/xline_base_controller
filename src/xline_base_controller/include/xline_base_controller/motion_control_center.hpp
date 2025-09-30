@@ -10,6 +10,8 @@
 
 #include <xline_msgs/action/execute_plan.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
+#include <geometry_msgs/msg/twist.hpp>
+#include <std_srvs/srv/trigger.hpp>
 #include <json/json.h>
 #include <xline_follow_controller/line_follow_controller.hpp>
 #include <xline_follow_controller/rpp_follow_controller.hpp>
@@ -43,6 +45,15 @@ public:
   explicit MotionControlCenter(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
   ~MotionControlCenter() override;
 
+  /**
+   * 执行定位系统校准
+   * 协调机器人移动和调用定位节点的校准服务
+   * @param linear_velocity 校准时的前进速度(m/s)，默认0.2
+   * @param duration 移动持续时间(秒)，默认10
+   * @return 校准是否成功
+   */
+  bool executeLocalizationCalibration(double linear_velocity = 0.2, double duration = 10.0);
+
 private:
   // ExecutePlan 动作服务器实例
   rclcpp_action::Server<ExecutePlan>::SharedPtr action_server_;
@@ -56,6 +67,12 @@ private:
   geometry_msgs::msg::PoseStamped latest_pose_;
   std::atomic<bool> has_latest_pose_{false};
   std::mutex pose_mutex_;
+
+  // cmd_vel 发布器(用于校准时控制机器人移动)
+  rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_publisher_;
+
+  // 定位校准服务客户端
+  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr calibration_client_;
 
   // 执行状态标志及互斥锁
   std::atomic<bool> is_executing_{false};
