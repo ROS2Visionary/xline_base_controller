@@ -27,7 +27,8 @@
                 "/opt/ros/humble/include/rosidl_runtime_cpp",
                 "/opt/ros/humble/include/rosidl_typesupport_interface",
                 "/opt/ros/humble/include/std_msgs",
-                "${workspaceFolder}/src/xline_localization/include"
+                "${workspaceFolder}/src/xline_localization/include",
+                "/opt/ros/humble/include/rclcpp_action"
             ],
             "name": "ros2",
             "intelliSenseMode": "gcc-x64",

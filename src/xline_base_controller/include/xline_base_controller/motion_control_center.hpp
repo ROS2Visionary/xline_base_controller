@@ -30,145 +30,154 @@
  */
 namespace xline
 {
-namespace base_controller
-{
+  namespace base_controller
+  {
 
-class MotionControlCenter : public rclcpp::Node
-{
-public:
-  using ExecutePlan = xline_msgs::action::ExecutePlan;
-  using GoalHandleExecutePlan = rclcpp_action::ServerGoalHandle<ExecutePlan>;
+    class MotionControlCenter : public rclcpp::Node
+    {
+    public:
+      using ExecutePlan = xline_msgs::action::ExecutePlan;
+      using GoalHandleExecutePlan = rclcpp_action::ServerGoalHandle<ExecutePlan>;
 
-  /**
-   * 构造函数
-   * @param options 节点选项
-   */
-  explicit MotionControlCenter(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
-  ~MotionControlCenter() override;
+      /**
+       * 构造函数
+       * @param options 节点选项
+       */
+      explicit MotionControlCenter(const rclcpp::NodeOptions &options = rclcpp::NodeOptions());
+      ~MotionControlCenter() override;
 
-  /**
-   * 执行定位系统校准
-   * 协调机器人移动和调用定位节点的校准服务
-   * @param linear_velocity 校准时的前进速度(m/s)，默认0.2
-   * @param duration 移动持续时间(秒)，默认10
-   * @return 校准是否成功
-   */
-  bool executeLocalizationCalibration(double linear_velocity = 0.2, double duration = 10.0);
+      /**
+       * 执行定位系统校准
+       * 协调机器人移动和调用定位节点的校准服务
+       * @param linear_velocity 校准时的前进速度(m/s)，默认0.2
+       * @param duration 移动持续时间(秒)，默认10
+       * @return 校准是否成功
+       */
+      bool executeLocalizationCalibration(double linear_velocity = 0.2, double duration = 10.0);
 
-private:
-  // ExecutePlan 动作服务器实例
-  rclcpp_action::Server<ExecutePlan>::SharedPtr action_server_;
-  xline::follow_controller::BaseFollowController::SharedPtr base_follow_controller_;
-  xline::follow_controller::LineFollowController::SharedPtr line_follow_controller_;
-  xline::follow_controller::RPPController::SharedPtr rpp_follow_controller_;
+    private:
+      // ExecutePlan 动作服务器实例
+      rclcpp_action::Server<ExecutePlan>::SharedPtr action_server_;
 
-  // 位姿订阅器(从状态估计器获取融合后的位姿)
-  rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pose_subscriber_;
-  // 最新位姿缓存与同步
-  geometry_msgs::msg::PoseStamped latest_pose_;
-  std::atomic<bool> has_latest_pose_{false};
-  std::mutex pose_mutex_;
+      std::shared_ptr<xline::follow_controller::BaseFollowController> base_follow_controller_;
+      std::shared_ptr<xline::follow_controller::LineFollowController> line_follow_controller_;
+      std::shared_ptr<xline::follow_controller::RPPController> rpp_follow_controller_;
 
-  // cmd_vel 发布器(用于校准时控制机器人移动)
-  rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_publisher_;
+      // 位姿订阅器(从状态估计器获取融合后的位姿)
+      rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pose_subscriber_;
+      // 最新位姿缓存与同步
+      geometry_msgs::msg::PoseStamped latest_pose_;
+      std::atomic<bool> has_latest_pose_{false};
+      std::mutex pose_mutex_;
 
-  // 定位校准服务客户端
-  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr calibration_client_;
+      // cmd_vel 发布器(用于校准时控制机器人移动)
+      rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_publisher_;
 
-  // 暂停/恢复服务
-  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr pause_service_;
-  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr resume_service_;
+      // 定位校准服务客户端
+      rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr calibration_client_;
 
-  // 执行状态标志及互斥锁
-  std::atomic<bool> is_executing_{false};
-  std::atomic<bool> is_paused_{false};
-  std::mutex execution_mutex_;
-  std::condition_variable pause_cv_;
-  std::mutex pause_mutex_;
+      // 暂停/恢复服务
+      rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr pause_service_;
+      rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr resume_service_;
 
-  /**
-   * 目标处理回调：决定是否接受/拒绝目标
-   * @param uuid  目标UUID
-   * @param goal  目标内容（包含 plan_json / plan_uid）
-   */
-  rclcpp_action::GoalResponse handleGoal(const rclcpp_action::GoalUUID & uuid,
-                                         std::shared_ptr<const ExecutePlan::Goal> goal);
+      // 执行状态标志及互斥锁
+      std::atomic<bool> is_executing_{false};
+      std::atomic<bool> is_paused_{false};
+      std::mutex execution_mutex_;
+      std::condition_variable pause_cv_;
+      std::mutex pause_mutex_;
 
-  /**
-   * 取消处理回调：收到客户端取消时的响应
-   */
-  rclcpp_action::CancelResponse handleCancel(const std::shared_ptr<GoalHandleExecutePlan> goal_handle);
+      /**
+       * 目标处理回调：决定是否接受/拒绝目标
+       * @param uuid  目标UUID
+       * @param goal  目标内容（包含 plan_json / plan_uid）
+       */
+      rclcpp_action::GoalResponse handleGoal(const rclcpp_action::GoalUUID &uuid,
+                                             std::shared_ptr<const ExecutePlan::Goal> goal);
 
-  /**
-   * 接受目标回调：在单独线程中执行 execute()
-   */
-  void handleAccepted(const std::shared_ptr<GoalHandleExecutePlan> goal_handle);
+      /**
+       * 取消处理回调：收到客户端取消时的响应
+       */
+      rclcpp_action::CancelResponse handleCancel(const std::shared_ptr<GoalHandleExecutePlan> goal_handle);
 
-  /**
-   * 执行主循环：发布反馈、响应取消、完成结果
-   */
-  void execute(const std::shared_ptr<GoalHandleExecutePlan> goal_handle);
+      /**
+       * 接受目标回调：在单独线程中执行 execute()
+       */
+      void handleAccepted(const std::shared_ptr<GoalHandleExecutePlan> goal_handle);
 
-  /**
-   * 位姿数据回调函数(接收融合后的位姿)
-   */
-  void poseCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg);
+      /**
+       * 执行主循环：发布反馈、响应取消、完成结果
+       */
+      void execute(const std::shared_ptr<GoalHandleExecutePlan> goal_handle);
 
-  /**
-   * 暂停执行服务回调
-   */
-  void handlePauseService(const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
-                          std::shared_ptr<std_srvs::srv::Trigger::Response> response);
+      /**
+       * 位姿数据回调函数(接收融合后的位姿)
+       */
+      void poseCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg);
 
-  /**
-   * 恢复执行服务回调
-   */
-  void handleResumeService(const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
-                           std::shared_ptr<std_srvs::srv::Trigger::Response> response);
+      /**
+       * 暂停执行服务回调
+       */
+      void handlePauseService(const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
+                              std::shared_ptr<std_srvs::srv::Trigger::Response> response);
 
-  /**
-   * 检查并处理暂停状态
-   * 如果已暂停，则阻塞等待恢复
-   */
-  void checkPauseState();
+      /**
+       * 恢复执行服务回调
+       */
+      void handleResumeService(const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
+                               std::shared_ptr<std_srvs::srv::Trigger::Response> response);
 
-  // 数据结构定义
-  struct LineData {
-    double start_x;
-    double start_y;
-    double end_x;
-    double end_y;
-  };
+      /**
+       * 检查并处理暂停状态
+       * 如果已暂停，则阻塞等待恢复
+       */
+      void checkPauseState();
 
-  struct CircleData {
-    double center_x;
-    double center_y;
-    double radius;
-  };
+      // 数据结构定义
+      struct LineData
+      {
+        double start_x;
+        double start_y;
+        double end_x;
+        double end_y;
+      };
 
-  struct ArcData {
-    double center_x;
-    double center_y;
-    double radius;
-    double start_angle;  // 弧度
-    double end_angle;    // 弧度
-  };
+      struct CircleData
+      {
+        double center_x;
+        double center_y;
+        double radius;
+      };
 
-  /**
-   * 提取line数据
-   */
-  LineData extractLineData(const Json::Value & line_obj);
+      struct ArcData
+      {
+        double center_x;
+        double center_y;
+        double radius;
+        double start_angle; // 弧度
+        double end_angle;   // 弧度
+      };
 
-  /**
-   * 提取circle数据
-   */
-  CircleData extractCircleData(const Json::Value & circle_obj);
+      /**
+       * 提取line数据
+       */
+      LineData extractLineData(const Json::Value &line_obj);
 
-  /**
-   * 提取arc数据
-   */
-  ArcData extractArcData(const Json::Value & arc_obj);
-};
+      /**
+       * 提取circle数据
+       */
+      CircleData extractCircleData(const Json::Value &circle_obj);
 
-}  // namespace base_controller
-}  // namespace xline
+      /**
+       * 提取arc数据
+       */
+      ArcData extractArcData(const Json::Value &arc_obj);
+
+      // 计算速度控制输出
+      // 新增参数：传入 ExecutePlan::Result 的共享指针，
+      // 以便在计算过程中可根据需要更新结果信息
+      bool compute_velocity(ExecutePlan::Result::SharedPtr result);
+    };
+
+  } // namespace base_controller
+} // namespace xline
