@@ -4,6 +4,7 @@
 #include <thread>
 #include <atomic>
 #include <mutex>
+#include <condition_variable>
 
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
@@ -74,9 +75,16 @@ private:
   // 定位校准服务客户端
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr calibration_client_;
 
+  // 暂停/恢复服务
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr pause_service_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr resume_service_;
+
   // 执行状态标志及互斥锁
   std::atomic<bool> is_executing_{false};
+  std::atomic<bool> is_paused_{false};
   std::mutex execution_mutex_;
+  std::condition_variable pause_cv_;
+  std::mutex pause_mutex_;
 
   /**
    * 目标处理回调：决定是否接受/拒绝目标
@@ -105,6 +113,24 @@ private:
    * 位姿数据回调函数(接收融合后的位姿)
    */
   void poseCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg);
+
+  /**
+   * 暂停执行服务回调
+   */
+  void handlePauseService(const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
+                          std::shared_ptr<std_srvs::srv::Trigger::Response> response);
+
+  /**
+   * 恢复执行服务回调
+   */
+  void handleResumeService(const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
+                           std::shared_ptr<std_srvs::srv::Trigger::Response> response);
+
+  /**
+   * 检查并处理暂停状态
+   * 如果已暂停，则阻塞等待恢复
+   */
+  void checkPauseState();
 
   // 数据结构定义
   struct LineData {

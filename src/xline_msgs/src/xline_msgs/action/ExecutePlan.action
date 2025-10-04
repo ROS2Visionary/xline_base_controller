@@ -1,0 +1,11 @@
+# Goal
+string   plan_json           # 完整的JSON字符串
+string   plan_uid            # 计划唯一标识
+---
+# Result
+bool     success             # 是否成功
+string   error_message       # 错误信息
+---
+# Feedback
+uint32   current_id          # 当前执行路径的id (显示在xline_mobile上)
+

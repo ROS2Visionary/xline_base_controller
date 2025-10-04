@@ -3,6 +3,8 @@
 #include <cmath>
 #include <sstream>
 #include <algorithm>
+#include <thread>
+#include <chrono>
 
 // 为 std::bind 预留占位符
 using std::placeholders::_1;
@@ -18,36 +20,42 @@ namespace base_controller
  * - 设置节点名称为 "motion_control_center"
  * - 创建 ExecutePlan 动作服务器，动作名为 "execute_plan"
  */
-MotionControlCenter::MotionControlCenter(const rclcpp::NodeOptions & options)
+MotionControlCenter::MotionControlCenter(const rclcpp::NodeOptions& options)
   : rclcpp::Node("motion_control_center", options)
 {
   // 创建 ExecutePlan 动作服务器：分别绑定 目标处理/取消处理/接受处理 回调
-  action_server_ = rclcpp_action::create_server<ExecutePlan>(
-      this,                                  // 节点指针
-      "execute_plan",                       // 动作名
-      std::bind(&MotionControlCenter::handleGoal, this, _1, _2),
-      std::bind(&MotionControlCenter::handleCancel, this, _1),
-      std::bind(&MotionControlCenter::handleAccepted, this, _1));
+  action_server_ = rclcpp_action::create_server<ExecutePlan>(this,            // 节点指针
+                                                             "execute_plan",  // 动作名
+                                                             std::bind(&MotionControlCenter::handleGoal, this, _1, _2),
+                                                             std::bind(&MotionControlCenter::handleCancel, this, _1),
+                                                             std::bind(&MotionControlCenter::handleAccepted, this, _1));
 
   // 创建位姿订阅器(订阅状态估计器发布的融合位姿)
   pose_subscriber_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
-      "/robot_pose",                    // 话题名
-      10,                                   // QoS 队列大小
+      "/robot_pose",  // 话题名
+      10,             // QoS 队列大小
       std::bind(&MotionControlCenter::poseCallback, this, _1));
 
   // 创建 cmd_vel 发布器(用于校准时控制机器人移动)
-  cmd_vel_publisher_ = this->create_publisher<geometry_msgs::msg::Twist>(
-      "/cmd_vel",                           // 话题名
-      10);                                  // QoS 队列大小
+  cmd_vel_publisher_ = this->create_publisher<geometry_msgs::msg::Twist>("/cmd_vel",  // 话题名
+                                                                         10);         // QoS 队列大小
 
   // 创建定位校准服务客户端
-  calibration_client_ = this->create_client<std_srvs::srv::Trigger>(
-      "/localization/calibrate_pose");      // 服务名
+  calibration_client_ = this->create_client<std_srvs::srv::Trigger>("/localization/calibrate_pose");  // 服务名
+
+  // 创建暂停/恢复服务
+  pause_service_ = this->create_service<std_srvs::srv::Trigger>(
+      "/execution/pause", std::bind(&MotionControlCenter::handlePauseService, this, _1, _2));
+
+  resume_service_ = this->create_service<std_srvs::srv::Trigger>(
+      "/execution/resume", std::bind(&MotionControlCenter::handleResumeService, this, _1, _2));
 
   RCLCPP_INFO(get_logger(), "MotionControlCenter 动作服务器已就绪: 'execute_plan'");
   RCLCPP_INFO(get_logger(), "位姿订阅器已创建: '/robot_pose'");
   RCLCPP_INFO(get_logger(), "cmd_vel 发布器已创建: '/cmd_vel'");
   RCLCPP_INFO(get_logger(), "校准服务客户端已创建: '/localization/calibrate_pose'");
+  RCLCPP_INFO(get_logger(), "暂停服务已创建: '/execution/pause'");
+  RCLCPP_INFO(get_logger(), "恢复服务已创建: '/execution/resume'");
   line_follow_controller_ = std::make_shared<xline::follow_controller::LineFollowController>();
   rpp_follow_controller_ = std::make_shared<xline::follow_controller::RPPController>();
   base_follow_controller_ = nullptr;
@@ -61,32 +69,33 @@ MotionControlCenter::~MotionControlCenter() = default;
  * - 基础合法性检查（plan_uid / plan_json 不能为空）
  * - 通过则返回 ACCEPT_AND_EXECUTE，进入执行流程
  */
-rclcpp_action::GoalResponse
-MotionControlCenter::handleGoal(const rclcpp_action::GoalUUID & uuid,
-                                std::shared_ptr<const ExecutePlan::Goal> goal)
+rclcpp_action::GoalResponse MotionControlCenter::handleGoal(const rclcpp_action::GoalUUID& uuid,
+                                                            std::shared_ptr<const ExecutePlan::Goal> goal)
 {
   (void)uuid;
 
   // 检查是否有action正在执行
-  if (is_executing_.load()) {
+  if (is_executing_.load())
+  {
     RCLCPP_WARN(get_logger(), "拒绝目标：当前有action正在执行中");
     return rclcpp_action::GoalResponse::REJECT;
   }
 
   // 基础校验：goal 不能为空
-  if (!goal) {
+  if (!goal)
+  {
     RCLCPP_WARN(get_logger(), "拒绝目标：收到空的 goal");
     return rclcpp_action::GoalResponse::REJECT;
   }
 
   // 内容校验：plan_uid 与 plan_json 不能为空
-  if (goal->plan_uid.empty() || goal->plan_json.empty()) {
+  if (goal->plan_uid.empty() || goal->plan_json.empty())
+  {
     RCLCPP_WARN(get_logger(), "拒绝目标：plan_uid 或 plan_json 为空");
     return rclcpp_action::GoalResponse::REJECT;
   }
 
-  RCLCPP_INFO(get_logger(), "接受目标：plan_uid=%s, json长度=%zu",
-              goal->plan_uid.c_str(), goal->plan_json.size());
+  RCLCPP_INFO(get_logger(), "接受目标：plan_uid=%s, json长度=%zu", goal->plan_uid.c_str(), goal->plan_json.size());
   return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
 }
 
@@ -108,7 +117,7 @@ MotionControlCenter::handleCancel(const std::shared_ptr<GoalHandleExecutePlan> g
  */
 void MotionControlCenter::handleAccepted(const std::shared_ptr<GoalHandleExecutePlan> goal_handle)
 {
-  std::thread{std::bind(&MotionControlCenter::execute, this, goal_handle)}.detach();
+  std::thread{ std::bind(&MotionControlCenter::execute, this, goal_handle) }.detach();
 }
 
 /**
@@ -135,18 +144,18 @@ void MotionControlCenter::execute(const std::shared_ptr<GoalHandleExecutePlan> g
   auto feedback = std::make_shared<ExecutePlan::Feedback>();
   auto result = std::make_shared<ExecutePlan::Result>();
 
-  // 初始反馈：空闲状态
-  feedback->current_order = 0;
-  feedback->status = ExecutePlan::Feedback::STATUS_IDLE;
+  // 初始反馈
+  feedback->current_id = 0;
   goal_handle->publish_feedback(feedback);
 
   // 解析JSON字符串
   Json::CharReaderBuilder reader_builder;
-  Json::Value root;
+  Json::Value line;
   std::string parse_errors;
   std::istringstream json_stream(goal->plan_json);
 
-  if (!Json::parseFromStream(reader_builder, json_stream, &root, &parse_errors)) {
+  if (!Json::parseFromStream(reader_builder, json_stream, &line, &parse_errors))
+  {
     result->success = false;
     result->error_message = "JSON解析失败: " + parse_errors;
     goal_handle->abort(result);
@@ -154,75 +163,55 @@ void MotionControlCenter::execute(const std::shared_ptr<GoalHandleExecutePlan> g
     return;
   }
 
-  // 提取lines数组
-  if (!root.isMember("lines") || !root["lines"].isArray()) {
+  RCLCPP_INFO(get_logger(), "开始执行计划,路径id: %u", line["id"].asUInt());
+
+  // 支持取消：收到取消则返回 canceled
+  if (goal_handle->is_canceling())
+  {
     result->success = false;
-    result->error_message = "JSON中缺少lines数组";
-    goal_handle->abort(result);
-    RCLCPP_ERROR(get_logger(), "JSON中缺少lines数组");
+    result->error_message = "客户端取消执行";
+    goal_handle->canceled(result);
+    RCLCPP_INFO(get_logger(), "目标已取消：plan_uid=%s", goal->plan_uid.c_str());
     return;
   }
 
-  const Json::Value & lines = root["lines"];
-  const uint32_t total_orders = lines.size();
+  std::string type = line["type"].asString();
+  uint32_t path_id = line["id"].asUInt();
 
-  RCLCPP_INFO(get_logger(), "开始执行计划，共 %u 个路径元素", total_orders);
+  // 发布反馈 - 只发送current_id
+  feedback->current_id = path_id;
+  goal_handle->publish_feedback(feedback);
 
-  // 遍历每个路径元素
-  rclcpp::Rate loop_rate(20);  // 20Hz 发布反馈
-  for (uint32_t order = 0; order < total_orders; ++order) {
-    // 支持取消：收到取消则返回 canceled
-    if (goal_handle->is_canceling()) {
-      result->success = false;
-      result->error_message = "客户端取消执行";
-      goal_handle->canceled(result);
-      RCLCPP_INFO(get_logger(), "目标已取消：plan_uid=%s", goal->plan_uid.c_str());
-      return;
-    }
-
-    const Json::Value & line_element = lines[static_cast<int>(order)];
-    std::string type = line_element["type"].asString();
-
-    // 根据类型提取数据
-    if (type == "line") {
-      LineData line_data = extractLineData(line_element);
-      RCLCPP_INFO(get_logger(),
-                  "第 %u/%u 个元素[line]: 起点(%.2f, %.2f) -> 终点(%.2f, %.2f)",
-                  order + 1, total_orders,
-                  line_data.start_x, line_data.start_y,
-                  line_data.end_x, line_data.end_y);
-      // TODO: 使用line_data进行路径跟踪
-
-    } else if (type == "circle") {
-      CircleData circle_data = extractCircleData(line_element);
-      RCLCPP_INFO(get_logger(),
-                  "第 %u/%u 个元素[circle]: 圆心(%.2f, %.2f), 半径%.2f",
-                  order + 1, total_orders,
-                  circle_data.center_x, circle_data.center_y, circle_data.radius);
-      // TODO: 使用circle_data进行路径跟踪
-
-    } else if (type == "arc") {
-      ArcData arc_data = extractArcData(line_element);
-      RCLCPP_INFO(get_logger(),
-                  "第 %u/%u 个元素[arc]: 圆心(%.2f, %.2f), 半径%.2f, 角度[%.2f, %.2f] rad",
-                  order + 1, total_orders,
-                  arc_data.center_x, arc_data.center_y, arc_data.radius,
-                  arc_data.start_angle, arc_data.end_angle);
-      // TODO: 使用arc_data进行路径跟踪
-
-    } else {
-      RCLCPP_WARN(get_logger(), "第 %u/%u 个元素: 未知类型 %s，跳过",
-                  order + 1, total_orders, type.c_str());
-    }
-
-    // 发布反馈
-    feedback->current_order = order + 1;
-    feedback->status = ExecutePlan::Feedback::STATUS_EXECUTING;
-    goal_handle->publish_feedback(feedback);
-
-    // 模拟执行时间(实际应该等待路径跟踪完成)
-    loop_rate.sleep();
+  // 根据类型提取数据
+  if (type == "line")
+  {
+    LineData line_data = extractLineData(line);
+    RCLCPP_INFO(get_logger(), "[line, id=%u]: 起点(%.2f, %.2f) -> 终点(%.2f, %.2f)", path_id, line_data.start_x,
+                line_data.start_y, line_data.end_x, line_data.end_y);
+    // TODO: 使用line_data进行路径跟踪
+    std::this_thread::sleep_for(std::chrono::seconds(2)); // 休眠2秒
   }
+  else if (type == "circle")
+  {
+    CircleData circle_data = extractCircleData(line);
+    RCLCPP_INFO(get_logger(), "[circle, id=%u]: 圆心(%.2f, %.2f), 半径%.2f", path_id, circle_data.center_x,
+                circle_data.center_y, circle_data.radius);
+    // TODO: 使用circle_data进行路径跟踪
+    std::this_thread::sleep_for(std::chrono::seconds(2)); // 休眠2秒
+  }
+  else if (type == "arc")
+  {
+    ArcData arc_data = extractArcData(line);
+    RCLCPP_INFO(get_logger(), "[arc, id=%u]: 圆心(%.2f, %.2f), 半径%.2f, 角度[%.2f, %.2f] rad", path_id,
+                arc_data.center_x, arc_data.center_y, arc_data.radius, arc_data.start_angle, arc_data.end_angle);
+    // TODO: 使用arc_data进行路径跟踪
+    std::this_thread::sleep_for(std::chrono::seconds(2)); // 休眠2秒
+  }
+  else
+  {
+    RCLCPP_WARN(get_logger(), "[id=%u]: 未知类型 %s，跳过", path_id, type.c_str());
+  }
+
 
   // 执行完成：返回成功
   result->success = true;
@@ -235,7 +224,7 @@ void MotionControlCenter::execute(const std::shared_ptr<GoalHandleExecutePlan> g
  * 提取line数据
  * line包含: start{x,y}, end{x,y}
  */
-MotionControlCenter::LineData MotionControlCenter::extractLineData(const Json::Value & line_obj)
+MotionControlCenter::LineData MotionControlCenter::extractLineData(const Json::Value& line_obj)
 {
   LineData data;
   data.start_x = line_obj["start"]["x"].asDouble();
@@ -243,9 +232,8 @@ MotionControlCenter::LineData MotionControlCenter::extractLineData(const Json::V
   data.end_x = line_obj["end"]["x"].asDouble();
   data.end_y = line_obj["end"]["y"].asDouble();
 
-  RCLCPP_DEBUG(get_logger(),
-               "提取Line数据: 起点(%.2f, %.2f) -> 终点(%.2f, %.2f)",
-               data.start_x, data.start_y, data.end_x, data.end_y);
+  RCLCPP_DEBUG(get_logger(), "提取Line数据: 起点(%.2f, %.2f) -> 终点(%.2f, %.2f)", data.start_x, data.start_y,
+               data.end_x, data.end_y);
   return data;
 }
 
@@ -253,16 +241,14 @@ MotionControlCenter::LineData MotionControlCenter::extractLineData(const Json::V
  * 提取circle数据
  * circle包含: start{x,y}作为圆心, radius
  */
-MotionControlCenter::CircleData MotionControlCenter::extractCircleData(const Json::Value & circle_obj)
+MotionControlCenter::CircleData MotionControlCenter::extractCircleData(const Json::Value& circle_obj)
 {
   CircleData data;
   data.center_x = circle_obj["start"]["x"].asDouble();
   data.center_y = circle_obj["start"]["y"].asDouble();
   data.radius = circle_obj["radius"].asDouble();
 
-  RCLCPP_DEBUG(get_logger(),
-               "提取Circle数据: 圆心(%.2f, %.2f), 半径%.2f",
-               data.center_x, data.center_y, data.radius);
+  RCLCPP_DEBUG(get_logger(), "提取Circle数据: 圆心(%.2f, %.2f), 半径%.2f", data.center_x, data.center_y, data.radius);
   return data;
 }
 
@@ -271,7 +257,7 @@ MotionControlCenter::CircleData MotionControlCenter::extractCircleData(const Jso
  * arc包含: center{x,y}, radius, start_angle, end_angle
  * 注意: JSON中角度为度,转换为弧度
  */
-MotionControlCenter::ArcData MotionControlCenter::extractArcData(const Json::Value & arc_obj)
+MotionControlCenter::ArcData MotionControlCenter::extractArcData(const Json::Value& arc_obj)
 {
   ArcData data;
   data.center_x = arc_obj["center"]["x"].asDouble();
@@ -282,9 +268,8 @@ MotionControlCenter::ArcData MotionControlCenter::extractArcData(const Json::Val
   data.start_angle = arc_obj["start_angle"].asDouble() * M_PI / 180.0;
   data.end_angle = arc_obj["end_angle"].asDouble() * M_PI / 180.0;
 
-  RCLCPP_DEBUG(get_logger(),
-               "提取Arc数据: 圆心(%.2f, %.2f), 半径%.2f, 起始角%.2f rad, 结束角%.2f rad",
-               data.center_x, data.center_y, data.radius, data.start_angle, data.end_angle);
+  RCLCPP_DEBUG(get_logger(), "提取Arc数据: 圆心(%.2f, %.2f), 半径%.2f, 起始角%.2f rad, 结束角%.2f rad", data.center_x,
+               data.center_y, data.radius, data.start_angle, data.end_angle);
   return data;
 }
 
@@ -294,11 +279,9 @@ MotionControlCenter::ArcData MotionControlCenter::extractArcData(const Json::Val
  */
 void MotionControlCenter::poseCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
 {
-  RCLCPP_DEBUG(get_logger(),
-               "位姿数据 - 位置: [%.3f, %.3f, %.3f], 姿态: [%.3f, %.3f, %.3f, %.3f]",
-               msg->pose.position.x, msg->pose.position.y, msg->pose.position.z,
-               msg->pose.orientation.w, msg->pose.orientation.x,
-               msg->pose.orientation.y, msg->pose.orientation.z);
+  RCLCPP_DEBUG(get_logger(), "位姿数据 - 位置: [%.3f, %.3f, %.3f], 姿态: [%.3f, %.3f, %.3f, %.3f]",
+               msg->pose.position.x, msg->pose.position.y, msg->pose.position.z, msg->pose.orientation.w,
+               msg->pose.orientation.x, msg->pose.orientation.y, msg->pose.orientation.z);
 
   // TODO: 在此处添加位姿数据处理逻辑
   // 例如：更新控制器状态、路径跟踪计算等
@@ -318,7 +301,8 @@ bool MotionControlCenter::executeLocalizationCalibration(double linear_velocity,
 
   // 1. 等待校准服务可用
   RCLCPP_INFO(get_logger(), "等待校准服务 '/localization/calibrate_pose' 可用...");
-  if (!calibration_client_->wait_for_service(std::chrono::seconds(5))) {
+  if (!calibration_client_->wait_for_service(std::chrono::seconds(5)))
+  {
     RCLCPP_ERROR(get_logger(), "校准服务不可用，请确保 localization 节点已启动");
     return false;
   }
@@ -346,7 +330,8 @@ bool MotionControlCenter::executeLocalizationCalibration(double linear_velocity,
   auto start_time = this->now();
   auto target_duration = rclcpp::Duration::from_seconds(duration);
 
-  while ((this->now() - start_time) < target_duration) {
+  while ((this->now() - start_time) < target_duration)
+  {
     cmd_vel_publisher_->publish(twist_msg);
     loop_rate.sleep();
   }
@@ -361,26 +346,101 @@ bool MotionControlCenter::executeLocalizationCalibration(double linear_velocity,
 
   // 等待最多5秒
   auto wait_status = future.wait_for(std::chrono::seconds(5));
-  if (wait_status != std::future_status::ready) {
+  if (wait_status != std::future_status::ready)
+  {
     RCLCPP_ERROR(get_logger(), "校准服务超时");
     return false;
   }
 
   // 获取结果
   auto response = future.get();
-  if (response->success) {
+  if (response->success)
+  {
     RCLCPP_INFO(get_logger(), "校准成功: %s", response->message.c_str());
     return true;
-  } else {
+  }
+  else
+  {
     RCLCPP_ERROR(get_logger(), "校准失败: %s", response->message.c_str());
     return false;
   }
 }
 
+/**
+ * 暂停执行服务回调
+ */
+void MotionControlCenter::handlePauseService(const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
+                                             std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+{
+  (void)request;
+
+  // 检查是否有任务正在执行
+  if (!is_executing_.load())
+  {
+    response->success = false;
+    response->message = "没有正在执行的任务";
+    RCLCPP_WARN(get_logger(), "暂停失败：没有正在执行的任务");
+    return;
+  }
+
+  // 检查是否已经暂停
+  if (is_paused_.load())
+  {
+    response->success = false;
+    response->message = "任务已经处于暂停状态";
+    RCLCPP_WARN(get_logger(), "暂停失败：任务已暂停");
+    return;
+  }
+
+  // 设置暂停标志
+  is_paused_.store(true);
+  response->success = true;
+  response->message = "任务已暂停";
+  RCLCPP_INFO(get_logger(), "✅ 执行已暂停");
+}
+
+/**
+ * 恢复执行服务回调
+ */
+void MotionControlCenter::handleResumeService(const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
+                                              std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+{
+  (void)request;
+
+  // 检查是否处于暂停状态
+  if (!is_paused_.load())
+  {
+    response->success = false;
+    response->message = "任务未处于暂停状态";
+    RCLCPP_WARN(get_logger(), "恢复失败：任务未暂停");
+    return;
+  }
+
+  // 清除暂停标志并通知等待的线程
+  is_paused_.store(false);
+  pause_cv_.notify_all();
+
+  response->success = true;
+  response->message = "任务已恢复";
+  RCLCPP_INFO(get_logger(), "✅ 执行已恢复");
+}
+
+/**
+ * 检查并处理暂停状态
+ * 如果已暂停，则阻塞等待恢复
+ */
+void MotionControlCenter::checkPauseState()
+{
+  if (is_paused_.load())
+  {
+    RCLCPP_INFO(get_logger(), "⏸️  任务已暂停，等待恢复...");
+
+    std::unique_lock<std::mutex> lock(pause_mutex_);
+    pause_cv_.wait(lock, [this]() { return !is_paused_.load(); });
+
+    RCLCPP_INFO(get_logger(), "▶️  任务已恢复");
+  }
+}
+
 }  // namespace base_controller
 }  // namespace xline
-
-
-
-
-
