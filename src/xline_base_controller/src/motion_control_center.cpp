@@ -101,13 +101,19 @@ namespace xline
 
     /**
      * 取消处理回调：
-     * - 当前示例中无条件接受取消请求
+     * - 无条件接受取消请求
+     * - 唤醒可能正在暂停等待的线程
      */
     rclcpp_action::CancelResponse
     MotionControlCenter::handleCancel(const std::shared_ptr<GoalHandleExecutePlan> goal_handle)
     {
       (void)goal_handle;
       RCLCPP_INFO(get_logger(), "收到取消请求，接受取消");
+
+      // ✅ 关键修复：唤醒可能正在暂停等待的线程
+      // 这样checkPauseState()中的条件变量会重新检查is_canceling()
+      pause_cv_.notify_all();
+
       return rclcpp_action::CancelResponse::ACCEPT;
     }
 
@@ -157,6 +163,13 @@ namespace xline
       // 支持取消：收到取消则返回 canceled
       if (goal_handle->is_canceling())
       {
+        // 停止机器人
+        geometry_msgs::msg::Twist stop;
+        cmd_vel_publisher_->publish(stop);
+
+        // 清理暂停标志（防止在暂停状态下取消时标志残留）
+        is_paused_.store(false);
+
         result->success = false;
         result->error_message = "客户端取消执行";
         goal_handle->canceled(result);
@@ -178,8 +191,9 @@ namespace xline
         RCLCPP_INFO(get_logger(), "[line, id=%u]: 起点(%.2f, %.2f) -> 终点(%.2f, %.2f)", path_id, line_data.start_x,
                     line_data.start_y, line_data.end_x, line_data.end_y);
         // TODO: 使用line_data进行路径跟踪
-        std::this_thread::sleep_for(std::chrono::seconds(2)); // 休眠2秒
+        // std::this_thread::sleep_for(std::chrono::seconds(2)); // 休眠2秒
         line_follow_controller_->setPlan(line_data.start_x, line_data.start_y, line_data.end_x, line_data.end_y);
+        base_follow_controller_ = line_follow_controller_;
       }
       else if (type == "circle")
       {
@@ -187,7 +201,13 @@ namespace xline
         RCLCPP_INFO(get_logger(), "[circle, id=%u]: 圆心(%.2f, %.2f), 半径%.2f", path_id, circle_data.center_x,
                     circle_data.center_y, circle_data.radius);
         // TODO: 使用circle_data进行路径跟踪
-        std::this_thread::sleep_for(std::chrono::seconds(2)); // 休眠2秒 4
+        // std::this_thread::sleep_for(std::chrono::seconds(2)); // 休眠2秒 4
+
+        geometry_msgs::msg::PoseStamped current_pose;
+        getLatestPose(current_pose);
+        rpp_follow_controller_->setAngleRange(2 * M_PI, 0.0);
+        rpp_follow_controller_->setPlanForCircle(circle_data.center_x, circle_data.center_y, circle_data.radius, current_pose);
+        base_follow_controller_ = rpp_follow_controller_;
       }
       else if (type == "arc")
       {
@@ -195,41 +215,152 @@ namespace xline
         RCLCPP_INFO(get_logger(), "[arc, id=%u]: 圆心(%.2f, %.2f), 半径%.2f, 角度[%.2f, %.2f] rad", path_id,
                     arc_data.center_x, arc_data.center_y, arc_data.radius, arc_data.start_angle, arc_data.end_angle);
         // TODO: 使用arc_data进行路径跟踪
-        std::this_thread::sleep_for(std::chrono::seconds(2)); // 休眠2秒
+        // std::this_thread::sleep_for(std::chrono::seconds(2)); // 休眠2秒
+        geometry_msgs::msg::PoseStamped current_pose;
+        getLatestPose(current_pose);
+
+        rpp_follow_controller_->setAngleRange(arc_data.start_angle, arc_data.end_angle);
+        rpp_follow_controller_->setPlanForCircle(arc_data.center_x, arc_data.center_y, arc_data.radius, current_pose);
+        rpp_follow_controller_ = rpp_follow_controller_;
       }
       else
       {
         RCLCPP_WARN(get_logger(), "[id=%u]: 未知类型 %s，跳过", path_id, type.c_str());
       }
 
+      compute_velocity(goal_handle, result);
 
-      
-      if (result->success)
+      // ✅ 根据结果和取消状态决定如何结束Action
+      if (goal_handle->is_canceling())
       {
+        // 取消状态：调用canceled
+        result->success = false;
+        if (result->error_message.empty())
+        {
+          result->error_message = "任务已取消";
+        }
+        goal_handle->canceled(result);
+        RCLCPP_INFO(get_logger(), "目标已取消：plan_uid=%s", goal->plan_uid.c_str());
+      }
+      else if (result->success)
+      {
+        // 成功状态：调用succeed
+        goal_handle->succeed(result);
         RCLCPP_INFO(get_logger(), "目标执行完成：plan_uid=%s", goal->plan_uid.c_str());
       }
-
-      goal_handle->succeed(result);
+      else
+      {
+        // 失败状态：调用abort
+        goal_handle->abort(result);
+        RCLCPP_ERROR(get_logger(), "目标执行失败：plan_uid=%s, 原因: %s",
+                     goal->plan_uid.c_str(), result->error_message.c_str());
+      }
     }
 
-    bool MotionControlCenter::compute_velocity(ExecutePlan::Result::SharedPtr result)
+    bool MotionControlCenter::compute_velocity(const std::shared_ptr<GoalHandleExecutePlan> goal_handle,
+                                               ExecutePlan::Result::SharedPtr result)
     {
-      (void)result; // 当前未使用，预留以便根据执行结果更新
+      // 参考 daosnrs_controller.cpp::ControllerServer::computeControl 实现
+      // 这里执行周期性控制：读取当前位姿 -> 计算速度 -> 发布速度 -> 判断是否到达
 
-      rclcpp::Rate r(18);
-      auto twist_msg = geometry_msgs::msg::Twist();
+      if (!base_follow_controller_)
+      {
+        RCLCPP_ERROR(get_logger(), "未设置跟随控制器，无法计算速度");
+        if (result)
+        {
+          result->success = false;
+          result->error_message = "未设置跟随控制器";
+        }
+        return false;
+      }
+
+      rclcpp::Rate rate(18.0);
+      geometry_msgs::msg::Twist current_velocity; // 当前里程计速度，暂无则默认0
+      geometry_msgs::msg::TwistStamped cmd_vel;
+
+      bool has_warned_no_pose = false;
+
+      int temp_count = 0;
 
       while (rclcpp::ok())
       {
+        rate.sleep();
 
-        r.sleep();
+        // 支持外部暂停：阻塞等待恢复或取消
+        checkPauseState(goal_handle);
 
-        twist_msg.angular.z = 0.0;
-        twist_msg.linear.x = 0.0;
+        // 检查取消状态
+        if (goal_handle->is_canceling())
+        {
+          RCLCPP_INFO(get_logger(), "检测到取消请求，停止执行");
+          geometry_msgs::msg::Twist stop;
+          cmd_vel_publisher_->publish(stop);
 
-        cmd_vel_publisher_->publish(twist_msg);
+          // 清理暂停标志（防止在暂停状态下取消时标志残留）
+          is_paused_.store(false);
+
+          if (result)
+          {
+            result->success = false;
+            result->error_message = "任务已取消";
+          }
+          return false;
+        }
+
+        if (temp_count++ > 40)
+        {
+          result->success = true;
+          result->error_message.clear();
+          return true;
+        }
+
+        // 获取最新位姿
+        // geometry_msgs::msg::PoseStamped robot_pose;
+        // getLatestPose(robot_pose);
+
+        // // 到达检测
+        // if (base_follow_controller_->isGoalReached())
+        // {
+        //   geometry_msgs::msg::Twist stop;
+        //   cmd_vel_publisher_->publish(stop);
+        //   if (result)
+        //   {
+        //     result->success = true;
+        //     result->error_message.clear();
+        //   }
+        //   return true;
+        // }
+
+        // // 计算控制指令
+        // bool ok = base_follow_controller_->computeVelocityCommands(robot_pose, current_velocity, cmd_vel);
+        // if (!ok)
+        // {
+        //   RCLCPP_WARN(get_logger(), "计算速度失败，停止当前目标");
+        //   geometry_msgs::msg::Twist stop;
+        //   cmd_vel_publisher_->publish(stop);
+        //   if (result)
+        //   {
+        //     result->success = false;
+        //     result->error_message = "计算速度失败";
+        //   }
+        //   return false;
+        // }
+
+        // // 发布线速度与角速度
+        // geometry_msgs::msg::Twist twist_msg;
+        // twist_msg.linear = cmd_vel.twist.linear;
+        // twist_msg.angular = cmd_vel.twist.angular;
+        // cmd_vel_publisher_->publish(twist_msg);
       }
 
+      // 非正常退出，发布零速
+      geometry_msgs::msg::Twist stop;
+      cmd_vel_publisher_->publish(stop);
+      if (result)
+      {
+        result->success = false;
+        result->error_message = "系统停止或节点关闭";
+      }
       return false;
     }
 
@@ -296,8 +427,23 @@ namespace xline
                    msg->pose.position.x, msg->pose.position.y, msg->pose.position.z, msg->pose.orientation.w,
                    msg->pose.orientation.x, msg->pose.orientation.y, msg->pose.orientation.z);
 
-      // TODO: 在此处添加位姿数据处理逻辑
-      // 例如：更新控制器状态、路径跟踪计算等
+      // 缓存最新位姿（使用互斥锁保证线程安全）
+      {
+        std::lock_guard<std::mutex> lock(pose_mutex_);
+        latest_pose_ = *msg;
+        has_latest_pose_.store(true);
+      }
+    }
+
+    bool MotionControlCenter::getLatestPose(geometry_msgs::msg::PoseStamped &pose)
+    {
+      std::lock_guard<std::mutex> lock(pose_mutex_);
+      if (!has_latest_pose_.load())
+      {
+        return false;
+      }
+      pose = latest_pose_;
+      return true;
     }
 
     /**
@@ -440,19 +586,56 @@ namespace xline
 
     /**
      * 检查并处理暂停状态
-     * 如果已暂停，则阻塞等待恢复
+     * 如果已暂停，则阻塞等待恢复或取消
      */
-    void MotionControlCenter::checkPauseState()
+    void MotionControlCenter::checkPauseState(const std::shared_ptr<GoalHandleExecutePlan> goal_handle)
     {
       if (is_paused_.load())
       {
-        RCLCPP_INFO(get_logger(), "⏸️  任务已暂停，等待恢复...");
+        // 暂停时立即停止机器人
+        geometry_msgs::msg::Twist stop;
+        cmd_vel_publisher_->publish(stop);
+
+        // 记录暂停位置
+        geometry_msgs::msg::PoseStamped pause_pose;
+        if (getLatestPose(pause_pose))
+        {
+          RCLCPP_INFO(get_logger(), "⏸️  任务已暂停，机器人已停止 - 位置(%.3f, %.3f), 朝向%.3f°",
+                      pause_pose.pose.position.x,
+                      pause_pose.pose.position.y,
+                      tf2::getYaw(pause_pose.pose.orientation) * 180.0 / M_PI);
+        }
+        else
+        {
+          RCLCPP_INFO(get_logger(), "⏸️  任务已暂停，机器人已停止，等待恢复...");
+        }
 
         std::unique_lock<std::mutex> lock(pause_mutex_);
-        pause_cv_.wait(lock, [this]()
-                       { return !is_paused_.load(); });
+        // ✅ 关键修复：等待恢复或取消（二者任一发生都会解除阻塞）
+        pause_cv_.wait(lock, [this, goal_handle]()
+                       { return !is_paused_.load() || goal_handle->is_canceling(); });
 
-        RCLCPP_INFO(get_logger(), "▶️  任务已恢复");
+        // ✅ 如果是取消导致的唤醒，清理暂停标志并直接返回
+        if (goal_handle->is_canceling())
+        {
+          RCLCPP_INFO(get_logger(), "🚫 暂停期间收到取消请求，即将退出");
+          is_paused_.store(false); // 清理暂停标志
+          return;
+        }
+
+        // 记录恢复位置（只有正常恢复才会执行到这里）
+        geometry_msgs::msg::PoseStamped resume_pose;
+        if (getLatestPose(resume_pose))
+        {
+          RCLCPP_INFO(get_logger(), "▶️  任务已恢复 - 位置(%.3f, %.3f), 朝向%.3f°",
+                      resume_pose.pose.position.x,
+                      resume_pose.pose.position.y,
+                      tf2::getYaw(resume_pose.pose.orientation) * 180.0 / M_PI);
+        }
+        else
+        {
+          RCLCPP_INFO(get_logger(), "▶️  任务已恢复");
+        }
       }
     }
 

@@ -16,6 +16,7 @@
 #include <json/json.h>
 #include <xline_follow_controller/line_follow_controller.hpp>
 #include <xline_follow_controller/rpp_follow_controller.hpp>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 
 /**
  * MotionControlCenter 运动控制中心
@@ -83,7 +84,6 @@ namespace xline
       // 执行状态标志及互斥锁
       std::atomic<bool> is_executing_{false};
       std::atomic<bool> is_paused_{false};
-      std::mutex execution_mutex_;
       std::condition_variable pause_cv_;
       std::mutex pause_mutex_;
 
@@ -129,9 +129,10 @@ namespace xline
 
       /**
        * 检查并处理暂停状态
-       * 如果已暂停，则阻塞等待恢复
+       * 如果已暂停，则阻塞等待恢复或取消
+       * @param goal_handle 用于检查取消状态
        */
-      void checkPauseState();
+      void checkPauseState(const std::shared_ptr<GoalHandleExecutePlan> goal_handle);
 
       // 数据结构定义
       struct LineData
@@ -173,10 +174,19 @@ namespace xline
        */
       ArcData extractArcData(const Json::Value &arc_obj);
 
+      /**
+       * 线程安全地获取最新机器人位姿
+       * @param[out] pose 拷贝输出的最新位姿
+       * @return 若已有缓存位姿并成功拷贝则返回true，否则返回false
+       */
+      bool getLatestPose(geometry_msgs::msg::PoseStamped & pose);
+
       // 计算速度控制输出
       // 新增参数：传入 ExecutePlan::Result 的共享指针，
       // 以便在计算过程中可根据需要更新结果信息
-      bool compute_velocity(ExecutePlan::Result::SharedPtr result);
+      // goal_handle: 用于检查取消状态
+      bool compute_velocity(const std::shared_ptr<GoalHandleExecutePlan> goal_handle,
+                           ExecutePlan::Result::SharedPtr result);
     };
 
   } // namespace base_controller
