@@ -81,6 +81,9 @@ namespace xline
       rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr pause_service_;
       rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr resume_service_;
 
+      // 姿态校正服务
+      rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr calibration_service_;
+
       // 执行状态标志及互斥锁
       std::atomic<bool> is_executing_{false};
       std::atomic<bool> is_paused_{false};
@@ -126,6 +129,13 @@ namespace xline
        */
       void handleResumeService(const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
                                std::shared_ptr<std_srvs::srv::Trigger::Response> response);
+
+      /**
+       * 姿态校正服务回调
+       * 执行完整的姿态校正流程：控制底盘移动 + 调用定位节点校准服务
+       */
+      void handleCalibrationService(const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
+                                    std::shared_ptr<std_srvs::srv::Trigger::Response> response);
 
       /**
        * 检查并处理暂停状态

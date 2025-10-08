@@ -1,2 +1,6 @@
 source install/setup.sh
 ros2 run xline_base_controller base_controller_node
+
+
+
+ros2 service call /motion_control/execute_calibration std_srvs/srv/Trigger

@@ -102,13 +102,15 @@ void LocalizationNode::odomCallback(const nav_msgs::msg::Odometry::SharedPtr msg
 
   // 如果正在收集数据,记录位置点
   {
-    std::scoped_lock<std::mutex> lock(collection_mutex_);
+    // std::scoped_lock<std::mutex> lock(collection_mutex_);
     if (is_collecting_) {
       // 过滤无效数据(0,0)
       if (robot_position.x != 0.0 || robot_position.y != 0.0) {
         position_samples_.push_back({robot_position.x, robot_position.y});
-        RCLCPP_DEBUG(get_logger(), "收集位置点: [%.3f, %.3f], 总数: %zu",
+        RCLCPP_INFO(get_logger(), "收集位置点: [%.3f, %.3f], 总数: %zu",
                      robot_position.x, robot_position.y, position_samples_.size());
+      }else{
+        RCLCPP_INFO(get_logger(),"无效点");
       }
     }
   }
@@ -275,10 +277,23 @@ void LocalizationNode::calibratePoseCallback(
     is_collecting_ = true;
   }
 
-  // 等待10秒收集数据
-  RCLCPP_INFO(get_logger(), "正在收集位置数据,持续3秒...");
-  rclcpp::sleep_for(std::chrono::seconds(3));
+  // 创建单次定时器，3秒后异步完成校准
+  calibration_timer_ = this->create_wall_timer(
+      std::chrono::milliseconds(3000),
+      [this]() {
+        finishCalibration();
+        // 取消定时器（单次执行）
+        calibration_timer_->cancel();
+      });
 
+  // 立即返回响应
+  response->success = true;
+  response->message = "已开始校准，将在3秒后完成";
+  RCLCPP_INFO(get_logger(), "校准进行中，数据收集时间：3秒");
+}
+
+void LocalizationNode::finishCalibration()
+{
   // 停止收集
   {
     std::scoped_lock<std::mutex> lock(collection_mutex_);
@@ -291,17 +306,13 @@ void LocalizationNode::calibratePoseCallback(
   auto fitted_result = fitLine(position_samples_);
 
   if (!fitted_result.success) {
-    response->success = false;
-    response->message = "直线拟合失败";
-    RCLCPP_ERROR(get_logger(), "%s", response->message.c_str());
+    RCLCPP_ERROR(get_logger(), "直线拟合失败");
     return;
   }
 
   // 初始化位姿
   std::string error_msg;
   if (!initPose(fitted_result.start, fitted_result.end, error_msg)) {
-    response->success = false;
-    response->message = error_msg;
     RCLCPP_ERROR(get_logger(), "%s", error_msg.c_str());
     return;
   }
@@ -314,8 +325,6 @@ void LocalizationNode::calibratePoseCallback(
 
   initialized_ = true;
 
-  response->success = true;
-  response->message = "姿态校准成功";
   RCLCPP_INFO(get_logger(), "姿态校准完成 - 初始航向: %.3f rad (%.1f deg)",
               robot_initial_yaw_, robot_initial_yaw_ * 180.0 / M_PI);
 
@@ -574,6 +583,3 @@ void LocalizationNode::publishZeroPose()
 
 }  // namespace localization
 }  // namespace xline
-
-#include "rclcpp_components/register_node_macro.hpp"
-RCLCPP_COMPONENTS_REGISTER_NODE(xline::localization::LocalizationNode)

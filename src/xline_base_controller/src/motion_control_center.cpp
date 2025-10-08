@@ -50,12 +50,17 @@ namespace xline
       resume_service_ = this->create_service<std_srvs::srv::Trigger>(
           "/execution/resume", std::bind(&MotionControlCenter::handleResumeService, this, _1, _2));
 
+      // 创建姿态校正服务
+      calibration_service_ = this->create_service<std_srvs::srv::Trigger>(
+          "/motion_control/execute_calibration", std::bind(&MotionControlCenter::handleCalibrationService, this, _1, _2));
+
       RCLCPP_INFO(get_logger(), "MotionControlCenter 动作服务器已就绪: 'execute_plan'");
       RCLCPP_INFO(get_logger(), "位姿订阅器已创建: '/robot_pose'");
       RCLCPP_INFO(get_logger(), "cmd_vel 发布器已创建: '/cmd_vel'");
       RCLCPP_INFO(get_logger(), "校准服务客户端已创建: '/localization/calibrate_pose'");
       RCLCPP_INFO(get_logger(), "暂停服务已创建: '/execution/pause'");
       RCLCPP_INFO(get_logger(), "恢复服务已创建: '/execution/resume'");
+      RCLCPP_INFO(get_logger(), "姿态校正服务已创建: '/motion_control/execute_calibration'");
       line_follow_controller_ = std::make_shared<xline::follow_controller::LineFollowController>();
       rpp_follow_controller_ = std::make_shared<xline::follow_controller::RPPController>();
       base_follow_controller_ = nullptr;
@@ -500,29 +505,31 @@ namespace xline
       twist_msg.linear.x = 0.0;
       cmd_vel_publisher_->publish(twist_msg);
 
-      // 5. 等待校准服务返回结果
-      RCLCPP_INFO(get_logger(), "等待校准服务完成...");
+      return true;
 
-      // 等待最多5秒
-      auto wait_status = future.wait_for(std::chrono::seconds(5));
-      if (wait_status != std::future_status::ready)
-      {
-        RCLCPP_ERROR(get_logger(), "校准服务超时");
-        return false;
-      }
+      // // 5. 等待校准服务返回结果
+      // RCLCPP_INFO(get_logger(), "等待校准服务完成...");
 
-      // 获取结果
-      auto response = future.get();
-      if (response->success)
-      {
-        RCLCPP_INFO(get_logger(), "校准成功: %s", response->message.c_str());
-        return true;
-      }
-      else
-      {
-        RCLCPP_ERROR(get_logger(), "校准失败: %s", response->message.c_str());
-        return false;
-      }
+      // // 等待最多5秒
+      // auto wait_status = future.wait_for(std::chrono::seconds(5));
+      // if (wait_status != std::future_status::ready)
+      // {
+      //   RCLCPP_ERROR(get_logger(), "校准服务超时");
+      //   return false;
+      // }
+
+      // // 获取结果
+      // auto response = future.get();
+      // if (response->success)
+      // {
+      //   RCLCPP_INFO(get_logger(), "校准成功: %s", response->message.c_str());
+      //   return true;
+      // }
+      // else
+      // {
+      //   RCLCPP_ERROR(get_logger(), "校准失败: %s", response->message.c_str());
+      //   return false;
+      // }
     }
 
     /**
@@ -636,6 +643,48 @@ namespace xline
         {
           RCLCPP_INFO(get_logger(), "▶️  任务已恢复");
         }
+      }
+    }
+
+    /**
+     * 姿态校正服务回调
+     * 执行完整的姿态校正流程：控制底盘移动 + 调用定位节点校准服务
+     */
+    void MotionControlCenter::handleCalibrationService(
+        const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
+        std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+    {
+      (void)request;
+
+      RCLCPP_INFO(get_logger(), "收到姿态校正服务请求");
+
+      // 检查是否有任务正在执行
+      if (is_executing_.load())
+      {
+        response->success = false;
+        response->message = "拒绝校正：当前有任务正在执行中，请先完成或取消当前任务";
+        RCLCPP_WARN(get_logger(), "%s", response->message.c_str());
+        return;
+      }
+
+      // 设置默认校准参数（从配置文件读取或使用默认值）
+      double calibration_velocity = 0.05;  // m/s
+      double calibration_duration = 3.0;  // 秒
+
+      // 执行姿态校正（复用已有的 executeLocalizationCalibration 函数）
+      bool success = executeLocalizationCalibration(calibration_velocity, calibration_duration);
+
+      // 设置响应
+      response->success = success;
+      if (success)
+      {
+        response->message = "姿态校正成功完成";
+        RCLCPP_INFO(get_logger(), "✅ %s", response->message.c_str());
+      }
+      else
+      {
+        response->message = "姿态校正失败，请查看日志了解详情";
+        RCLCPP_ERROR(get_logger(), "❌ %s", response->message.c_str());
       }
     }
 

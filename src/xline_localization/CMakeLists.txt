@@ -46,17 +46,29 @@ target_link_libraries(localization_component
   yaml-cpp
 )
 
-# 注册为可组合节点
-rclcpp_components_register_node(localization_component
-  PLUGIN "xline::localization::LocalizationNode"
-  EXECUTABLE localization_node
+# 创建独立的可执行文件（使用多线程执行器）
+add_executable(localization_node
+  src/localization_main.cpp
 )
 
-# 安装
+ament_target_dependencies(localization_node
+  rclcpp
+)
+
+target_link_libraries(localization_node
+  localization_component
+)
+
+# 安装库文件
 install(TARGETS localization_component
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin
+)
+
+# 安装可执行文件（ROS2标准路径）
+install(TARGETS localization_node
+  DESTINATION lib/${PROJECT_NAME}
 )
 
 install(DIRECTORY include/

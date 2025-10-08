@@ -61,6 +61,7 @@ private:
 
   // 定时器
   rclcpp::TimerBase::SharedPtr watchdog_timer_;
+  rclcpp::TimerBase::SharedPtr calibration_timer_;
 
   // 互斥锁
   std::mutex imu_mutex_;
@@ -140,6 +141,12 @@ private:
   void calibratePoseCallback(
     const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
     std::shared_ptr<std_srvs::srv::Trigger::Response> response);
+
+  /**
+   * 完成校准处理
+   * 由定时器异步调用，处理收集的数据并完成校准
+   */
+  void finishCalibration();
 
   /**
    * 获取IMU数据(线程安全)
