@@ -98,7 +98,9 @@ void LocalizationNode::odomCallback(const nav_msgs::msg::Odometry::SharedPtr msg
   last_odom_time_ = this->now();
 
   // 提取机器人位置
-  geometry_msgs::msg::Point robot_position = msg->pose.pose.position;
+  geometry_msgs::msg::Point robot_position;
+  robot_position.x = msg->pose.pose.position.x;
+  robot_position.y = msg->pose.pose.position.y;
 
   // 如果正在收集数据,记录位置点
   {
@@ -138,26 +140,28 @@ void LocalizationNode::odomCallback(const nav_msgs::msg::Odometry::SharedPtr msg
   // 因此: reflector_position = robot_position - reflector_to_base_offset
   tf2::Quaternion q;
   q.setRPY(0.0, 0.0, robot_yaw);
-  tf2::Transform global_to_base(
-    q,
-    tf2::Vector3(robot_position.x, robot_position.y, robot_position.z));
+  robot_pose_.pose.orientation = tf2::toMsg(q);
+  robot_pose_.pose.position = robot_position;
+  // tf2::Transform global_to_base(
+  //   q,
+  //   tf2::Vector3(robot_position.x, robot_position.y, robot_position.z));
 
-  // 计算反射板在全局坐标系的位置
-  tf2::Transform global_to_reflector = global_to_base * reflector_to_base_tf_.inverse();
+  // // 计算反射板在全局坐标系的位置
+  // tf2::Transform global_to_reflector = global_to_base * reflector_to_base_tf_.inverse();
 
   // 更新反射板位姿
-  {
-    std::scoped_lock<std::mutex> lock(pose_mutex_);
+  // {
+  //   std::scoped_lock<std::mutex> lock(pose_mutex_);
 
-    reflector_pose_.header.stamp = this->now();
-    reflector_pose_.pose.position.x = global_to_reflector.getOrigin().getX();
-    reflector_pose_.pose.position.y = global_to_reflector.getOrigin().getY();
-    reflector_pose_.pose.position.z = global_to_reflector.getOrigin().getZ();
-    reflector_pose_.pose.orientation = tf2::toMsg(q);
-  }
+  //   reflector_pose_.header.stamp = this->now();
+  //   reflector_pose_.pose.position.x = global_to_reflector.getOrigin().getX();
+  //   reflector_pose_.pose.position.y = global_to_reflector.getOrigin().getY();
+  //   reflector_pose_.pose.position.z = global_to_reflector.getOrigin().getZ();
+  //   reflector_pose_.pose.orientation = tf2::toMsg(q);
+  // }
 
   // 计算机器人位姿
-  calcRobotPose();
+  // calcRobotPose();
 
   // 直接发布估计的位姿
   {
@@ -293,7 +297,7 @@ void LocalizationNode::calibratePoseCallback(
 }
 
 void LocalizationNode::finishCalibration()
-{
+{  
   // 停止收集
   {
     std::scoped_lock<std::mutex> lock(collection_mutex_);

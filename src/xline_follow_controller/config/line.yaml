@@ -16,8 +16,8 @@ motion:
     # 速度限制
     limits:
       min: 0.05                    # 最小线速度
-      walk_max: 0.28               # 步行模式最大速度
-      work_max: 0.35               # 工作模式最大速度
+      walk_max: 0.1               # 步行模式最大速度
+      work_max: 0.1               # 工作模式最大速度
       work_short: 0.2             # 短路径工作速度
       alignment: 0.05              # 对齐阶段速度
     

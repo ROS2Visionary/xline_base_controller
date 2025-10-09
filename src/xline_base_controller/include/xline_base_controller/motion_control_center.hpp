@@ -87,8 +87,11 @@ namespace xline
       // 执行状态标志及互斥锁
       std::atomic<bool> is_executing_{false};
       std::atomic<bool> is_paused_{false};
+      std::atomic<bool> shutdown_{false};  // 节点关闭标志
+      bool pause_notified_{false};  // 标记是否已通知暂停（避免重复日志）
       std::condition_variable pause_cv_;
       std::mutex pause_mutex_;
+      std::mutex service_mutex_;  // 保护暂停/恢复服务调用
 
       /**
        * 目标处理回调：决定是否接受/拒绝目标

@@ -4,3 +4,6 @@ ros2 run xline_base_controller base_controller_node
 
 
 ros2 service call /motion_control/execute_calibration std_srvs/srv/Trigger
+
+
+帮我超级深度的检检查,在action中执行任务流程时,在接收到action任务后的逻辑是否正确.并且同时深度检查在执行任务的过程中暂停/恢复/取消是否真正实现了逻辑是否能够正确响应.请超级深度的分析我的需求,并完成我的需求,使用中文模式
