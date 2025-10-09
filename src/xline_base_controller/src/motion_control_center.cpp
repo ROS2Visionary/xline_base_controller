@@ -337,7 +337,7 @@ namespace xline
 
       bool has_warned_no_pose = false;
 
-      int temp_count = 0;
+      // int temp_count = 0;  // 调试用，已禁用
 
       // 【修复8】检查节点关闭标志，确保节点销毁时执行线程能及时退出
       while (rclcpp::ok() && !shutdown_.load())

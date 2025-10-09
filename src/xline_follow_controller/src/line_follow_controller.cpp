@@ -2,7 +2,7 @@
 #include "xline_follow_controller/yaml_parser.hpp"
 #include <angles/angles.h>
 #include <tf2/utils.h>
-#include <tf2_geometry_msgs/tf2_geometry_msgs.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <algorithm>
 #include <cmath>
 #include <iomanip>
@@ -34,12 +34,10 @@ LineFollowController::LineFollowController()
   , current_angular_speed_(0.0)
   , prev_angular_velocity_(0.0)
   , last_yaw_error_(0.0)
+  , angular_vel_hampel_filter_(5, 3.0)
   , wait_duration_(0.5)
   , waiting_(false)
   , angular_smoother_(2.0, 0.7)
-  , angular_vel_hampel_filter_(5, 3.0)
-  , imu_node_(nullptr)
-  , imu_thread_running_(false)
 {
   // 初始化默认参数
   initializeDefaultParameters();
@@ -59,11 +57,10 @@ LineFollowController::LineFollowController()
   wait_start_time_ = std::chrono::steady_clock::now();
 
   // 初始化IMU订阅（使用内部节点,不依赖外部节点）
-  initializeImuSubscription();
+
 
   // 初始化地形日志发布器
-  terrain_log_topic_name_ = "/terrain_classification_log";
-  initializeTerrainLogPublisher();
+
 
   // LOG_INFO("LineFollowController 初始化完成");
 }
@@ -71,43 +68,16 @@ LineFollowController::LineFollowController()
 LineFollowController::~LineFollowController()
 {
   // 停止IMU线程
-  imu_thread_running_ = false;
-  if (imu_thread_.joinable())
-  {
-    imu_thread_.join();
-    LOG_INFO("IMU独立线程已停止");
-  }
+
 
   // 清理IMU订阅和节点
-  if (imu_subscription_)
-  {
-    imu_subscription_.reset();
-  }
 
-  if (imu_node_)
-  {
-    imu_node_.reset();
-    LOG_INFO("IMU专用内部节点已清理");
-  }
 
   // 清理运动状态检测订阅和节点
-  if (cmd_vel_subscription_)
-  {
-    cmd_vel_subscription_.reset();
-  }
 
-  if (motion_node_)
-  {
-    motion_node_.reset();
-    LOG_INFO("运动状态检测节点已清理");
-  }
 
   // 清理地形日志发布器
-  if (terrain_log_publisher_)
-  {
-    terrain_log_publisher_.reset();
-    LOG_INFO("地形日志发布器已清理");
-  }
+
 }
 
 void LineFollowController::initializeDefaultParameters()
@@ -167,41 +137,31 @@ void LineFollowController::initializeDefaultParameters()
   // 这里只设置基本的初始状态,具体参数值从line.yaml统一读取
 
   // 初始化地形分析数据
-  terrain_data_.current_type = TerrainType::SMOOTH;
-  terrain_data_.confidence_score = 0.0;
-  terrain_data_.angle_vel_dynamic_factor = 1.0;
-  terrain_data_.line_vel_dynamic_factor = 1.0;
-  terrain_data_.last_update = std::chrono::steady_clock::now();
+
 
   // 初始化IMU处理线程
-  imu_thread_running_.store(false);
+
 
   // 初始化地形状态记忆数据（状态机核心数据结构）
-  auto init_time = std::chrono::steady_clock::now();
+  // auto init_time = std::chrono::steady_clock::now();
 
   // === 地形状态记忆初始化（立即切换模式简化版）===
-  state_memory_.previous_terrain = TerrainType::SMOOTH;
-  state_memory_.last_terrain_change_time = init_time;
-  state_memory_.terrain_change_count = 0;
-  state_memory_.sudden_change_count = 0;
+
 
   // 初始化迟滞控制
   // 立即切换模式：无需初始化迟滞控制参数
 
   // 初始化水泥地面模式
-  current_pitch_angle_ = 0.0;
-  current_yaw_rate_ = 0.0;
 
   // 翻滚角数据初始化
-  current_roll_angle_ = 0.0;   // 当前翻滚角
-  filtered_roll_angle_ = 0.0;  // 滤波后翻滚角
+
 
   // 数据记录参数初始化
-  data_log_base_path_ = "/home/daosn_robotics/zyq_ws/terrain_data/";  // 默认路径
-  enable_detailed_logging_ = true;                                    // 默认启用详细日志
-  enable_imu_terrain_logging_ = true;                                 // 默认启用IMU地形日志
-  logging_frequency_ = 20.0;                                          // 默认20Hz记录频率
-  last_log_time_ = std::chrono::steady_clock::now();
+  // data_log_base_path_ = "/home/daosn_robotics/zyq_ws/terrain_data/";  // 默认路径
+  // enable_detailed_logging_ = true;                                    // 默认启用详细日志
+  // enable_imu_terrain_logging_ = true;                                 // 默认启用IMU地形日志
+  // logging_frequency_ = 20.0;                                          // 默认20Hz记录频率
+  // last_log_time_ = std::chrono::steady_clock::now();
 }
 
 void LineFollowController::updateParameters()
@@ -282,16 +242,7 @@ void LineFollowController::updateParameters()
     m_hampel_k_ = parser.getParameter<double>("sensors.position.filtering.hampel.k_threshold");
 
     // --- IMU 地形自适应 ---
-    enable_imu_terrain_adaptation_ = parser.getParameter<bool>("sensors.imu.terrain_adaptation.enabled");
-    imu_window_size_ = parser.getParameter<double>("sensors.imu.terrain_adaptation.window_size");
 
-    sudden_change_gradient_threshold_ =
-        parser.getParameter<double>("sensors.imu.terrain_adaptation.thresholds.sudden_change_gradient");
-    gentle_low_freq_energy_threshold_ =
-        parser.getParameter<double>("sensors.imu.terrain_adaptation.thresholds.gentle_low_freq_energy");
-    frequent_zero_crossing_threshold_ =
-        parser.getParameter<double>("sensors.imu.terrain_adaptation.thresholds.frequent_zero_crossing");
-    max_imu_history_size_ = static_cast<size_t>(imu_window_size_ * 200.0);
 
     // --- 地形控制参数 ---
     auto loadSingleTerrain = [&parser](const std::string& terrain_type) -> TerrainControlParams {
@@ -311,71 +262,30 @@ void LineFollowController::updateParameters()
       return params;
     };
 
-    sudden_change_params_ = loadSingleTerrain("sudden_change");
-    gentle_undulation_params_ = loadSingleTerrain("gentle_undulation");
-    frequent_bumps_params_ = loadSingleTerrain("frequent_bumps");
     smooth_terrain_params_ = loadSingleTerrain("smooth_terrain");
     alignment_params_ = loadSingleTerrain("alignment");
 
-    // 初始化当前滤波参数（默认使用平稳地形参数）
+    // 初始化当前滤波参数（默认使用平稳地形参数） TODO
     current_alpha_ = smooth_terrain_params_.alpha;
     current_smoother_frequency_ = smooth_terrain_params_.smoother_frequency;
     current_smoother_damping_ = smooth_terrain_params_.smoother_damping;
-    alpha_ = current_alpha_;  // 设置当前使用的alpha
+    alpha_ = current_alpha_; 
     
     // 更新二阶平滑器参数
     angular_smoother_.setParameters(current_smoother_frequency_, current_smoother_damping_);
 
     // --- 地形控制配置（立即切换模式） ---
-    terrain_config_.immediate_switch = parser.getParameter<bool>("terrain_control_mode.immediate_switch");
+
 
     // --- 数据记录参数 ---
-    data_log_base_path_ = parser.getParameter<std::string>("data_logging.base_path");
-    enable_detailed_logging_ = parser.getParameter<bool>("data_logging.detailed_logging");
-    enable_imu_terrain_logging_ = parser.getParameter<bool>("data_logging.enabled");
-    logging_frequency_ = parser.getParameter<double>("data_logging.frequency");
+
 
     // --- 虚拟位置跟踪参数 ---
-    virtual_tracking_config_.enabled = parser.getParameter<bool>("sensors.position.virtual_tracking.enabled");
-    virtual_tracking_config_.correction_gain = parser.getParameter<double>("sensors.position.virtual_tracking.correction_gain");
-    virtual_tracking_config_.max_correction = parser.getParameter<double>("sensors.position.virtual_tracking.max_correction");
-    virtual_tracking_config_.position_trust_threshold = parser.getParameter<double>("sensors.position.virtual_tracking.position_trust_threshold");
-    virtual_tracking_config_.max_velocity_trust = parser.getParameter<double>("sensors.position.virtual_tracking.kinematics.max_velocity_trust");
-    virtual_tracking_config_.angular_velocity_factor = parser.getParameter<double>("sensors.position.virtual_tracking.kinematics.angular_velocity_factor");
-    virtual_tracking_config_.smooth_gain = parser.getParameter<double>("sensors.position.virtual_tracking.terrain_adaptive.smooth_gain");
-    virtual_tracking_config_.rough_gain = parser.getParameter<double>("sensors.position.virtual_tracking.terrain_adaptive.rough_gain");
-    virtual_tracking_config_.sudden_change_gain = parser.getParameter<double>("sensors.position.virtual_tracking.terrain_adaptive.sudden_change_gain");
-    virtual_tracking_config_.debug_logging = parser.getParameter<bool>("sensors.position.virtual_tracking.debug.enable_logging");
-    virtual_tracking_config_.log_frequency = parser.getParameter<int>("sensors.position.virtual_tracking.debug.log_frequency");
+
 
     // 应用虚拟跟踪器参数
-    virtual_tracker_.setParameters(
-        virtual_tracking_config_.correction_gain,
-        virtual_tracking_config_.max_correction,
-        virtual_tracking_config_.position_trust_threshold,
-        virtual_tracking_config_.max_velocity_trust,
-        virtual_tracking_config_.angular_velocity_factor
-    );
-    
-    virtual_tracker_.setTerrainGains(
-        virtual_tracking_config_.smooth_gain,
-        virtual_tracking_config_.rough_gain,
-        virtual_tracking_config_.sudden_change_gain
-    );
-    
-    virtual_tracker_.setDebugLogging(
-        virtual_tracking_config_.debug_logging,
-        virtual_tracking_config_.log_frequency
-    );
 
-    // --- 迟滞控制已移除（立即切换模式） ---
 
-    if (debug_ && enable_imu_terrain_adaptation_)
-    {
-      // LOG_INFO("IMU地形自适应控制已启用 - 窗口:{:.1f}s", imu_window_size_);
-      // LOG_INFO("检测阈值: 突变>{:.3f}, 平缓>{:.2f}, 频繁>{:.1f}", sudden_change_gradient_threshold_,
-      //          gentle_low_freq_energy_threshold_, frequent_zero_crossing_threshold_);
-    }
   }
   catch (const std::exception& e)
   {
@@ -434,7 +344,7 @@ bool LineFollowController::setPlan(const nav_msgs::msg::Path& orig_global_plan)
   }
 
   // 启动IMU处理线程（如果尚未启动）
-  startImuThread();
+
 
   // 存储路径信息
   global_plan_ = orig_global_plan;
@@ -592,38 +502,13 @@ bool LineFollowController::setPlan(const nav_msgs::msg::Path& orig_global_plan)
   // 重置虚拟位置跟踪器（新路径开始）
   // 清空上一次跟随流程的数据
   // ================================
-  if (virtual_tracking_config_.enabled)
-  {
-    // 重置虚拟跟踪器状态
-    virtual_tracker_.reset();
-    
-    // 重新应用配置参数
-    virtual_tracker_.setParameters(
-        virtual_tracking_config_.correction_gain,
-        virtual_tracking_config_.max_correction,
-        virtual_tracking_config_.position_trust_threshold,
-        virtual_tracking_config_.max_velocity_trust,
-        virtual_tracking_config_.angular_velocity_factor
-    );
-    
-    virtual_tracker_.setTerrainGains(
-        virtual_tracking_config_.smooth_gain,
-        virtual_tracking_config_.rough_gain,
-        virtual_tracking_config_.sudden_change_gain
-    );
-    
-    virtual_tracker_.setDebugLogging(
-        virtual_tracking_config_.debug_logging,
-        virtual_tracking_config_.log_frequency
-    );
-  }
+
   
   received_plan_ = true;
   current_state_ = ControlState::ALIGNING_START;
 
   // 初始化任务ID和开始时间
-  current_task_id_ = generateTaskId();
-  task_start_time_ = std::chrono::steady_clock::now();
+
 
   return true;
 }
@@ -636,8 +521,7 @@ bool LineFollowController::setPlan(const std::shared_ptr<std::vector<geometry_ms
     return false;
   }
 
-  // 启动IMU处理线程（如果尚未启动）
-  startImuThread();
+
 
   // 转换为nav_msgs::msg::Path格式
   nav_msgs::msg::Path new_global_plan;
@@ -652,7 +536,7 @@ bool LineFollowController::setPlan(const std::shared_ptr<std::vector<geometry_ms
   return setPlan(new_global_plan);
 }
 
-void LineFollowController::setSpeedLimit(const double& speed_limit)
+void LineFollowController::setSpeedLimit(const double& /* speed_limit */)
 {
   // updateParameters();
 }
@@ -904,16 +788,12 @@ double LineFollowController::computeLinearSpeed(double distance_to_target, doubl
   }
 
   // 应用地形动态因子（减速阶段不应用地形加速因子）
-  if (distance_to_target >= deceleration_distance_)
-  {
-    target_speed *= terrain_data_.line_vel_dynamic_factor;
-  }
+
 
   // 限制最小速度
   target_speed = std::max(target_speed, min_linear_speed_);
 
   // 速度变化率限制（防止急减速）
-  static double last_update_time = 0.0;
   static std::chrono::steady_clock::time_point prev_time = std::chrono::steady_clock::now();
   
   auto current_time = std::chrono::steady_clock::now();
@@ -959,133 +839,64 @@ double LineFollowController::computeAngularVelocity(double yaw_error, double dt,
   double deadzone_factor = 1.0;  // 默认无衰减
 
   // 基于IMU地形自适应的精度控制
-  bool use_precision_control = false;
-  double current_cross_track_deadzone = 0.0;                                // 当前跨轨死区
-  double current_yaw_deadzone = 0.0;                                        // 当前偏航死区
+
   double current_max_angular_vel = smooth_terrain_params_.max_angular_vel;  // 当前最大角速度，默认使用平滑地形
 
-  // use_precision_control直接由imu_terrain.enabled控制
-  use_precision_control = enable_imu_terrain_adaptation_;
 
-  // 根据距离选择适当的参数集（对齐阶段 vs 跟随阶段
+
+  // 根据距离选择适当的参数集
   bool is_alignment_phase = (distance_to_start < m_alignment_distance_);
 
-  if (use_precision_control && current_state_ == ControlState::FOLLOWING_PATH)
-  {
-    // 使用地形自适应参数,并根据阶段选择对应的参数集
-    if (is_alignment_phase)
-    {
-      current_cross_track_deadzone = alignment_params_.cross_track_deadzone;
-      current_yaw_deadzone = alignment_params_.yaw_deadzone;
-      current_max_angular_vel = alignment_params_.max_angular_vel;
-    }
-    else
-    {
-      current_cross_track_deadzone = adaptive_params_.current_cross_track_deadzone;
-      current_yaw_deadzone = adaptive_params_.current_yaw_deadzone;
-      current_max_angular_vel = adaptive_params_.current_max_angular_vel;
-    }
-  }
-  else
-  {
-    // 当use_precision_control为false时,使用平稳地形参数
-    if (is_alignment_phase)
-    {
-      current_cross_track_deadzone = alignment_params_.cross_track_deadzone;
-      current_yaw_deadzone = alignment_params_.yaw_deadzone;
-      current_max_angular_vel = alignment_params_.max_angular_vel;
-    }
-    else
-    {
-      current_cross_track_deadzone = smooth_terrain_params_.cross_track_deadzone;
-      current_yaw_deadzone = smooth_terrain_params_.yaw_deadzone;
-      current_max_angular_vel = smooth_terrain_params_.max_angular_vel;
-    }
-  }
+  
 
   // 使用当前最大角速度设置PID输出限制
   pid_heading_controller_->setOutputLimits(-current_max_angular_vel, current_max_angular_vel);
 
   // 计算横向偏差（无论use_precision_control是否为true都需要计算死区）
-  double cross_track_error = computeCrossTrackError(current_pose_.pose.position.x, current_pose_.pose.position.y);
+  // double cross_track_error = computeCrossTrackError(current_pose_.pose.position.x, current_pose_.pose.position.y);
 
   // 使用软死区（渐进式衰减）而非硬死区,避免控制不连续
   // 计算死区衰减因子：误差越小,衰减越强
-  double cross_track_factor = std::min(1.0, std::abs(cross_track_error) / current_cross_track_deadzone);
-  double yaw_factor = std::min(1.0, std::abs(yaw_error) / current_yaw_deadzone);
+
 
   // 使用两个因子中的较大值,确保任一误差大时都有响应
-  deadzone_factor = std::max(cross_track_factor, yaw_factor);
+
 
   // 如果完全在死区内,应用额外的衰减
-  if (deadzone_factor < 1.0)
-  {
-    // 平滑过渡,避免突变
-    deadzone_factor = std::pow(deadzone_factor, 2.0);  // 二次衰减曲线
-  }
+
 
   // PID增益调整
-  double d_adaptive_factor = 1.0;  // 默认不调整D项
-  if (use_precision_control)
-  {
-    // 基于地形自适应调整D项增益
-    pid_heading_controller_->setGains(angular_kp_, angular_ki_, angular_kd_ * d_adaptive_factor);
-  }
-  else
-  {
-    // 非地形自适应模式,恢复正常PID增益
-    pid_heading_controller_->setGains(angular_kp_, angular_ki_, angular_kd_);
-  }
+
 
   // 保存控制数据用于记录
-  control_data_.deadzone_factor = deadzone_factor;
-  control_data_.d_adaptive_factor = d_adaptive_factor;
+
 
   // 使用PID计算原始角速度
   double raw_angular_velocity = pid_heading_controller_->compute(yaw_error, dt);
-  control_data_.pid_raw_output = raw_angular_velocity;
 
   // 计算并限制角加速度
   double angular_acceleration = (raw_angular_velocity - prev_angular_velocity_) / dt;
-  control_data_.angular_acceleration = angular_acceleration;
 
 
   // 当前前使用的角加速度限制,默认使用平滑地形
   double current_max_angular_accel = smooth_terrain_params_.max_angular_accel;
 
-  if (use_precision_control && current_state_ == ControlState::FOLLOWING_PATH)
+  if (is_alignment_phase)
   {
-    // 使用地形自适应参数
-    if (is_alignment_phase)
-    {
-      current_max_angular_accel = alignment_params_.max_angular_accel;
-    }
-    else
-    {
-      current_max_angular_accel = adaptive_params_.current_max_angular_accel;
-    }
+    current_max_angular_accel = alignment_params_.max_angular_accel;
   }
   else
   {
-    // 当use_precision_control为false时,使用平稳地形参数
-    if (is_alignment_phase)
-    {
-      current_max_angular_accel = alignment_params_.max_angular_accel;
-    }
-    else
-    {
-      current_max_angular_accel = smooth_terrain_params_.max_angular_accel;
-    }
+    current_max_angular_accel = smooth_terrain_params_.max_angular_accel;
   }
 
-  control_data_.effective_max_angular_accel = current_max_angular_accel;
-  control_data_.effective_max_angular_vel = current_max_angular_vel;
+ 
 
   if (debug_)
   {
-    LOG_INFO(" ");
-    LOG_INFO("角加速度: {:.5f}, 角加速度限制: {:.5f}", angular_acceleration,current_max_angular_accel);
-    LOG_INFO("角速度: {:.5f}, 上一个角速度: {:.5f}", raw_angular_velocity,prev_angular_velocity_);
+    // LOG_INFO(" ");
+    // LOG_INFO("角加速度: {:.5f}, 角加速度限制: {:.5f}", angular_acceleration,current_max_angular_accel);
+    // LOG_INFO("角速度: {:.5f}, 上一个角速度: {:.5f}", raw_angular_velocity,prev_angular_velocity_);
   }
 
   if (std::abs(angular_acceleration) > current_max_angular_accel)
@@ -1106,14 +917,14 @@ double LineFollowController::computeAngularVelocity(double yaw_error, double dt,
   smoothed_angular_vel = angular_vel_hampel_filter_.filter(raw_angular_velocity);
   if (debug_)
   {
-    LOG_INFO("angular_vel_hampel_filter_: {:.5f}",smoothed_angular_vel);
+    // LOG_INFO("angular_vel_hampel_filter_: {:.5f}",smoothed_angular_vel);
   }
   // 低通滤波器
   smoothed_angular_vel = alpha_ * smoothed_angular_vel + (1 - alpha_) * prev_smoothed_angular_velocity_;
   prev_smoothed_angular_velocity_ = smoothed_angular_vel;
   if (debug_)
   {
-    LOG_INFO("alpha_: {:.5f}",smoothed_angular_vel);
+    // LOG_INFO("alpha_: {:.5f}",smoothed_angular_vel);
   }
   // 添加到历史记录
   // angular_vel_history_.push_back(lowpass_angular_vel);
@@ -1138,24 +949,6 @@ double LineFollowController::computeAngularVelocity(double yaw_error, double dt,
   // 应用抑制因子和死区因子
   double current_suppression_factor;
 
-  if (use_precision_control && current_state_ == ControlState::FOLLOWING_PATH)
-  {
-    // 地形自适应模式：使用自适应参数
-    current_suppression_factor =
-        is_alignment_phase ? alignment_params_.suppression_factor : adaptive_params_.current_suppression_factor;
-
-    // 地形自适应控制：使用动态抑制因子
-    smoothed_angular_vel *= current_suppression_factor * deadzone_factor;
-
-    if (debug_)
-    {
-      // LOG_INFO("地形自适应控制 - 阶段:{}, 角速度限制:{:.3f}rad/s, 抑制因子:{:.2f}, 死区因子:{:.2f}",
-      //          is_alignment_phase ? "对齐" : "跟随", current_max_angular_vel, current_suppression_factor,
-      //          deadzone_factor);
-    }
-  }
-  else
-  {
     // 非地形自适应模式：使用平稳地形参数
     current_suppression_factor =
         is_alignment_phase ? alignment_params_.suppression_factor : smooth_terrain_params_.suppression_factor;
@@ -1169,7 +962,6 @@ double LineFollowController::computeAngularVelocity(double yaw_error, double dt,
       //          is_alignment_phase ? "对齐" : "跟随", current_max_angular_vel, current_suppression_factor,
       //          deadzone_factor);
     }
-  }
 
   // 记录实际输出的角速度作为下次计算的参考
   prev_angular_velocity_ = smoothed_angular_vel;
@@ -1327,9 +1119,9 @@ void LineFollowController::handlePathFollowing(double robot_x, double robot_y,
                                                geometry_msgs::msg::TwistStamped& cmd_vel)
 {
   // 计算距离
-  double dx = target_pose_.pose.position.x - robot_x;
-  double dy = target_pose_.pose.position.y - robot_y;
-  double distance_to_target = std::sqrt(dx * dx + dy * dy);
+  // double dx = target_pose_.pose.position.x - robot_x;
+  // double dy = target_pose_.pose.position.y - robot_y;
+  // double distance_to_target = std::sqrt(dx * dx + dy * dy);
 
   // 计算到原始目标点的距离（用于减速控制）
   double original_dx = original_target_pose_.pose.position.x - robot_x;
@@ -1433,91 +1225,20 @@ void LineFollowController::handlePathFollowing(double robot_x, double robot_y,
   // 计算横向偏差用于监控
   double cross_track_error = computeCrossTrackError(robot_x, robot_y);
 
-  // 记录路径跟随数据 - 无论IMU地形自适应是否启用都判断死区状态
-  bool in_deadzone = false;
-  
+ 
   // 调试输出：检查当前状态
-  if (debug_)
-  {
-    std::string state_name;
-    switch (current_state_) {
-      case ControlState::IDLE: state_name = "IDLE"; break;
-      case ControlState::ALIGNING_START: state_name = "ALIGNING_START"; break;
-      case ControlState::FOLLOWING_PATH: state_name = "FOLLOWING_PATH"; break;
-      case ControlState::ALIGNING_END: state_name = "ALIGNING_END"; break;
-      case ControlState::GOAL_REACHED: state_name = "GOAL_REACHED"; break;
-      case ControlState::WAITING: state_name = "WAITING"; break;
-      default: state_name = "UNKNOWN"; break;
-    }
-    LOG_INFO("当前控制状态: {}, IMU地形自适应: {}", state_name, enable_imu_terrain_adaptation_ ? "启用" : "禁用");
-  }
+
   
   // 临时修改：无论什么状态都判断死区（用于调试）
-  // if (current_state_ == ControlState::FOLLOWING_PATH)
-  if (true)  // 临时测试用
-  {
-    if (enable_imu_terrain_adaptation_)
-    {
-      // 使用自适应地形参数判断死区
-      in_deadzone = (std::abs(cross_track_error) < adaptive_params_.current_cross_track_deadzone &&
-                     std::abs(yaw_error) < adaptive_params_.current_yaw_deadzone);
-    }
-    else
-    {
-      // 使用平稳地形参数判断死区
-      in_deadzone = (std::abs(cross_track_error) < smooth_terrain_params_.cross_track_deadzone &&
-                     std::abs(yaw_error) < smooth_terrain_params_.yaw_deadzone);
-      
-      // 调试输出：检查平稳地形死区判断
-      if (debug_)
-      {
-        // LOG_INFO("平稳地形死区检查 - 横向误差:{:.6f} < {:.6f}? {}, 航向误差:{:.6f} < {:.6f}? {}, 死区状态:{}",
-        //          std::abs(cross_track_error), smooth_terrain_params_.cross_track_deadzone, 
-        //          std::abs(cross_track_error) < smooth_terrain_params_.cross_track_deadzone,
-        //          std::abs(yaw_error), smooth_terrain_params_.yaw_deadzone,
-        //          std::abs(yaw_error) < smooth_terrain_params_.yaw_deadzone,
-        //          in_deadzone ? "是" : "否");
-      }
-    }
-  }
 
 
   // 发布控制日志数据 - 根据IMU地形自适应状态选择参数
-  double log_cross_track_deadzone, log_yaw_deadzone, log_max_angular_vel, log_max_angular_accel, log_suppression_factor;
-  
-  if (enable_imu_terrain_adaptation_) {
-    // 使用自适应地形参数
-    log_cross_track_deadzone = adaptive_params_.current_cross_track_deadzone;
-    log_yaw_deadzone = adaptive_params_.current_yaw_deadzone;
-    log_max_angular_vel = adaptive_params_.current_max_angular_vel;
-    log_max_angular_accel = adaptive_params_.current_max_angular_accel;
-    log_suppression_factor = adaptive_params_.current_suppression_factor;
-  } else {
-    // 使用平稳地形参数
-    log_cross_track_deadzone = smooth_terrain_params_.cross_track_deadzone;
-    log_yaw_deadzone = smooth_terrain_params_.yaw_deadzone;
-    log_max_angular_vel = smooth_terrain_params_.max_angular_vel;
-    log_max_angular_accel = smooth_terrain_params_.max_angular_accel;
-    log_suppression_factor = smooth_terrain_params_.suppression_factor;
-  }
-  
-  publishControlLogData(yaw_error, cross_track_error, cmd_vel, back_follow_, in_deadzone, 
-                       control_data_.deadzone_factor, control_data_.d_adaptive_factor,
-                       log_max_angular_vel, log_suppression_factor,
-                       log_cross_track_deadzone, log_yaw_deadzone,
-                       log_max_angular_accel, control_data_.angular_acceleration,
-                       enable_imu_terrain_adaptation_);
+
 
   if (debug_)
   {
-    // LOG_INFO("路径跟随 - 航向误差: {:.4f}, 横向误差: {:.4f}, 速度: [{:.3f}, {:.3f}], 后退: {}", yaw_error,
-    //          cross_track_error, cmd_vel.twist.linear.x, cmd_vel.twist.angular.z, back_follow_);
-
-    // if (enable_imu_terrain_adaptation_ && current_state_ == ControlState::FOLLOWING_PATH)
-    // {
-    //   LOG_INFO("地形自适应控制 - 死区状态: {}, 角速度限制: {:.3f}, 抑制因子: {:.2f}", in_deadzone ? "是" : "否",
-    //            adaptive_params_.current_max_angular_vel, adaptive_params_.current_suppression_factor);
-    // }
+    LOG_INFO("路径跟随 - 航向误差: {:.4f}, 横向误差: {:.4f}, 速度: [{:.3f}, {:.3f}], 后退: {}", yaw_error,
+             cross_track_error, cmd_vel.twist.linear.x, cmd_vel.twist.angular.z, back_follow_);
     // LOG_INFO(" ");
   }
 }
@@ -1698,16 +1419,7 @@ bool LineFollowController::computeVelocityCommands(const geometry_msgs::msg::Pos
         // 对齐完成，即将进入路径跟随阶段
         // 此时全站仪数据可靠，直接赋值进行强制校准
         // ================================
-        if (virtual_tracking_config_.enabled)
-        {
-          // 使用可靠的滤波位置数据直接设置虚拟位置（强制校准）
-          if (!virtual_tracker_.isInitialized()) {
-            virtual_tracker_.initialize(control_x, control_y, robot_yaw_);
-          } else {
-            // 直接赋值可靠位置（因为对齐阶段后数据可靠）
-            virtual_tracker_.initialize(control_x, control_y, robot_yaw_);
-          }
-        }
+
         
         current_state_ = ControlState::FOLLOWING_PATH;
       }
@@ -1718,21 +1430,7 @@ bool LineFollowController::computeVelocityCommands(const geometry_msgs::msg::Pos
       // ================================
       // 仅在路径跟随阶段使用虚拟位置跟踪（超高精度5mm）
       // ================================
-      if (virtual_tracking_config_.enabled && virtual_tracker_.isInitialized())
-      {
-        // 获取当前地形类型
-        TerrainType current_terrain = TerrainType::SMOOTH;
-        if (enable_imu_terrain_adaptation_) {
-          current_terrain = terrain_data_.current_type;
-        }
-        
-        // 使用全站仪滤波数据修正虚拟位置
-        virtual_tracker_.correctWithMeasurement(smoothed_robot_x, smoothed_robot_y, current_terrain);
-        
-        // 使用虚拟位置进行超高精度控制
-        control_x = virtual_tracker_.getVirtualX();
-        control_y = virtual_tracker_.getVirtualY();
-      }
+
       
       // 检查是否到达终点（使用虚拟控制位置）
       if (isBeyondGoal(control_x, control_y))
@@ -1760,10 +1458,7 @@ bool LineFollowController::computeVelocityCommands(const geometry_msgs::msg::Pos
 
 
         // 导出IMU地形数据
-        if (enable_imu_terrain_logging_)
-        {
-          exportImuTerrainData();
-        }
+
 
         // 导出调试数据
         if (debug_)
@@ -1802,16 +1497,7 @@ bool LineFollowController::computeVelocityCommands(const geometry_msgs::msg::Pos
   // ================================
   // 更新虚拟位置跟踪器（仅在FOLLOWING_PATH阶段）
   // ================================
-  if (virtual_tracking_config_.enabled && virtual_tracker_.isInitialized() && 
-      current_state_ == ControlState::FOLLOWING_PATH)
-  {
-    auto current_time = std::chrono::steady_clock::now();
-    double dt = std::chrono::duration<double>(current_time - last_time_).count();
-    dt = std::clamp(dt, 0.001, 0.1);  // 限制dt在合理范围内
-    
-    // 使用输出的控制命令更新虚拟位置
-    virtual_tracker_.updateVirtualPose(cmd_vel.twist.linear.x, cmd_vel.twist.angular.z, dt);
-  }
+
 
   return true;
 }
@@ -1886,12 +1572,6 @@ bool LineFollowController::isGoalReached()
 bool LineFollowController::cancel()
 {
 
-  // 导出IMU地形数据
-  if (!imu_terrain_data_.empty())
-  {
-    exportImuTerrainData();
-  }
-
   resetControllerState();
   // LOG_INFO("控制器已取消");
   return true;
@@ -1943,14 +1623,6 @@ void LineFollowController::extendPath()
   LOG_INFO("路径已延长 {:.2f}m,添加了 {} 个路径点", PATH_EXTENSION_LENGTH, num_points);
 }
 
-std::string LineFollowController::generateTaskId()
-{
-  auto now = std::chrono::system_clock::now();
-  auto time_t = std::chrono::system_clock::to_time_t(now);
-  std::stringstream ss;
-  ss << std::put_time(std::localtime(&time_t), "%Y%m%d_%H%M%S");
-  return ss.str();
-}
 
 
 
@@ -1962,1217 +1634,127 @@ std::string LineFollowController::generateTaskId()
  * - 独立线程：使用200Hz频率的独立线程处理IMU数据,确保实时性
  * - 模块化：IMU功能与主控制逻辑解耦
  */
-void LineFollowController::initializeImuSubscription()
-{
-  if (!enable_imu_terrain_adaptation_)
-  {
-    LOG_INFO("IMU地形自适应控制未启用,跳过IMU订阅");
-    return;
-  }
 
-  // 创建专门用于IMU订阅的内部节点（独立于外部节点）
-  if (!imu_node_)
-  {
-    rclcpp::NodeOptions imu_node_options;
-    imu_node_options.use_intra_process_comms(true);  // 启用进程内通信优化
-
-    imu_node_ = rclcpp::Node::make_shared("line_follow_imu_subscriber", imu_node_options);
-    LOG_INFO("创建IMU专用内部节点: line_follow_imu_subscriber");
-  }
-
-  // 使用内部IMU节点创建订阅
-  imu_subscription_ = imu_node_->create_subscription<sensor_msgs::msg::Imu>(
-      "/imu", rclcpp::SensorDataQoS(), std::bind(&LineFollowController::imuCallback, this, std::placeholders::_1));
-
-  LOG_INFO("IMU订阅已初始化: /imu (订阅创建完成,线程将延迟启动)");
-}
 
 /**
  * @brief 启动IMU处理线程
  *
  * 在对象完全构造后安全启动IMU处理线程
  */
-void LineFollowController::startImuThread()
-{
-  if (!enable_imu_terrain_adaptation_ || !imu_node_ || imu_thread_running_.load())
-  {
-    return;  // 未启用IMU功能、节点未创建或线程已运行
-  }
 
-  // 启动独立线程处理IMU数据，200Hz频率
-  imu_thread_running_ = true;
-  imu_thread_ = std::thread(&LineFollowController::imuThreadLoop, this);
 
-  LOG_INFO("IMU处理线程已启动 (200Hz频率)");
-}
 
 /**
  * @brief 处理IMU专用节点的消息 (已弃用)
  *
  * 注意：此方法已被独立线程取代，保留仅为兼容性
  */
-void LineFollowController::spinImuNode()
-{
-  // 已弃用，IMU数据处理已移至独立线程
-}
+
 
 /**
  * @brief IMU独立线程循环函数
  *
  * 在200Hz频率下处理IMU节点的消息，确保实时性
  */
-void LineFollowController::imuThreadLoop()
-{
-  const std::chrono::microseconds loop_period(5000);  // 200Hz = 5ms period
 
-  while (imu_thread_running_.load())
-  {
-    static int count = 0;
-    if (++count >= 400)
-    {
-      updateParameters();
-      count = 0;
-    }
 
-    auto start_time = std::chrono::steady_clock::now();
 
-    if (imu_node_ && enable_imu_terrain_adaptation_)
-    {
-      // 非阻塞式处理IMU节点的消息
-      rclcpp::spin_some(imu_node_);
-    }
 
-    // 计算剩余时间并休眠
-    auto end_time = std::chrono::steady_clock::now();
-    auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
-
-    if (elapsed < loop_period)
-    {
-      std::this_thread::sleep_for(loop_period - elapsed);
-    }
-  }
-}
-
-void LineFollowController::imuCallback(const sensor_msgs::msg::Imu::SharedPtr msg)
-{
-  // 从四元数中提取姿态角（注意：yaw角与机器人航向无关，仅用于地形检测）
-  double roll, pitch, yaw;  // yaw角不用于导航，仅作为地形分析的辅助数据
-  tf2::Quaternion q(msg->orientation.x, msg->orientation.y, msg->orientation.z, msg->orientation.w);
-  tf2::Matrix3x3(q).getRPY(roll, pitch, yaw);
-
-  // 更新当前翻滚角（用于调试和记录）
-  current_roll_angle_ = roll;
-
-  // 100%信任IMU数据，无滤波
-  filtered_roll_angle_ = current_roll_angle_;
-
-  // 每150次回调输出一次IMU数据状态，用于监控数据质量
-  static int callback_count = 0;
-  if (++callback_count >= 150)
-  {
-    // LOG_INFO("");
-    // LOG_INFO("IMU数据监控 - Roll:{:.6f}, Pitch:{:.6f}, Yaw:{:.6f}, 历史数据量:{}", roll, pitch, yaw,
-    //          imu_history_.size());
-    callback_count = 0;
-  }
-
-  // 地形自适应控制：更新IMU历史数据
-  updateImuHistory(msg);
-
-  // 1. 提取地形特征
-  TerrainFeatures features = extractTerrainFeatures();
-
-  // 1.5. 自适应基础地形管理已移除（立即切换模式）
-
-  // 2. 立即地形分类（无过渡控制）
-  TerrainType current_terrain = classifyTerrainWithPriority(features);
-
-  // 3. 计算分类置信度（基于特征强度）
-  double confidence = 1.0;  // 基础置信度
-  if (current_terrain == TerrainType::SUDDEN_CHANGE)
-  {
-    confidence = std::min(1.0, features.max_gradient / sudden_change_gradient_threshold_);
-  }
-  else if (current_terrain == TerrainType::GENTLE_UNDULATION)
-  {
-    confidence = std::min(1.0, features.low_freq_energy_ratio / gentle_low_freq_energy_threshold_);
-  }
-  else if (current_terrain == TerrainType::FREQUENT_BUMPS)
-  {
-    confidence = std::min(1.0, features.zero_crossing_rate / frequent_zero_crossing_threshold_);
-  }
-
-  // 4. 更新地形分析数据（线程安全）
-  {
-    std::lock_guard<std::mutex> lock(terrain_data_mutex_);
-    terrain_data_.current_type = current_terrain;
-    terrain_data_.features = features;
-    terrain_data_.confidence_score = confidence;
-    terrain_data_.last_update = std::chrono::steady_clock::now();
-  }
-
-  // 5. 应用控制参数自适应
-  adaptControlParameters(current_terrain, confidence);
-
-  // 记录IMU地形数据（按配置的频率）
-  if (enable_imu_terrain_logging_)
-  {
-    auto current_time = std::chrono::steady_clock::now();
-    double time_since_last_log =
-        std::chrono::duration_cast<std::chrono::duration<double>>(current_time - last_log_time_).count();
-
-    if (time_since_last_log >= (1.0 / logging_frequency_))
-    {
-      recordImuTerrainData();
-      last_log_time_ = current_time;
-    }
-  }
-}
-
-void LineFollowController::updateImuHistory(const sensor_msgs::msg::Imu::SharedPtr msg)
-{
-  // 从四元数中提取翻滚角
-  double roll, pitch, yaw;
-  tf2::Quaternion q(msg->orientation.x, msg->orientation.y, msg->orientation.z, msg->orientation.w);
-  tf2::Matrix3x3(q).getRPY(roll, pitch, yaw);
-
-  // 创建新的IMU数据点（存储翻滚角和俯仰角用于突变检测）
-  ImuDataPoint data_point;
-  data_point.roll = roll;
-  data_point.pitch = pitch;  // 添加俯仰角用于突变检测
-  data_point.timestamp = std::chrono::steady_clock::now();
-
-  // 添加到历史队列
-  imu_history_.push_back(data_point);
-
-  // 维护队列大小,移除过旧的数据
-  while (imu_history_.size() > max_imu_history_size_)
-  {
-    imu_history_.pop_front();
-  }
-
-  // 清理超出时间窗口的数据
-  auto current_time = std::chrono::steady_clock::now();
-  auto cutoff_time = current_time - std::chrono::duration<double>(imu_window_size_);
-
-  while (!imu_history_.empty() && imu_history_.front().timestamp < cutoff_time)
-  {
-    imu_history_.pop_front();
-  }
-}
 
 /**
  * @brief 新算法：提取地形特征（基于航空级IMU精度）
  * @return 提取的地形特征数据
  */
-LineFollowController::TerrainFeatures LineFollowController::extractTerrainFeatures()
-{
-  TerrainFeatures features;
-
-  if (imu_history_.size() < 40)
-  {                                 // 基于200Hz,至少需要0.2秒数据
-    return terrain_data_.features;  // 返回上次的特征
-  }
-
-  // 特征1：计算最大梯度（突变检测 - 最高优先级）
-  features.max_gradient = computeMaxGradient();
-
-  // 特征2：计算过零率（频繁颠簸检测）
-  features.zero_crossing_rate = computeZeroCrossingRate();
-
-  // 特征3：计算低频能量占比（平缓凹凸检测）
-  features.low_freq_energy_ratio = computeLowFreqEnergyRatio();
-
-  features.last_update = std::chrono::steady_clock::now();
-
-  if (debug_)
-  {
-    // 地形特征数据已记录到文件，无需控制台输出
-  }
-
-  return features;
-}
 
 /**
  * @brief 阶段1实现：突变检测算法（增强版：同时使用翻滚角和俯仰角）
  * @return 最大梯度值（rad/sample）
  */
-double LineFollowController::computeMaxGradient()
-{
-  if (imu_history_.size() < 2)
-  {
-    return 0.0;
-  }
 
-  double max_gradient = 0.0;
-  auto prev_it = imu_history_.begin();
-  auto curr_it = std::next(prev_it);
-
-  // 计算相邻样本间的最大梯度（同时考虑翻滚角和俯仰角）
-  while (curr_it != imu_history_.end())
-  {
-    // 计算翻滚角梯度（侧向地形变化）
-    double roll_gradient = std::abs(curr_it->roll - prev_it->roll);
-
-    // 计算俯仰角梯度（前向地形变化 - 对突起、坑洍更敏感）
-    double pitch_gradient = std::abs(curr_it->pitch - prev_it->pitch);
-
-    // 使用加权组合：俯仰角权重更高，因为对前向突变更敏感
-    double combined_gradient = 0.6 * pitch_gradient + 0.4 * roll_gradient;
-
-    max_gradient = std::max(max_gradient, combined_gradient);
-
-    prev_it = curr_it;
-    ++curr_it;
-  }
-
-  if (debug_ && max_gradient > sudden_change_gradient_threshold_)
-  {
-    // 突变检测事件已记录到文件，无需控制台输出
-  }
-
-  return max_gradient;
-}
 
 /**
  * @brief 阶段2实现：过零率计算（频繁颠簸检测）- 改进版，增加噪声阈值
  * @return 过零率（次数/秒）
  */
-double LineFollowController::computeZeroCrossingRate()
-{
-  if (imu_history_.size() < 10)
-  {
-    return 0.0;
-  }
 
-  // 提取翻滚角和俯仰角序列
-  std::vector<double> roll_data;
-  std::vector<double> pitch_data;
-  roll_data.reserve(imu_history_.size());
-  pitch_data.reserve(imu_history_.size());
-  
-  for (const auto& point : imu_history_)
-  {
-    roll_data.push_back(point.roll);
-    pitch_data.push_back(point.pitch);
-  }
-
-  // 计算去均值序列
-  auto computeZeroCrossingsWithThreshold = [](const std::vector<double>& data, double noise_threshold) -> int {
-    if (data.size() < 3) return 0;
-    
-    // 计算均值
-    double mean = 0.0;
-    for (double val : data)
-    {
-      mean += val;
-    }
-    mean /= data.size();
-    
-    // 计算标准差来自适应确定噪声阈值
-    double variance = 0.0;
-    for (double val : data)
-    {
-      double diff = val - mean;
-      variance += diff * diff;
-    }
-    variance /= data.size();
-    double std_dev = std::sqrt(variance);
-    
-    // 如果标准差太小，说明信号很稳定，设置较高的阈值
-    double adaptive_threshold = std::max(noise_threshold, std_dev * 0.5);
-    
-    // 统计有效过零次数（只有变化幅度超过阈值才算）
-    int zero_crossings = 0;
-    double prev_value = data[0] - mean;
-    
-    for (size_t i = 1; i < data.size(); ++i)
-    {
-      double curr_value = data[i] - mean;
-      
-      // 只有当前值和前一个值的绝对值都超过阈值时，才考虑过零
-      if (std::abs(prev_value) > adaptive_threshold && std::abs(curr_value) > adaptive_threshold)
-      {
-        if ((prev_value > 0 && curr_value < 0) || (prev_value < 0 && curr_value > 0))
-        {
-          zero_crossings++;
-        }
-      }
-      prev_value = curr_value;
-    }
-    
-    return zero_crossings;
-  };
-
-  // 设置噪声阈值（弧度），对应约0.1度的变化
-  const double noise_threshold = 0.0017;  // 约0.1度
-  
-  // 分别计算翻滚角和俯仰角的过零次数
-  int roll_crossings = computeZeroCrossingsWithThreshold(roll_data, noise_threshold);
-  int pitch_crossings = computeZeroCrossingsWithThreshold(pitch_data, noise_threshold);
-  
-  // 使用较高的过零次数（因为颠簸地形通常在多个轴上都有表现）
-  int total_crossings = std::max(roll_crossings, pitch_crossings);
-  
-  // 转换为每秒的过零率
-  double duration = std::chrono::duration_cast<std::chrono::duration<double>>(
-      imu_history_.back().timestamp - imu_history_.front().timestamp).count();
-  
-  if (duration <= 0.1)  // 防止除零，且时间窗口太小时不可信
-  {
-    return 0.0;
-  }
-  
-  double zero_crossing_rate = static_cast<double>(total_crossings) / duration;
-  
-  // 对于频繁颠簸检测，过零率应该相对较高且稳定
-  // 如果计算出的过零率过低，可能是噪声，返回更保守的值
-  if (zero_crossing_rate < 0.5)
-  {
-    zero_crossing_rate = 0.0;  // 认为是静态噪声
-  }
-  
-  return zero_crossing_rate;
-}
 
 /**
  * @brief 阶段3实现：低频能量占比计算（平缓凹凸检测）
  * @return 低频能量占总能量的比例 (0-1)
  */
-double LineFollowController::computeLowFreqEnergyRatio()
-{
-  if (imu_history_.size() < 20)
-  {
-    return 0.0;
-  }
 
-  // 提取翻滚角和俯仰角数据序列
-  std::vector<double> roll_data;
-  std::vector<double> pitch_data;
-  roll_data.reserve(imu_history_.size());
-  pitch_data.reserve(imu_history_.size());
-  
-  for (const auto& point : imu_history_)
-  {
-    roll_data.push_back(point.roll);
-    pitch_data.push_back(point.pitch);
-  }
-
-  // 去均值化
-  auto detrend = [](std::vector<double>& data) {
-    double mean = 0.0;
-    for (double val : data)
-    {
-      mean += val;
-    }
-    mean /= data.size();
-    
-    for (double& val : data)
-    {
-      val -= mean;
-    }
-  };
-
-  detrend(roll_data);
-  detrend(pitch_data);
-
-  // 计算变化率序列（一阶差分）来突出动态变化
-  auto computeChanges = [](const std::vector<double>& data) -> std::vector<double> {
-    std::vector<double> changes;
-    if (data.size() < 2) return changes;
-    
-    changes.reserve(data.size() - 1);
-    for (size_t i = 1; i < data.size(); ++i)
-    {
-      changes.push_back(data[i] - data[i-1]);
-    }
-    return changes;
-  };
-
-  std::vector<double> roll_changes = computeChanges(roll_data);
-  std::vector<double> pitch_changes = computeChanges(pitch_data);
-  
-  if (roll_changes.empty() || pitch_changes.empty())
-  {
-    return 0.0;
-  }
-
-  // 计算变化率的标准差作为总变化强度
-  auto computeStd = [](const std::vector<double>& data) -> double {
-    if (data.empty()) return 0.0;
-    
-    double mean = 0.0;
-    for (double val : data)
-    {
-      mean += val;
-    }
-    mean /= data.size();
-    
-    double variance = 0.0;
-    for (double val : data)
-    {
-      double diff = val - mean;
-      variance += diff * diff;
-    }
-    variance /= data.size();
-    
-    return std::sqrt(variance);
-  };
-
-  double roll_total_std = computeStd(roll_changes);
-  double pitch_total_std = computeStd(pitch_changes);
-  
-  // 如果变化太小，认为是静止状态
-  if (roll_total_std < 1e-6 && pitch_total_std < 1e-6)
-  {
-    return 0.0;
-  }
-
-  // 使用更长窗口的滑动平均来提取真正的低频趋势
-  const int long_window = std::min(static_cast<int>(roll_changes.size() / 2), 50);
-  
-  auto extractLowFreqTrend = [long_window](const std::vector<double>& data) -> std::vector<double> {
-    std::vector<double> trend;
-    if (data.size() < static_cast<size_t>(long_window)) return trend;
-    
-    trend.reserve(data.size());
-    
-    for (size_t i = 0; i < data.size(); ++i)
-    {
-      double sum = 0.0;
-      int count = 0;
-      
-      // 使用较大的窗口来平滑
-      int start = std::max(0, static_cast<int>(i) - long_window / 2);
-      int end = std::min(static_cast<int>(data.size() - 1), static_cast<int>(i) + long_window / 2);
-      
-      for (int j = start; j <= end; ++j)
-      {
-        sum += data[j];
-        count++;
-      }
-      
-      trend.push_back(sum / count);
-    }
-    
-    return trend;
-  };
-
-  std::vector<double> roll_trend = extractLowFreqTrend(roll_changes);
-  std::vector<double> pitch_trend = extractLowFreqTrend(pitch_changes);
-
-  if (roll_trend.empty() || pitch_trend.empty())
-  {
-    return 0.0;
-  }
-
-  // 计算低频趋势的标准差
-  double roll_trend_std = computeStd(roll_trend);
-  double pitch_trend_std = computeStd(pitch_trend);
-
-  // 计算高频成分（原始变化 - 低频趋势）的标准差
-  auto computeHighFreqStd = [&computeStd](const std::vector<double>& original, 
-                                          const std::vector<double>& trend) -> double {
-    if (original.size() != trend.size()) return 0.0;
-    
-    std::vector<double> high_freq;
-    high_freq.reserve(original.size());
-    
-    for (size_t i = 0; i < original.size(); ++i)
-    {
-      high_freq.push_back(original[i] - trend[i]);
-    }
-    
-    return computeStd(high_freq);
-  };
-
-  double roll_high_std = computeHighFreqStd(roll_changes, roll_trend);
-  double pitch_high_std = computeHighFreqStd(pitch_changes, pitch_trend);
-
-  // 计算低频能量占比
-  double roll_ratio = 0.0;
-  double pitch_ratio = 0.0;
-  
-  double roll_total_energy = roll_trend_std * roll_trend_std + roll_high_std * roll_high_std;
-  double pitch_total_energy = pitch_trend_std * pitch_trend_std + pitch_high_std * pitch_high_std;
-  
-  if (roll_total_energy > 1e-10)
-  {
-    roll_ratio = (roll_trend_std * roll_trend_std) / roll_total_energy;
-  }
-  
-  if (pitch_total_energy > 1e-10)
-  {
-    pitch_ratio = (pitch_trend_std * pitch_trend_std) / pitch_total_energy;
-  }
-
-  // 加权组合：俯仰角权重更高
-  double combined_ratio = 0.6 * pitch_ratio + 0.4 * roll_ratio;
-  
-  // 对于地形检测，我们关心的是持续的低频变化，而不是瞬时噪声
-  // 如果总体变化太小，即使低频占比高也应该返回较小值
-  double total_activity = std::max(roll_total_std, pitch_total_std);
-  if (total_activity < 0.001)  // 活动强度阈值
-  {
-    combined_ratio *= 0.1;  // 大幅降低占比
-  }
-  
-  return std::max(0.0, std::min(1.0, combined_ratio));
-}
 
 /**
  * @brief 核心算法：基于优先级的地形分类（突变 → 平缓凹凸 → 频繁颠簸）
  * @param features 提取的地形特征
  * @return 分类后的地形类型
  */
-LineFollowController::TerrainType LineFollowController::classifyTerrainWithPriority(const TerrainFeatures& features)
-{
-  static int count = 0;
-  static bool is_print = false;
 
-  is_print = false;
-  if (++count >= 150)
-  {
-    is_print = true;
-    count = 0;
-  }
-
-  terrain_data_.angle_vel_dynamic_factor = 1.0;
-  terrain_data_.line_vel_dynamic_factor = 1.0;
-
-  if (debug_ && is_print)
-  {
-    // LOG_INFO("低频能量占比:{:.10f} > {:.10f},最大梯度:{:.10f} > {:.10f},过零率:{:.10f} > {:.10f}",
-    //          features.low_freq_energy_ratio, gentle_low_freq_energy_threshold_, features.max_gradient,
-    //          sudden_change_gradient_threshold_, features.zero_crossing_rate, frequent_zero_crossing_threshold_);
-  }
-
-  // 优先级1：突变检测（最高优先级 - 安全关键）
-  if (features.max_gradient > sudden_change_gradient_threshold_)
-  {
-    // 降速
-    terrain_data_.line_vel_dynamic_factor = 0.7;
-
-    TerrainType result = TerrainType::SUDDEN_CHANGE;
-
-    // 发布地形日志数据（仅在debug模式下）
-    if (debug_ && is_print)
-    {
-      double confidence = std::min(1.0, features.max_gradient / sudden_change_gradient_threshold_);
-      publishTerrainLogData(features, result, confidence);
-      LOG_INFO("当前地形：突变地形");
-    }
-    // 地形分类结果已记录到文件
-    return result;
-  }
-
-  // 优先级2：平缓凹凸检测（中优先级 - 影响跟踪精度）
-  if (features.low_freq_energy_ratio > gentle_low_freq_energy_threshold_)
-  {
-    TerrainType result = TerrainType::GENTLE_UNDULATION;
-
-    // 发布地形日志数据（仅在debug模式下）
-    if (debug_ && is_print)
-    {
-      double confidence = std::min(1.0, features.low_freq_energy_ratio / gentle_low_freq_energy_threshold_);
-      publishTerrainLogData(features, result, confidence);
-      LOG_INFO("当前地形：平缓凹凸地形");
-    }
-
-    // 地形分类结果已记录到文件
-    return result;
-  }
-
-  // 优先级3：频繁颠簸检测（低优先级 - 影响稳定性）
-  if (features.zero_crossing_rate > frequent_zero_crossing_threshold_)
-  {
-    TerrainType result = TerrainType::FREQUENT_BUMPS;
-
-    // 发布地形日志数据（仅在debug模式下）
-    if (debug_ && is_print)
-    {
-      double confidence = std::min(1.0, features.zero_crossing_rate / frequent_zero_crossing_threshold_);
-      publishTerrainLogData(features, result, confidence);
-      LOG_INFO("当前地形：频繁颠簸地形");
-    }
-
-    return result;
-  }
-
-  TerrainType result = TerrainType::SMOOTH;
-  if (debug_ && is_print)
-  {
-    LOG_INFO("当前地形：平稳地形");
-  }
-
-  // 发布地形日志数据（仅在debug模式下）
-  if (debug_ && is_print)
-  {
-    publishTerrainLogData(features, result, 0.8);  // 平稳地形的默认置信度
-  }
-
-  return result;
-}
 
 /**
  * @brief 高级控制参数自适应算法
  * @param terrain_type 识别的地形类型
  * @param confidence 分类置信度（0-1）
  */
-void LineFollowController::adaptControlParameters(TerrainType terrain_type, double confidence)
-{
-  // 立即切换模式：直接使用对应的地形参数
-  TerrainControlParams terrain_params = selectTerrainParams(terrain_type);
 
-  // 应用置信度加权的参数调整 - 只更新跟随阶段参数
-  AdaptiveControlParams target_params = adaptive_params_;
-  target_params.current_cross_track_deadzone = terrain_params.cross_track_deadzone;
-  target_params.current_yaw_deadzone = terrain_params.yaw_deadzone;
-  target_params.current_max_angular_vel = terrain_params.max_angular_vel;
-  target_params.current_max_angular_accel = terrain_params.max_angular_accel;
-  target_params.current_suppression_factor = terrain_params.suppression_factor;
-  target_params.current_heading_weight = terrain_params.current_heading_weight;
-  target_params.target_heading_weight = terrain_params.target_heading_weight;
-
-  // 更新跟随阶段参数
-  adaptive_params_.current_cross_track_deadzone = confidence * target_params.current_cross_track_deadzone +
-                                                  (1.0 - confidence) * adaptive_params_.current_cross_track_deadzone;
-
-  adaptive_params_.current_yaw_deadzone =
-      confidence * target_params.current_yaw_deadzone + (1.0 - confidence) * adaptive_params_.current_yaw_deadzone;
-
-  adaptive_params_.current_max_angular_vel = confidence * target_params.current_max_angular_vel +
-                                             (1.0 - confidence) * adaptive_params_.current_max_angular_vel;
-
-  adaptive_params_.current_max_angular_accel = confidence * target_params.current_max_angular_accel +
-                                               (1.0 - confidence) * adaptive_params_.current_max_angular_accel;
-
-  adaptive_params_.current_suppression_factor = confidence * target_params.current_suppression_factor +
-                                                (1.0 - confidence) * adaptive_params_.current_suppression_factor;
-
-  adaptive_params_.current_heading_weight =
-      confidence * target_params.current_heading_weight + (1.0 - confidence) * adaptive_params_.current_heading_weight;
-
-  adaptive_params_.target_heading_weight =
-      confidence * target_params.target_heading_weight + (1.0 - confidence) * adaptive_params_.target_heading_weight;
-
-  // 更新滤波参数（根据地形类型立即切换）
-  current_alpha_ = terrain_params.alpha;
-  current_smoother_frequency_ = terrain_params.smoother_frequency;
-  current_smoother_damping_ = terrain_params.smoother_damping;
-  alpha_ = current_alpha_;  // 更新当前使用的alpha
-  
-  // 更新二阶平滑器参数
-  angular_smoother_.setParameters(current_smoother_frequency_, current_smoother_damping_);
-
-  // 更新动态调整因子
-  terrain_data_.angle_vel_dynamic_factor = 1.0 - confidence * 0.5;  // 置信度越高,抑制越强
-
-  // 记录控制参数变化（保存到文件而不是输出到控制台）
-  TerrainControlParams current_params;
-  current_params.cross_track_deadzone = adaptive_params_.current_cross_track_deadzone;
-  current_params.yaw_deadzone = adaptive_params_.current_yaw_deadzone;
-  current_params.max_angular_vel = adaptive_params_.current_max_angular_vel;
-  current_params.max_angular_accel = adaptive_params_.current_max_angular_accel;
-  current_params.suppression_factor = adaptive_params_.current_suppression_factor;
-  current_params.current_heading_weight = adaptive_params_.current_heading_weight;
-  current_params.target_heading_weight = adaptive_params_.target_heading_weight;
-
-  std::string change_reason = "地形自适应调整 - 置信度:" + std::to_string(confidence);
-}
 
 /**
  * @brief 选择对应地形类型的控制参数
  * @param terrain_type 地形类型
  * @return 对应的控制参数
  */
-const LineFollowController::TerrainControlParams&
-LineFollowController::selectTerrainParams(TerrainType terrain_type) const
-{
-  switch (terrain_type)
-  {
-    case TerrainType::SUDDEN_CHANGE:
-      return sudden_change_params_;
-    case TerrainType::GENTLE_UNDULATION:
-      return gentle_undulation_params_;
-    case TerrainType::FREQUENT_BUMPS:
-      return frequent_bumps_params_;
-    case TerrainType::TRANSITIONING:
-      // 过渡状态默认使用平缓凹凸参数，具体插值在adaptControlParameters中处理
-      return gentle_undulation_params_;
-    case TerrainType::SMOOTH:
-    default:
-      return smooth_terrain_params_;  // 默认使用平稳地形参数
-  }
-}
+
 
 /**
  * @brief 地形类型转换为字符串（用于日志）
  * @param type 地形类型
  * @return 地形类型的字符串表示
  */
-std::string LineFollowController::terrainTypeToString(TerrainType type) const
-{
-  switch (type)
-  {
-    case TerrainType::SMOOTH:
-      return "平稳地形";
-    case TerrainType::SUDDEN_CHANGE:
-      return "突发变化";
-    case TerrainType::GENTLE_UNDULATION:
-      return "平缓凹凸";
-    case TerrainType::FREQUENT_BUMPS:
-      return "频繁颠簸";
-    case TerrainType::TRANSITIONING:
-      return "过渡状态";
-    case TerrainType::UNKNOWN:
-      return "未知地形";
-    default:
-      return "未定义";
-  }
-}
 
-double LineFollowController::computeVariance(const std::vector<double>& data)
-{
-  if (data.empty())
-    return 0.0;
-
-  // 计算均值
-  double mean = 0.0;
-  for (double value : data)
-  {
-    mean += value;
-  }
-  mean /= data.size();
-
-  // 计算方差
-  double variance = 0.0;
-  for (double value : data)
-  {
-    double diff = value - mean;
-    variance += diff * diff;
-  }
-  variance /= data.size();
-
-  return variance;
-}
 
 // ================================
 // 详细数据记录方法实现
 // ================================
 
-void LineFollowController::recordImuTerrainData()
-{
-  if (!enable_imu_terrain_logging_ || imu_history_.empty())
-  {
-    return;
-  }
 
-  // 计算相对于任务开始的时间戳
-  auto current_time = std::chrono::steady_clock::now();
-  double timestamp = std::chrono::duration_cast<std::chrono::duration<double>>(current_time - task_start_time_).count();
-
-  ImuTerrainData data;
-  data.timestamp = timestamp;
-  data.current_roll = current_roll_angle_;
-  data.filtered_roll = filtered_roll_angle_;
-
-  // 新的地形特征数据
-  data.max_gradient = terrain_data_.features.max_gradient;
-  data.zero_crossing_rate = terrain_data_.features.zero_crossing_rate;
-  data.low_freq_energy_ratio = terrain_data_.features.low_freq_energy_ratio;
-  data.terrain_type = terrainTypeToString(terrain_data_.current_type);
-  data.confidence_score = terrain_data_.confidence_score;
-
-  data.dynamic_factor = terrain_data_.angle_vel_dynamic_factor;
-  data.imu_history_size = imu_history_.size();
-
-  // 计算翻滚角统计信息
-  calculateRollStatistics(data.roll_mean, data.roll_std_dev, data.roll_max, data.roll_min, data.roll_range);
-
-  // 记录当前使用的地形自适应参数
-  data.adaptive_cross_track_deadzone = adaptive_params_.current_cross_track_deadzone;
-  data.adaptive_yaw_deadzone = adaptive_params_.current_yaw_deadzone;
-  data.adaptive_max_angular_vel = adaptive_params_.current_max_angular_vel;
-  data.adaptive_max_angular_accel = adaptive_params_.current_max_angular_accel;
-  data.adaptive_suppression_factor = adaptive_params_.current_suppression_factor;
-  data.high_precision_active = adaptive_params_.high_precision_active;
-
-  // 添加到数据容器
-  imu_terrain_data_.push_back(data);
-
-  static int count = 0;
-
-  if (debug_ && ++count >= 150)
-  {
-    // LOG_INFO(
-        // "IMU地形数据记录 - 时间:{:.3f}s, 地形类型:{}, 置信度:{:.3f}, 特征[梯度:{:.6f} 过零率:{:.2f} 低频比:{:.3f}]",
-        // timestamp, data.terrain_type, data.confidence_score, data.max_gradient, data.zero_crossing_rate,
-        // data.low_freq_energy_ratio);
-    count = 0;
-  }
-}
-
-void LineFollowController::calculateRollStatistics(double& mean, double& std_dev, double& max_val, double& min_val,
-                                                   double& range)
-{
-  if (imu_history_.empty())
-  {
-    mean = std_dev = max_val = min_val = range = 0.0;
-    return;
-  }
-
-  // 计算均值
-  mean = 0.0;
-  max_val = std::numeric_limits<double>::lowest();
-  min_val = std::numeric_limits<double>::max();
-
-  for (const auto& point : imu_history_)
-  {
-    mean += point.roll;
-    max_val = std::max(max_val, point.roll);
-    min_val = std::min(min_val, point.roll);
-  }
-  mean /= imu_history_.size();
-
-  // 计算标准差
-  double variance = 0.0;
-  for (const auto& point : imu_history_)
-  {
-    double diff = point.roll - mean;
-    variance += diff * diff;
-  }
-  variance /= imu_history_.size();
-  std_dev = std::sqrt(variance);
-
-  // 计算范围
-  range = max_val - min_val;
-}
-
-// 控制效果评估方法
-double LineFollowController::calculateControlStabilityScore(double current_angular_vel, double prev_angular_vel)
-{
-  // 基于角速度变化率计算稳定性得分 (0-100)
-  double angular_vel_change = std::abs(current_angular_vel - prev_angular_vel);
-  double max_expected_change = 0.5;  // 最大预期变化率
-
-  // 变化率越小,稳定性得分越高
-  double score = std::max(0.0, 100.0 * (1.0 - angular_vel_change / max_expected_change));
-  return std::min(100.0, score);
-}
-
-double LineFollowController::calculateTrackingAccuracyScore(double cross_track_error)
-{
-  // 基于横向误差计算跟踪精度得分 (0-100)
-  double max_acceptable_error = 0.05;  // 5cm最大可接受误差
-  double abs_error = std::abs(cross_track_error);
-
-  // 误差越小,精度得分越高
-  double score = std::max(0.0, 100.0 * (1.0 - abs_error / max_acceptable_error));
-  return std::min(100.0, score);
-}
-
-double LineFollowController::calculateResponseTimeScore(double yaw_error, double angular_response)
-{
-  // 基于响应时间计算得分 (0-100)
-  if (std::abs(yaw_error) < 0.01)
-  {  // 如果误差很小,认为响应良好
-    return 100.0;
-  }
-
-  // 计算响应比率（角速度/角度误差）
-  double response_ratio = std::abs(angular_response) / std::abs(yaw_error);
-  double ideal_response_ratio = 2.0;  // 理想响应比率
-
-  // 响应比率越接近理想值,得分越高
-  double score = 100.0 * std::exp(-std::abs(response_ratio - ideal_response_ratio) / ideal_response_ratio);
-  return std::min(100.0, score);
-}
-
-void LineFollowController::exportImuTerrainData()
-{
-  if (imu_terrain_data_.empty())
-  {
-    return;
-  }
-
-  // 创建输出目录
-  std::filesystem::create_directories(data_log_base_path_);
-
-  // 生成文件名
-  std::string filename = data_log_base_path_ + "task_" + current_task_id_ + "_imu_terrain.csv";
-
-  // 写入CSV文件
-  std::ofstream file(filename);
-  if (!file.is_open())
-  {
-    LOG_ERROR("无法创建IMU地形数据文件: {}", filename);
-    return;
-  }
-
-  // 写入CSV头（三场景版本）
-  file << "timestamp,current_roll,filtered_roll,max_gradient,zero_crossing_rate,"
-       << "low_freq_energy_ratio,terrain_type,confidence_score,dynamic_factor,"
-       << "imu_history_size,roll_mean,roll_std_dev,"
-       << "roll_max,roll_min,roll_range,adaptive_cross_track_deadzone,"
-       << "adaptive_yaw_deadzone,adaptive_max_angular_vel,adaptive_max_angular_accel,"
-       << "adaptive_suppression_factor,high_precision_active\n";
-
-  // 写入数据
-  for (const auto& data : imu_terrain_data_)
-  {
-    file << std::fixed << std::setprecision(6) << data.timestamp << "," << data.current_roll << ","
-         << data.filtered_roll << "," << data.max_gradient << "," << data.zero_crossing_rate << ","
-         << data.low_freq_energy_ratio << "," << data.terrain_type << "," << data.confidence_score << ","
-         << data.dynamic_factor << "," << data.imu_history_size << "," << data.roll_mean << "," << data.roll_std_dev
-         << "," << data.roll_max << "," << data.roll_min << "," << data.roll_range << ","
-         << data.adaptive_cross_track_deadzone << "," << data.adaptive_yaw_deadzone << ","
-         << data.adaptive_max_angular_vel << "," << data.adaptive_max_angular_accel << ","
-         << data.adaptive_suppression_factor << "," << (data.high_precision_active ? "1" : "0") << "\n";
-  }
-
-  file.close();
-  LOG_INFO("IMU地形数据已导出至: {}", filename);
-
-  // 清空数据容器
-  imu_terrain_data_.clear();
-}
 
 /**
  * @brief 立即地形管理（无过渡控制）
  * @param features 地形特征数据
  * @return 检测到的地形类型
  */
-LineFollowController::TerrainType
-LineFollowController::manageTerrainImmediate(const LineFollowController::TerrainFeatures& features)
-{
-  // 立即切换模式：直接进行地形分类，无任何过渡控制
-  TerrainType current_terrain = classifyTerrainWithPriority(features);
 
-  // 记录状态变化（如果有变化）
-  if (current_terrain != terrain_data_.current_type)
-  {
-
-    // 更新当前地形类型
-    terrain_data_.current_type = current_terrain;
-    state_memory_.terrain_change_count++;
-  }
-
-  return current_terrain;
-}
 
 /**
  * @brief 更新状态记忆（立即切换模式简化版）
  */
-void LineFollowController::updateStateMemory(TerrainType current_terrain)
-{
-  state_memory_.previous_terrain = current_terrain;
-  state_memory_.last_terrain_change_time = std::chrono::steady_clock::now();
-}
+
 
 
 /**
  * @brief 初始化地形日志发布器
  */
-void LineFollowController::initializeTerrainLogPublisher()
-{
-  try
-  {
-    // 使用IMU节点作为发布节点（复用现有节点）
-    if (imu_node_)
-    {
-      terrain_log_publisher_ =
-          imu_node_->create_publisher<std_msgs::msg::String>(terrain_log_topic_name_, rclcpp::QoS(10).reliable());
-      LOG_INFO("地形日志发布器已初始化，话题: {}", terrain_log_topic_name_);
-    }
-    else
-    {
-      LOG_ERROR("无法初始化地形日志发布器: IMU节点未初始化");
-    }
-  }
-  catch (const std::exception& e)
-  {
-    LOG_ERROR("初始化地形日志发布器失败: {}", e.what());
-  }
-}
+
 
 /**
  * @brief 发布地形日志数据
  */
-void LineFollowController::publishTerrainLogData(const TerrainFeatures& features, TerrainType classified_type,
-                                                 double confidence)
-{
-  if (!terrain_log_publisher_)
-  {
-    return;  // 发布器未初始化，直接返回
-  }
 
-  try
-  {
-    // 创建JSON消息
-    std::string json_message = createTerrainJsonMessage(features, classified_type, confidence);
-
-    // 发布消息
-    auto msg = std_msgs::msg::String();
-    msg.data = json_message;
-    terrain_log_publisher_->publish(msg);
-  }
-  catch (const std::exception& e)
-  {
-    LOG_ERROR("发布地形日志数据失败: {}", e.what());
-  }
-}
 
 /**
  * @brief 发布控制日志数据
  */
-void LineFollowController::publishControlLogData(double yaw_error, double cross_track_error, 
-                                                const geometry_msgs::msg::TwistStamped& cmd_vel,
-                                                bool back_follow, bool in_deadzone, double deadzone_factor, 
-                                                double d_adaptive_factor, double max_angular_vel, double suppression_factor,
-                                                double cross_track_deadzone, double yaw_deadzone, double max_angular_accel,
-                                                double current_angular_accel, bool imu_terrain_enabled)
-{
-  if (!terrain_log_publisher_)
-  {
-    return;  // 发布器未初始化，直接返回
-  }
 
-  try
-  {
-    // 创建JSON消息
-    std::string json_message = createControlJsonMessage(yaw_error, cross_track_error, cmd_vel, back_follow, 
-                                                       in_deadzone, deadzone_factor, d_adaptive_factor,
-                                                       max_angular_vel, suppression_factor, cross_track_deadzone,
-                                                       yaw_deadzone, max_angular_accel, current_angular_accel,
-                                                       imu_terrain_enabled);
-
-    // 发布消息
-    auto msg = std_msgs::msg::String();
-    msg.data = json_message;
-    terrain_log_publisher_->publish(msg);
-  }
-  catch (const std::exception& e)
-  {
-    LOG_ERROR("发布控制日志数据失败: {}", e.what());
-  }
-}
 
 /**
  * @brief 创建地形分类JSON消息
  */
-std::string LineFollowController::createTerrainJsonMessage(const TerrainFeatures& features, TerrainType classified_type,
-                                                           double confidence)
-{
-  std::stringstream json_ss;
-  auto now = std::chrono::system_clock::now();
-  auto time_t = std::chrono::system_clock::to_time_t(now);
-  auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
 
-  // 格式化时间戳
-  json_ss << std::fixed << std::setprecision(3);
-  std::stringstream time_ss;
-  time_ss << std::put_time(std::localtime(&time_t), "%Y-%m-%dT%H:%M:%S");
-  time_ss << "." << std::setfill('0') << std::setw(3) << ms.count();
-
-  // 构建JSON消息
-  json_ss << "{\n";
-  json_ss << "  \"timestamp\": \"" << time_ss.str() << "\",\n";
-  json_ss << "  \"terrain_classification\": {\n";
-  json_ss << "    \"current_type\": \"" << terrainTypeToString(classified_type) << "\",\n";
-  json_ss << "    \"features\": {\n";
-  json_ss << "      \"max_gradient\": " << std::fixed << std::setprecision(6) << features.max_gradient << ",\n";
-  json_ss << "      \"low_freq_energy_ratio\": " << std::fixed << std::setprecision(6) << features.low_freq_energy_ratio
-          << ",\n";
-  json_ss << "      \"zero_crossing_rate\": " << std::fixed << std::setprecision(6) << features.zero_crossing_rate
-          << "\n";
-  json_ss << "    },\n";
-  json_ss << "    \"thresholds\": {\n";
-  json_ss << "      \"sudden_change_gradient\": " << std::fixed << std::setprecision(6)
-          << sudden_change_gradient_threshold_ << ",\n";
-  json_ss << "      \"gentle_low_freq_energy\": " << std::fixed << std::setprecision(6)
-          << gentle_low_freq_energy_threshold_ << ",\n";
-  json_ss << "      \"frequent_zero_crossing\": " << std::fixed << std::setprecision(6)
-          << frequent_zero_crossing_threshold_ << "\n";
-  json_ss << "    },\n";
-  json_ss << "    \"analysis\": {\n";
-  json_ss << "      \"low_freq_energy_comparison\": \"" << std::fixed << std::setprecision(6)
-          << features.low_freq_energy_ratio << " "
-          << (features.low_freq_energy_ratio > gentle_low_freq_energy_threshold_ ? ">" : "<=") << " "
-          << gentle_low_freq_energy_threshold_ << "\",\n";
-  json_ss << "      \"max_gradient_comparison\": \"" << std::fixed << std::setprecision(6) << features.max_gradient
-          << " " << (features.max_gradient > sudden_change_gradient_threshold_ ? ">" : "<=") << " "
-          << sudden_change_gradient_threshold_ << "\",\n";
-  json_ss << "      \"zero_crossing_comparison\": \"" << std::fixed << std::setprecision(2)
-          << features.zero_crossing_rate << " "
-          << (features.zero_crossing_rate > frequent_zero_crossing_threshold_ ? ">" : "<=") << " "
-          << frequent_zero_crossing_threshold_ << "\",\n";
-  json_ss << "      \"low_freq_energy_desc\": \"低频能量占比\",\n";
-  json_ss << "      \"max_gradient_desc\": \"最大梯度\",\n";
-  json_ss << "      \"zero_crossing_desc\": \"过零率\"\n";
-  json_ss << "    },\n";
-  json_ss << "    \"dynamic_factors\": {\n";
-  json_ss << "      \"line_vel_factor\": " << std::fixed << std::setprecision(2)
-          << terrain_data_.line_vel_dynamic_factor << ",\n";
-  json_ss << "      \"angle_vel_factor\": " << std::fixed << std::setprecision(2)
-          << terrain_data_.angle_vel_dynamic_factor << "\n";
-  json_ss << "    },\n";
-  json_ss << "    \"confidence\": " << std::fixed << std::setprecision(3) << confidence << "\n";
-  json_ss << "  }\n";
-  json_ss << "}";
-
-  return json_ss.str();
-}
 
 /**
  * @brief 创建控制日志JSON消息
  */
-std::string LineFollowController::createControlJsonMessage(double yaw_error, double cross_track_error, 
-                                                          const geometry_msgs::msg::TwistStamped& cmd_vel,
-                                                          bool back_follow, bool in_deadzone, double deadzone_factor, 
-                                                          double d_adaptive_factor, double max_angular_vel, double suppression_factor,
-                                                          double cross_track_deadzone, double yaw_deadzone, double max_angular_accel,
-                                                          double current_angular_accel, bool imu_terrain_enabled)
-{
-  std::stringstream json_ss;
-  auto now = std::chrono::system_clock::now();
-  auto time_t = std::chrono::system_clock::to_time_t(now);
-  auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
 
-  // 格式化时间戳
-  json_ss << std::fixed << std::setprecision(3);
-  std::stringstream time_ss;
-  time_ss << std::put_time(std::localtime(&time_t), "%Y-%m-%dT%H:%M:%S");
-  time_ss << "." << std::setfill('0') << std::setw(3) << ms.count();
-
-  // 构建控制日志JSON消息
-  json_ss << "{\n";
-  json_ss << "  \"timestamp\": \"" << time_ss.str() << "\",\n";
-  json_ss << "  \"control_data\": {\n";
-  json_ss << "    \"path_following\": {\n";
-  json_ss << "      \"yaw_error\": " << std::fixed << std::setprecision(6) << yaw_error << ",\n";
-  json_ss << "      \"cross_track_error\": " << std::fixed << std::setprecision(6) << cross_track_error << ",\n";
-  json_ss << "      \"linear_velocity\": " << std::fixed << std::setprecision(6) << cmd_vel.twist.linear.x << ",\n";
-  json_ss << "      \"angular_velocity\": " << std::fixed << std::setprecision(6) << cmd_vel.twist.angular.z << ",\n";
-  json_ss << "      \"back_follow\": " << (back_follow ? "true" : "false") << "\n";
-  json_ss << "    },\n";
-  json_ss << "    \"terrain_adaptation\": {\n";
-  json_ss << "      \"imu_terrain_enabled\": " << (imu_terrain_enabled ? "true" : "false") << ",\n";
-  json_ss << "      \"in_deadzone\": " << (in_deadzone ? "true" : "false") << ",\n";
-  json_ss << "      \"deadzone_factor\": " << std::fixed << std::setprecision(6) << deadzone_factor << ",\n";
-  json_ss << "      \"d_adaptive_factor\": " << std::fixed << std::setprecision(6) << d_adaptive_factor << ",\n";
-  json_ss << "      \"cross_track_deadzone\": " << std::fixed << std::setprecision(6) << cross_track_deadzone << ",\n";
-  json_ss << "      \"yaw_deadzone\": " << std::fixed << std::setprecision(6) << yaw_deadzone << ",\n";
-  json_ss << "      \"current_max_angular_vel\": " << std::fixed << std::setprecision(6) << max_angular_vel << ",\n";
-  json_ss << "      \"max_angular_accel\": " << std::fixed << std::setprecision(6) << max_angular_accel << ",\n";
-  json_ss << "      \"current_angular_accel\": " << std::fixed << std::setprecision(6) << current_angular_accel << ",\n";
-  json_ss << "      \"suppression_factor\": " << std::fixed << std::setprecision(6) << suppression_factor << "\n";
-  json_ss << "    }\n";
-  json_ss << "  }\n";
-  json_ss << "}";
-
-  return json_ss.str();
-}
 
 }  // namespace follow_controller
 }  // namespace xline
