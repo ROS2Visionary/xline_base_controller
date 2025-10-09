@@ -6,8 +6,8 @@
 #include <vector>
 #include <stdexcept>
 #include <algorithm>
-#include <iostream>
 #include <type_traits>
+#include <rclcpp/rclcpp.hpp>
 
 namespace xline
 {
@@ -105,24 +105,24 @@ public:
     return keys;
   }
 
-  // 打印所有键值对
-  void printAll() const
+  // 打印所有键值对 (使用ROS2日志)
+  void printAll(const rclcpp::Logger& logger) const
   {
     for (const auto& [key, value] : yaml_data_)
     {
-      std::cout << key << ": " << value << std::endl;
+      RCLCPP_INFO(logger, "%s: %s", key.c_str(), value.c_str());
     }
   }
 
-  // 调试：打印特定前缀的所有键
-  void printKeysWithPrefix(const std::string& prefix) const
+  // 调试：打印特定前缀的所有键 (使用ROS2日志)
+  void printKeysWithPrefix(const std::string& prefix, const rclcpp::Logger& logger) const
   {
-    std::cout << "Keys with prefix '" << prefix << "':" << std::endl;
+    RCLCPP_INFO(logger, "Keys with prefix '%s':", prefix.c_str());
     for (const auto& [key, value] : yaml_data_)
     {
       if (key.find(prefix) == 0)
       {
-        std::cout << "  " << key << ": " << value << std::endl;
+        RCLCPP_INFO(logger, "  %s: %s", key.c_str(), value.c_str());
       }
     }
   }

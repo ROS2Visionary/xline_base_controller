@@ -237,7 +237,7 @@ namespace xline
         LineData line_data = extractLineData(line);
         RCLCPP_INFO(get_logger(), "[line, id=%u]: 起点(%.2f, %.2f) -> 终点(%.2f, %.2f)", path_id, line_data.start_x,
                     line_data.start_y, line_data.end_x, line_data.end_y);
-        line_follow_controller_->setPlan(line_data.start_x, line_data.start_y, line_data.end_x, line_data.end_y);
+        line_follow_controller_->setPlan(line_data.start_x / 1000, line_data.start_y / 1000, line_data.end_x / 1000, line_data.end_y / 1000);
         base_follow_controller_ = line_follow_controller_;
       }
       else if (type == "circle")

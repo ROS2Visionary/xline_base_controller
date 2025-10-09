@@ -18,7 +18,8 @@ namespace follow_controller
 {
 
 LineFollowController::LineFollowController()
-  : current_state_(ControlState::IDLE)
+  : BaseFollowController("line_follow_controller")
+  , current_state_(ControlState::IDLE)
   , received_plan_(false)
   , goal_reached_(false)
   , back_follow_(false)
@@ -173,18 +174,18 @@ void LineFollowController::updateParameters()
   xline::YamlParser::YamlParser parser(config_file_path);
 
   // 调试：检查YAML文件是否正确加载
-  // LOG_INFO("YAML文件路径: {}", config_file_path);
+  // LOG_INFO("YAML文件路径: %s", config_file_path.c_str());
   auto all_keys = parser.getAllKeys();
-  // LOG_INFO("YAML解析的键数量: {}", all_keys.size());
+  // LOG_INFO("YAML解析的键数量: %zu", all_keys.size());
   if (debug_)
   {
     // LOG_INFO("=== 完整YAML解析验证 ===");
-    // parser.printKeysWithPrefix("debug");
-    // parser.printKeysWithPrefix("control");
-    // parser.printKeysWithPrefix("motion");
-    // parser.printKeysWithPrefix("sensors");
-    // parser.printKeysWithPrefix("terrain_control");
-    // parser.printKeysWithPrefix("data_logging");
+    // parser.printKeysWithPrefix("debug", get_logger());
+    // parser.printKeysWithPrefix("control", get_logger());
+    // parser.printKeysWithPrefix("motion", get_logger());
+    // parser.printKeysWithPrefix("sensors", get_logger());
+    // parser.printKeysWithPrefix("terrain_control", get_logger());
+    // parser.printKeysWithPrefix("data_logging", get_logger());
     // LOG_INFO("=== 验证完成 ===");
   }
 
@@ -289,7 +290,7 @@ void LineFollowController::updateParameters()
   }
   catch (const std::exception& e)
   {
-    LOG_ERROR("参数加载失败: {}", e.what());
+    LOG_ERROR("参数加载失败: %s", e.what());
     throw;
   }
 }
@@ -566,7 +567,7 @@ void LineFollowController::setWorkState(bool state)
 void LineFollowController::setBackFollow(bool back)
 {
   back_follow_ = back;
-  // LOG_INFO("设置后退模式: {}", back);
+  // LOG_INFO("设置后退模式: %d", back);
 }
 
 void LineFollowController::setPose(const geometry_msgs::msg::PoseStamped& pose)
@@ -895,8 +896,8 @@ double LineFollowController::computeAngularVelocity(double yaw_error, double dt,
   if (debug_)
   {
     // LOG_INFO(" ");
-    // LOG_INFO("角加速度: {:.5f}, 角加速度限制: {:.5f}", angular_acceleration,current_max_angular_accel);
-    // LOG_INFO("角速度: {:.5f}, 上一个角速度: {:.5f}", raw_angular_velocity,prev_angular_velocity_);
+    // LOG_INFO("角加速度: %.5f, 角加速度限制: %.5f", angular_acceleration, current_max_angular_accel);
+    // LOG_INFO("角速度: %.5f, 上一个角速度: %.5f", raw_angular_velocity, prev_angular_velocity_);
   }
 
   if (std::abs(angular_acceleration) > current_max_angular_accel)
@@ -917,14 +918,14 @@ double LineFollowController::computeAngularVelocity(double yaw_error, double dt,
   smoothed_angular_vel = angular_vel_hampel_filter_.filter(raw_angular_velocity);
   if (debug_)
   {
-    // LOG_INFO("angular_vel_hampel_filter_: {:.5f}",smoothed_angular_vel);
+    // LOG_INFO("angular_vel_hampel_filter_: %.5f", smoothed_angular_vel);
   }
   // 低通滤波器
   smoothed_angular_vel = alpha_ * smoothed_angular_vel + (1 - alpha_) * prev_smoothed_angular_velocity_;
   prev_smoothed_angular_velocity_ = smoothed_angular_vel;
   if (debug_)
   {
-    // LOG_INFO("alpha_: {:.5f}",smoothed_angular_vel);
+    // LOG_INFO("alpha_: %.5f", smoothed_angular_vel);
   }
   // 添加到历史记录
   // angular_vel_history_.push_back(lowpass_angular_vel);
@@ -944,7 +945,7 @@ double LineFollowController::computeAngularVelocity(double yaw_error, double dt,
   smoothed_angular_vel = angular_smoother_.filter(smoothed_angular_vel, dt);
   if (debug_)
   {
-    LOG_INFO("angular_smoother_: {:.5f}",smoothed_angular_vel);
+    LOG_INFO("angular_smoother_: %.5f", smoothed_angular_vel);
   }
   // 应用抑制因子和死区因子
   double current_suppression_factor;
@@ -958,7 +959,7 @@ double LineFollowController::computeAngularVelocity(double yaw_error, double dt,
 
     if (debug_)
     {
-      // LOG_INFO("平稳地形控制 - 阶段:{}, 角速度限制:{:.3f}rad/s, 抑制因子:{:.2f}, 死区因子:{:.2f}",
+      // LOG_INFO("平稳地形控制 - 阶段:%s, 角速度限制:%.3frad/s, 抑制因子:%.2f, 死区因子:%.2f",
       //          is_alignment_phase ? "对齐" : "跟随", current_max_angular_vel, current_suppression_factor,
       //          deadzone_factor);
     }
@@ -1237,7 +1238,7 @@ void LineFollowController::handlePathFollowing(double robot_x, double robot_y,
 
   if (debug_)
   {
-    LOG_INFO("路径跟随 - 航向误差: {:.4f}, 横向误差: {:.4f}, 速度: [{:.3f}, {:.3f}], 后退: {}", yaw_error,
+    LOG_INFO("路径跟随 - 航向误差: %.4f, 横向误差: %.4f, 速度: [%.3f, %.3f], 后退: %d", yaw_error,
              cross_track_error, cmd_vel.twist.linear.x, cmd_vel.twist.angular.z, back_follow_);
     // LOG_INFO(" ");
   }
@@ -1289,11 +1290,11 @@ void LineFollowController::exportDebugData(const std::string& file_path, const s
     try
     {
       std::filesystem::create_directories(directory);
-      LOG_INFO("创建目录: {}", directory.string());
+      LOG_INFO("创建目录: %s", directory.string().c_str());
     }
     catch (const std::exception& e)
     {
-      LOG_ERROR("无法创建目录 {}: {}", directory.string(), e.what());
+      LOG_ERROR("无法创建目录 %s: %s", directory.string().c_str(), e.what());
       return;
     }
   }
@@ -1301,7 +1302,7 @@ void LineFollowController::exportDebugData(const std::string& file_path, const s
   std::ofstream file(file_path);
   if (!file.is_open())
   {
-    LOG_ERROR("无法打开文件进行数据导出: {}", file_path);
+    LOG_ERROR("无法打开文件进行数据导出: %s", file_path.c_str());
     return;
   }
 
@@ -1320,7 +1321,7 @@ void LineFollowController::exportDebugData(const std::string& file_path, const s
   }
 
   file.close();
-  // LOG_INFO("数据导出成功: {} 行数据到 {}", data.size(), file_path);
+  // LOG_INFO("数据导出成功: %zu 行数据到 %s", data.size(), file_path.c_str());
 }
 
 bool LineFollowController::computeVelocityCommands(const geometry_msgs::msg::PoseStamped& pose,
@@ -1475,7 +1476,7 @@ bool LineFollowController::computeVelocityCommands(const geometry_msgs::msg::Pos
                   .count());
 
           // exportDebugData("/home/daosn_robotics/zyq_ws/path_l/_" + timestamp + "_line.csv", original_path_);
-          exportDebugData("/home/daosn_robotics/path_sg/_" + timestamp + "_line.csv", filtered_path_);
+          exportDebugData("/home/xline/xline_ws/other/path_sg/_" + timestamp + "_line.csv", filtered_path_);
         }
       }
       break;
@@ -1620,7 +1621,7 @@ void LineFollowController::extendPath()
   target_pose_ = global_plan_.poses.back();
   end_pose_ = target_pose_;
 
-  LOG_INFO("路径已延长 {:.2f}m,添加了 {} 个路径点", PATH_EXTENSION_LENGTH, num_points);
+  LOG_INFO("路径已延长 %.2fm,添加了 %d 个路径点", PATH_EXTENSION_LENGTH, num_points);
 }
 
 

@@ -73,7 +73,7 @@ public:
 
     if (is_outlier)
     {
-      // printf("检测到异常值,替换为中位数");
+      // RCLCPP_DEBUG(rclcpp::get_logger("HampelFilter"), "检测到异常值,替换为中位数");
     }
 
     return result;

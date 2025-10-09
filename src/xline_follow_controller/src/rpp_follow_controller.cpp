@@ -13,7 +13,8 @@ namespace follow_controller
 {
 
 RPPController::RPPController()
-  : initialized_(false)
+  : BaseFollowController("rpp_follow_controller")
+  , initialized_(false)
   , goal_reached_(false)
   , max_error_(0.0)
   , avg_error_(0.0)

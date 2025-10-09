@@ -20,9 +20,10 @@ class BaseFollowController: public rclcpp::Node
 private:
 
 public:
-  
 
-  BaseFollowController(): rclcpp::Node("base_follow_controller") {}
+  // 显式构造函数，要求子类提供节点名称
+  explicit BaseFollowController(const std::string& node_name)
+    : rclcpp::Node(node_name) {}
 
   virtual ~BaseFollowController() = default;
 
