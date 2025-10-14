@@ -1,0 +1,6 @@
+# TCP连接配置
+tcp:
+  ip: "127.0.0.1"
+  port: 8888
+  reconnect_interval: 3  # 重连间隔（秒）
+  connect_timeout: 5     # 连接超时（秒）
