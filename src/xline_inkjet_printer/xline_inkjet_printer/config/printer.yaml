@@ -1,5 +1,0 @@
-ip: 192.168.0.24
-port: 6000
-timeout: 3        # 连接超时时间(秒)
-reconnect_times: 0  # 重连次数，0 表示无限次重连
-reconnect_interval: 2.0  # 重连间隔(秒)
