@@ -22,7 +22,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'inkjet_printer_node = xline_inkjet_printer.inkjet_node:main',
+            'inkjet_printer_node = xline_inkjet_printer.async_inkjet_node:main',
         ],
     },
 )
