@@ -300,25 +300,10 @@ class AsyncTcpClient:
                         await self._disconnect()
                         break
 
-                    self._logger.debug(f'[{self._name}] 接收 {len(data)} 字节: {data.hex()}')
-
-                    # 协议解析（feed_data 可能返回多个完整帧）
-                    frames = self._protocol.feed_data(data)
-
-                    for frame in frames:
-                        self._logger.info(
-                            f'[{self._name}] 解析帧: '
-                            f'设备={frame["device_id"]}, '
-                            f'指令={frame["command_name"]}(0x{frame["command_code"]:02X}), '
-                            f'JSON={frame.get("json_data", "N/A")}'
-                        )
-
-                        # 帧回调
-                        if self._on_frame:
-                            try:
-                                await self._on_frame(frame)
-                            except Exception as e:
-                                self._logger.error(f'[{self._name}] 帧回调异常: {e}')
+                    # 暂时不解析协议，直接输出原始数据到控制台
+                    self._logger.info(
+                        f'[{self._name}] 接收 {len(data)} 字节: {data.hex()}'
+                    )
 
                 except asyncio.TimeoutError:
                     # 1秒超时，继续循环检查
