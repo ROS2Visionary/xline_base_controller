@@ -5,17 +5,17 @@ global_defaults:
 
 connections:
   printer_left:
+    ip: 192.168.0.23
+    port: 6000
+    enabled: false
+
+  printer_center:
     ip: 192.168.0.24
     port: 6000
     enabled: true
 
-  printer_center:
-    ip: 192.168.0.25
-    port: 6001
-    enabled: true
-
   printer_right:
     ip: 192.168.0.26
-    port: 6002
-    enabled: true
+    port: 6000
+    enabled: false
 

@@ -27,9 +27,19 @@ class InkjetPrinterNode(Node):
 
     def _status_tick(self) -> None:
         for name, client in self._tcp_clients.items():
+            # 先热更新配置
             client.updateParameter()
-            client.poll()
-            self.get_logger().debug(f'[{name}] TCP状态: {client.status()}')
+
+            # 根据 enabled 动态启动/停止线程
+            if client.is_enabled():
+                if not client.is_running():
+                    client.start()
+                client.poll()
+                self.get_logger().debug(f'[{name}] TCP状态: {client.status()}')
+            else:
+                if client.is_running():
+                    client.stop()
+                self.get_logger().debug(f'[{name}] 已禁用，未启动连接')
 
     def destroy_node(self) -> bool:
         # 优雅关闭全部TCP客户端

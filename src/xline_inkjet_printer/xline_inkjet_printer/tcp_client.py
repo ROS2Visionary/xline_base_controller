@@ -40,6 +40,7 @@ class TcpClient:
         self._stop_evt = threading.Event()
         self._reconnect_attempts_done: int = 0
         self._gave_up: bool = False
+        self._enabled: bool = True
 
         # 配置文件路径（相对：包内 config/<config_name>）
         self._config_path = Path(__file__).resolve().parent / 'config' / config_name
@@ -105,13 +106,17 @@ class TcpClient:
 
         # 是否启用（默认启用）
         enabled = bool(entry.get('enabled', True))
-        if not enabled:
-            # 标记为未连接并不再尝试，直到重新启用
-            if self._connected:
-                self._logger.info(f'[{self._name}] 配置禁用，关闭连接')
-            self._reset_connection()
-            self._gave_up = True
-            return
+        if enabled != self._enabled:
+            self._enabled = enabled
+            if not self._enabled:
+                if self._connected:
+                    self._logger.info(f'[{self._name}] 配置禁用，关闭连接')
+                self._reset_connection()
+                self._reset_attempts()
+                return
+            else:
+                self._logger.info(f'[{self._name}] 配置启用，恢复连接管理')
+                self._reset_attempts()
 
         self._apply_new_params(new_ip, new_port, new_timeout, new_max_reconnect, new_reconnect_interval)
 
@@ -139,6 +144,20 @@ class TcpClient:
             new_reconnect_interval = self._reconnect_interval
         if new_reconnect_interval <= 0:
             new_reconnect_interval = self._reconnect_interval
+
+        # 顶层可选 enabled（兼容单文件启停）
+        enabled = bool(data.get('enabled', self._enabled))
+        if enabled != self._enabled:
+            self._enabled = enabled
+            if not self._enabled:
+                if self._connected:
+                    self._logger.info(f'[{self._name}] 配置禁用，关闭连接')
+                self._reset_connection()
+                self._reset_attempts()
+                return
+            else:
+                self._logger.info(f'[{self._name}] 配置启用，恢复连接管理')
+                self._reset_attempts()
 
         self._apply_new_params(new_ip, new_port, new_timeout, new_max_reconnect, new_reconnect_interval)
 
@@ -169,6 +188,10 @@ class TcpClient:
             self._reset_attempts()
 
     def start(self) -> None:
+        # disabled 时不启动连接管理线程
+        if not self._enabled:
+            self._logger.debug(f'[{self._name}] 已禁用，跳过启动连接管理线程')
+            return
         if not self._conn_thread.is_alive():
             self._stop_evt.clear()
             self._conn_thread = threading.Thread(target=self._connection_manager, daemon=True)
@@ -189,9 +212,18 @@ class TcpClient:
     def status(self) -> str:
         return '已连接' if self._connected else '未连接(重连中...)'
 
+    def is_enabled(self) -> bool:
+        return self._enabled
+
+    def is_running(self) -> bool:
+        return self._conn_thread.is_alive()
+
     # 内部方法
     def _connection_manager(self) -> None:
         while not self._stop_evt.is_set():
+            if not self._enabled:
+                self._stop_evt.wait(self._reconnect_interval)
+                continue
             if not self._connected:
                 # 判断是否还能重连
                 if self._max_reconnect_attempts == 0 or self._reconnect_attempts_done < self._max_reconnect_attempts:
