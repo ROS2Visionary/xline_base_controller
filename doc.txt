@@ -38,3 +38,26 @@ src/xline_inkjet_printer/xline_inkjet_printer/inkjet_node.py,创建一个tcp连�
   │ 帧头    │ 设备号   │ 指令码   │ JSON数据（ASCII编码）                  │
   │ 2字节   │ 1字节    │ 1字节    │ 变长                                   │
   └─────────┴──────────┴──────────┴────────────────────────────────────────┘
+
+
+    发送命令示例
+
+  1. 使用指令名称
+
+  ros2 service call /printer_left/send_command xline_msgs/srv/PrinterCommand \
+    "{command: 'NOISES', json_data: '{\"EU2L\":{\"noises\":1}}'}"
+
+  2. 使用十六进制指令码
+
+  ros2 service call /printer_left/send_command xline_msgs/srv/PrinterCommand \
+    "{command: '0x15', json_data: '{\"EU2L\":{\"noises\":1}}'}"
+
+  3. 使用十进制指令码
+
+  ros2 service call /printer_left/send_command xline_msgs/srv/PrinterCommand \
+    "{command: '21', json_data: '{\"EU2L\":{\"noises\":1}}'}"
+
+  4. 发送 SETUP_EVENT 命令
+
+  ros2 service call /printer_center/send_command xline_msgs/srv/PrinterCommand \
+    "{command: 'SETUP_EVENT', json_data: '{\"EU2L\":{\"setupEvent\":0}}'}"

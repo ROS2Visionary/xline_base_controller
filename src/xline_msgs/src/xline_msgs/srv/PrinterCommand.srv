@@ -1,0 +1,9 @@
+# Request
+string command      # 指令名称或指令码（如 "NOISES", "SETUP_EVENT" 或 "0x15"）
+string json_data    # JSON格式的命令数据（如 '{"EU2L":{"noises":1}}'）
+---
+# Response
+bool success        # 命令是否执行成功
+string message      # 执行结果消息
+
+

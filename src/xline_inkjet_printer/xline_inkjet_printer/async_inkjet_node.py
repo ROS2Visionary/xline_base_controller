@@ -14,6 +14,7 @@ from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
 from std_srvs.srv import Trigger
 from std_msgs.msg import String
+from xline_msgs.srv import PrinterCommand
 
 from .async_tcp_client import AsyncTcpClient
 from .protocol import InkjetCommand
@@ -78,13 +79,13 @@ class AsyncInkjetPrinterNode(Node):
 
         # ROS 2 服务 - 发送命令
         self._send_left_srv = self.create_service(
-            Trigger, 'printer_left/send_command', self._handle_send_left
+            PrinterCommand, 'printer_left/send_command', self._handle_send_left
         )
         self._send_center_srv = self.create_service(
-            Trigger, 'printer_center/send_command', self._handle_send_center
+            PrinterCommand, 'printer_center/send_command', self._handle_send_center
         )
         self._send_right_srv = self.create_service(
-            Trigger, 'printer_right/send_command', self._handle_send_right
+            PrinterCommand, 'printer_right/send_command', self._handle_send_right
         )
 
         # ROS 2 服务 - 状态查询
@@ -212,7 +213,7 @@ class AsyncInkjetPrinterNode(Node):
         """
         通用命令发送处理
 
-        这是一个示例，实际使用时应该从request中获取命令参数
+        从 request 中解析 command 和 json_data，并发送到打印机
         """
         client = self._tcp_clients.get(printer_name)
         if not client:
@@ -225,10 +226,38 @@ class AsyncInkjetPrinterNode(Node):
             response.message = f'{printer_name} 未连接'
             return response
 
-        # 示例：发送噪声控制命令
-        # 实际使用时应该从ROS消息中获取命令类型和JSON数据
-        command_code = InkjetCommand.NOISES
-        json_data = {"EU2L": {"noises": 1}}
+        # 解析指令码
+        try:
+            command_str = request.command.strip()
+
+            # 支持指令名称（如 "NOISES"）或十六进制（如 "0x15"）
+            if command_str.upper().startswith('0X'):
+                # 十六进制格式：0x15
+                command_code = int(command_str, 16)
+            elif command_str.isdigit():
+                # 十进制数字：21
+                command_code = int(command_str)
+            else:
+                # 指令名称：NOISES
+                try:
+                    command_code = InkjetCommand[command_str.upper()].value
+                except KeyError:
+                    response.success = False
+                    response.message = f'未知指令: {command_str}'
+                    return response
+
+        except (ValueError, AttributeError) as e:
+            response.success = False
+            response.message = f'指令格式错误: {command_str}, {str(e)}'
+            return response
+
+        # 解析 JSON 数据
+        try:
+            json_data = json.loads(request.json_data)
+        except json.JSONDecodeError as e:
+            response.success = False
+            response.message = f'JSON 解析失败: {str(e)}'
+            return response
 
         # 在 asyncio 循环中执行发送命令
         future = asyncio.run_coroutine_threadsafe(
@@ -239,12 +268,25 @@ class AsyncInkjetPrinterNode(Node):
         try:
             result = future.result(timeout=3.0)
             response.success = result
-            response.message = f'命令已发送: {json_data}' if result else '发送失败'
+
+            if result:
+                cmd_name = self._get_command_name(command_code)
+                response.message = f'命令已发送: {cmd_name}(0x{command_code:02X}), 数据: {json_data}'
+            else:
+                response.message = '发送失败'
+
         except Exception as e:
             response.success = False
             response.message = f'发送异常: {str(e)}'
 
         return response
+
+    def _get_command_name(self, command_code: int) -> str:
+        """获取指令名称"""
+        try:
+            return InkjetCommand(command_code).name
+        except ValueError:
+            return f'UNKNOWN'
 
     # 服务处理函数 - 状态查询
     def _handle_status_left(self, request, response):
