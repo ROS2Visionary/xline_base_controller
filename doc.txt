@@ -61,3 +61,13 @@ src/xline_inkjet_printer/xline_inkjet_printer/inkjet_node.py,创建一个tcp连�
 
   ros2 service call /printer_center/send_command xline_msgs/srv/PrinterCommand \
     "{command: 'SETUP_EVENT', json_data: '{\"EU2L\":{\"setupEvent\":0}}'}"
+
+
+
+
+
+
+
+
+
+    

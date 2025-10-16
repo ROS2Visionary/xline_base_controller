@@ -78,6 +78,12 @@ class AsyncInkjetPrinterNode(Node):
         self._status_pub = self.create_publisher(String, 'printer_status', 10)
 
         # ROS 2 服务 - 发送命令
+        # 通用服务（使用 printer_name 字段路由）
+        self._send_generic_srv = self.create_service(
+            PrinterCommand, 'printer/send_command', self._handle_send_command_generic
+        )
+
+        # 独立服务（向后兼容，忽略 printer_name 字段）
         self._send_left_srv = self.create_service(
             PrinterCommand, 'printer_left/send_command', self._handle_send_left
         )
@@ -200,6 +206,27 @@ class AsyncInkjetPrinterNode(Node):
         self._status_pub.publish(msg)
 
     # 服务处理函数 - 发送命令
+    def _handle_send_command_generic(self, request, response):
+        """
+        通用命令发送处理（使用 printer_name 字段路由）
+        """
+        # 解析打印机名称
+        printer_name_raw = request.printer_name.strip().lower()
+
+        # 规范化名称：支持 "left"、"printer_left" 等格式
+        if printer_name_raw in ['left', 'printer_left']:
+            printer_name = 'printer_left'
+        elif printer_name_raw in ['center', 'printer_center']:
+            printer_name = 'printer_center'
+        elif printer_name_raw in ['right', 'printer_right']:
+            printer_name = 'printer_right'
+        else:
+            response.success = False
+            response.message = f'未知的打印机标识: {request.printer_name}，支持: left/center/right'
+            return response
+
+        return self._handle_send_command(printer_name, request, response)
+
     def _handle_send_left(self, request, response):
         return self._handle_send_command('printer_left', request, response)
 

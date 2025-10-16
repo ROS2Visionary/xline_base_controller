@@ -1,4 +1,5 @@
 # Request
+string printer_name # 目标喷码机标识（"left", "center", "right" 或 "printer_left", "printer_center", "printer_right"）
 string command      # 指令名称或指令码（如 "NOISES", "SETUP_EVENT" 或 "0x15"）
 string json_data    # JSON格式的命令数据（如 '{"EU2L":{"noises":1}}'）
 ---
