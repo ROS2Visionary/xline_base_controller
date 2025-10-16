@@ -83,17 +83,6 @@ class AsyncInkjetPrinterNode(Node):
             PrinterCommand, 'printer/send_command', self._handle_send_command_generic
         )
 
-        # 独立服务（向后兼容，忽略 printer_name 字段）
-        self._send_left_srv = self.create_service(
-            PrinterCommand, 'printer_left/send_command', self._handle_send_left
-        )
-        self._send_center_srv = self.create_service(
-            PrinterCommand, 'printer_center/send_command', self._handle_send_center
-        )
-        self._send_right_srv = self.create_service(
-            PrinterCommand, 'printer_right/send_command', self._handle_send_right
-        )
-
         # ROS 2 服务 - 状态查询
         self._status_left_srv = self.create_service(
             Trigger, 'printer_left/status', self._handle_status_left
@@ -227,14 +216,6 @@ class AsyncInkjetPrinterNode(Node):
 
         return self._handle_send_command(printer_name, request, response)
 
-    def _handle_send_left(self, request, response):
-        return self._handle_send_command('printer_left', request, response)
-
-    def _handle_send_center(self, request, response):
-        return self._handle_send_command('printer_center', request, response)
-
-    def _handle_send_right(self, request, response):
-        return self._handle_send_command('printer_right', request, response)
 
     def _handle_send_command(self, printer_name: str, request, response):
         """

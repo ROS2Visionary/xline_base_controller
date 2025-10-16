@@ -43,9 +43,15 @@ src/xline_inkjet_printer/xline_inkjet_printer/inkjet_node.py,创建一个tcp连�
     发送命令示例
 
   1. 使用指令名称
+  source install/setup.sh
+  ros2 service call /printer/send_command xline_msgs/srv/PrinterCommand \
+    "{printer_name: 'printer_center', command: 'NOISES', json_data: '{\"EU2L\":{\"noises\":1}}'}"
 
-  ros2 service call /printer_left/send_command xline_msgs/srv/PrinterCommand \
-    "{command: 'NOISES', json_data: '{\"EU2L\":{\"noises\":1}}'}"
+  ros2 service call /printer/send_command xline_msgs/srv/PrinterCommand \
+    "{printer_name: 'printer_center', command: 'SETUP_EVENT', json_data: '{\"EU2L\":{\"setupEvent\":1}}'}"
+
+  ros2 service call /printer/send_command xline_msgs/srv/PrinterCommand \
+    "{printer_name: 'printer_center', command: 'SETUP_EVENT', json_data: '{\"EU2L\":{\"setupEvent\":0}}'}"
 
   2. 使用十六进制指令码
 
@@ -67,7 +73,11 @@ src/xline_inkjet_printer/xline_inkjet_printer/inkjet_node.py,创建一个tcp连�
 
 
 
-
+  建议下一步：
+  我可以帮您实施以下改进（按优先级）：
+  1. 启用协议解析
+  2. 简化服务接口（删除冗余）
+  3. 添加常用指令的便捷方法
 
 
     
