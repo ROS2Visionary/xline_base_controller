@@ -16,21 +16,10 @@ class InkjetCommand(IntEnum):
 
     根据实际硬件协议定义，每个指令对应一个字节的指令码。
     """
-    # 已知指令（从示例中提取）
-    NOISES = 0x15           # 21 - 噪声控制
-    SETUP_EVENT = 0x19      # 25 - 设置事件
+    NOISES = 0x15           # 蜂鸣
+    SETUP_EVENT = 0x19      # 启动/关闭打印
 
-    # 其他常用指令（可根据实际硬件文档补充）
-    PRINT = 0x01            # 打印命令
-    STATUS = 0x02           # 状态查询
-    RESET = 0x03            # 复位
-    CONFIGURE = 0x04        # 配置
-    CLEAR_BUFFER = 0x05     # 清空缓冲区
 
-    # 预留指令码
-    CUSTOM_1 = 0x10
-    CUSTOM_2 = 0x11
-    CUSTOM_3 = 0x12
 
 
 class InkjetProtocol:

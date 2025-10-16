@@ -38,8 +38,8 @@ class AsyncInkjetPrinterNode(Node):
         self.declare_parameter('config_file', 'printers.yaml')
         self.declare_parameter('status_publish_rate', 1.0)  # Hz
         self.declare_parameter('device_id_left', 0)
-        self.declare_parameter('device_id_center', 1)
-        self.declare_parameter('device_id_right', 2)
+        self.declare_parameter('device_id_center', 0)
+        self.declare_parameter('device_id_right', 0)
 
         # 获取参数
         config_file = self.get_parameter('config_file').value
