@@ -1,0 +1,10 @@
+# Request
+string printer_name    # 目标打印机: "left", "center", "right", "all"（all表示所有打印机）
+string action          # 动作类型: "beep", "start_print", "stop_print", "clean_nozzle"
+int32 param            # 可选参数（如蜂鸣次数、清洗强度），默认使用标准值
+
+---
+
+# Response
+bool success           # 是否执行成功
+string message         # 执行结果消息

@@ -14,10 +14,11 @@ from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
 from std_srvs.srv import Trigger
 from std_msgs.msg import String
-from xline_msgs.srv import PrinterCommand
+from xline_msgs.srv import PrinterCommand, QuickCommand
 
 from .async_tcp_client import AsyncTcpClient
 from .protocol import InkjetCommand
+from .command_templates import PrinterCommandTemplates
 
 
 class AsyncInkjetPrinterNode(Node):
@@ -81,6 +82,11 @@ class AsyncInkjetPrinterNode(Node):
         # 通用服务（使用 printer_name 字段路由）
         self._send_generic_srv = self.create_service(
             PrinterCommand, 'printer/send_command', self._handle_send_command_generic
+        )
+
+        # ROS 2 服务 - 便捷指令（统一服务，支持所有打印机和常用动作）
+        self._quick_command_srv = self.create_service(
+            QuickCommand, 'printer/quick_command', self._handle_quick_command
         )
 
         # ROS 2 服务 - 状态查询
@@ -324,6 +330,125 @@ class AsyncInkjetPrinterNode(Node):
 
         response.success = True
         response.message = json.dumps(status_info, ensure_ascii=False, indent=2)
+        return response
+
+    # 便捷服务处理函数 - 统一快速命令
+    def _handle_quick_command(self, request, response):
+        """
+        处理快速命令请求
+
+        支持的动作: beep, start_print, stop_print, clean_nozzle
+        支持的打印机: left, center, right, all
+        """
+        action = request.action.lower().strip()
+        printer_name_raw = request.printer_name.lower().strip()
+        param = request.param if request.param > 0 else None
+
+        # 解析动作
+        action_map = {
+            'beep': ('蜂鸣', lambda p: PrinterCommandTemplates.beep(p if p else 1)),
+            'start_print': ('开启打印', lambda p: PrinterCommandTemplates.start_print()),
+            'start': ('开启打印', lambda p: PrinterCommandTemplates.start_print()),
+            'stop_print': ('关闭打印', lambda p: PrinterCommandTemplates.stop_print()),
+            'stop': ('关闭打印', lambda p: PrinterCommandTemplates.stop_print()),
+            'clean_nozzle': ('清洗喷头', lambda p: PrinterCommandTemplates.clean_nozzle(p if p else 20)),
+            'clean': ('清洗喷头', lambda p: PrinterCommandTemplates.clean_nozzle(p if p else 20)),
+        }
+
+        if action not in action_map:
+            response.success = False
+            response.message = f'不支持的动作: {action}，支持: {", ".join(action_map.keys())}'
+            return response
+
+        action_name, template_func = action_map[action]
+
+        # 解析打印机名称
+        if printer_name_raw == 'all':
+            # 对所有打印机执行
+            results = []
+            for pname in ['printer_left', 'printer_center', 'printer_right']:
+                try:
+                    command_code, json_data = template_func(param)
+                    # 创建临时响应对象
+                    temp_response = QuickCommand.Response()
+                    self._execute_template_command(pname, command_code, json_data, action_name, temp_response)
+                    results.append(f'{pname}: {temp_response.message}')
+                except Exception as e:
+                    results.append(f'{pname}: 错误 - {str(e)}')
+
+            response.success = True
+            response.message = '\n'.join(results)
+            return response
+        else:
+            # 单个打印机
+            # 规范化名称
+            if printer_name_raw in ['left', 'printer_left']:
+                printer_name = 'printer_left'
+            elif printer_name_raw in ['center', 'printer_center']:
+                printer_name = 'printer_center'
+            elif printer_name_raw in ['right', 'printer_right']:
+                printer_name = 'printer_right'
+            else:
+                response.success = False
+                response.message = f'未知的打印机: {printer_name_raw}，支持: left/center/right/all'
+                return response
+
+            try:
+                command_code, json_data = template_func(param)
+                return self._execute_template_command(printer_name, command_code, json_data, action_name, response)
+            except Exception as e:
+                response.success = False
+                response.message = f'执行失败: {str(e)}'
+                return response
+
+    def _execute_template_command(self, printer_name: str, command_code: int, json_data: dict, action_name: str, response):
+        """
+        执行模板命令的通用处理函数
+
+        Args:
+            printer_name: 打印机名称
+            command_code: 指令码
+            json_data: JSON数据
+            action_name: 动作名称（用于日志）
+            response: 响应对象
+
+        Returns:
+            填充后的响应对象
+        """
+        client = self._tcp_clients.get(printer_name)
+        if not client:
+            response.success = False
+            response.message = f'打印机 {printer_name} 不存在'
+            return response
+
+        if not client.is_connected():
+            response.success = False
+            response.message = f'{printer_name} 未连接'
+            return response
+
+        # 在 asyncio 循环中执行发送命令
+        future = asyncio.run_coroutine_threadsafe(
+            client.send_command(command_code, json_data),
+            self._loop
+        )
+
+        try:
+            result = future.result(timeout=3.0)
+            response.success = result
+
+            if result:
+                cmd_name = self._get_command_name(command_code)
+                response.message = f'[{printer_name}] {action_name}命令已发送: {cmd_name}(0x{command_code:02X})'
+                self.get_logger().info(response.message)
+            else:
+                response.message = f'[{printer_name}] {action_name}命令发送失败'
+                self.get_logger().warn(response.message)
+
+        except Exception as e:
+            response.success = False
+            response.message = f'[{printer_name}] {action_name}命令异常: {str(e)}'
+            self.get_logger().error(response.message)
+
         return response
 
     def destroy_node(self) -> bool:

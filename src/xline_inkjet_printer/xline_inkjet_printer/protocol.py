@@ -17,7 +17,8 @@ class InkjetCommand(IntEnum):
     根据实际硬件协议定义，每个指令对应一个字节的指令码。
     """
     NOISES = 0x15           # 蜂鸣
-    SETUP_EVENT = 0x19      # 启动/关闭打印
+    SETUP_EVENT = 0x19      # 启动/关闭打印（通用指令码，具体功能由JSON内容决定）
+    # 注意：CLEAN（清洗喷头）也使用 0x19 指令码，但通过不同的JSON内容区分
 
 
 
