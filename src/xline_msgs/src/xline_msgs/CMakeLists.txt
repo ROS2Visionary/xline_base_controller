@@ -9,6 +9,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/LnCommand.srv"
   "srv/PrinterCommand.srv"
   "srv/QuickCommand.srv"
+  "srv/SetPrinterEnabled.srv"
 )
 
 ament_export_dependencies(rosidl_default_runtime)

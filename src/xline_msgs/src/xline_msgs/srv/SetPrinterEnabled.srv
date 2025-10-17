@@ -1,0 +1,10 @@
+# 设置打印机启用状态服务
+
+# 请求
+string printer_name    # 打印机名称 (left/center/right/all)
+bool enabled           # 是否启用
+
+---
+# 响应
+bool success           # 是否成功
+string message         # 返回消息

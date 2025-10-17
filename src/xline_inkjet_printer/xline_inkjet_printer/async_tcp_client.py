@@ -428,3 +428,42 @@ class AsyncTcpClient:
     def get_device_id(self) -> int:
         """获取设备号"""
         return self._device_id
+
+    async def set_enabled(self, enabled: bool) -> bool:
+        """
+        动态设置启用状态
+
+        Args:
+            enabled: 是否启用
+
+        Returns:
+            是否设置成功
+        """
+        if self._enabled == enabled:
+            # 状态未改变
+            self._logger.debug(f'[{self._name}] enabled状态未改变: {enabled}')
+            return True
+
+        old_enabled = self._enabled
+        self._enabled = enabled
+
+        self._logger.info(f'[{self._name}] enabled状态变化: {old_enabled} -> {enabled}')
+
+        if enabled:
+            # 从禁用变为启用：启动重连循环（如果未运行）
+            if self._reconnect_task is None or self._reconnect_task.done():
+                self._logger.info(f'[{self._name}] 启动重连循环...')
+                self._stop_event.clear()
+                self._reconnect_task = asyncio.create_task(self._reconnect_loop())
+            else:
+                # 重连循环已在运行，它会自动检测 _enabled 的变化
+                self._logger.info(f'[{self._name}] 重连循环已在运行，将自动连接')
+        else:
+            # 从启用变为禁用：断开当前连接
+            if self._connected:
+                self._logger.info(f'[{self._name}] 断开连接...')
+                await self._disconnect()
+            # 重连循环会检查 _enabled 并自动停止尝试重连
+            self._logger.info(f'[{self._name}] 已禁用，停止重连')
+
+        return True

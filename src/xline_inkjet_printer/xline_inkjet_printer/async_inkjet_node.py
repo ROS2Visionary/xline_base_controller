@@ -8,13 +8,16 @@ import asyncio
 import threading
 from typing import Dict, Optional
 import json
+from pathlib import Path
+import yaml
 
 import rclpy
 from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
+from rclpy.parameter import Parameter
 from std_srvs.srv import Trigger
 from std_msgs.msg import String
-from xline_msgs.srv import PrinterCommand, QuickCommand
+from xline_msgs.srv import PrinterCommand, QuickCommand, SetPrinterEnabled
 
 from .async_tcp_client import AsyncTcpClient
 from .protocol import InkjetCommand
@@ -44,12 +47,20 @@ class AsyncInkjetPrinterNode(Node):
         self.declare_parameter('device_id_center', 0)
         self.declare_parameter('device_id_right', 0)
 
+        # 声明 enabled 参数（从配置文件读取初始值）
+        self.declare_parameter('printer_left_enabled', True)
+        self.declare_parameter('printer_center_enabled', True)
+        self.declare_parameter('printer_right_enabled', True)
+
         # 获取参数
         config_file = self.get_parameter('config_file').value
         status_rate = self.get_parameter('status_publish_rate').value
         device_id_left = self.get_parameter('device_id_left').value
         device_id_center = self.get_parameter('device_id_center').value
         device_id_right = self.get_parameter('device_id_right').value
+
+        # 配置文件路径（用于持久化）
+        self._config_path = Path(__file__).resolve().parent / 'config' / config_file
 
         # TCP 客户端字典
         self._tcp_clients: Dict[str, AsyncTcpClient] = {}
@@ -108,6 +119,11 @@ class AsyncInkjetPrinterNode(Node):
             Trigger, 'printer_right/status', self._handle_status_right
         )
 
+        # ROS 2 服务 - 设置打印机启用状态
+        self._set_enabled_srv = self.create_service(
+            SetPrinterEnabled, 'printer/set_enabled', self._handle_set_enabled
+        )
+
         # ROS 2 定时器 - 发布状态
         self._status_timer = self.create_timer(
             1.0 / status_rate,
@@ -125,6 +141,9 @@ class AsyncInkjetPrinterNode(Node):
         # 启动所有客户端
         for client in self._tcp_clients.values():
             asyncio.run_coroutine_threadsafe(client.start(), self._loop)
+
+        # 注册参数回调
+        self.add_on_set_parameters_callback(self._parameters_callback)
 
         self.get_logger().info('=' * 60)
         self.get_logger().info('异步喷墨打印机节点已启动')
@@ -544,6 +563,165 @@ class AsyncInkjetPrinterNode(Node):
             self.get_logger().error(response.message)
 
         return response
+
+    # ========== 参数回调 ==========
+    def _parameters_callback(self, params):
+        """
+        参数变化回调函数
+
+        当参数通过 ros2 param set 或服务修改时触发
+        """
+        successful = True
+        for param in params:
+            if param.name in ['printer_left_enabled', 'printer_center_enabled', 'printer_right_enabled']:
+                # 解析打印机名称
+                printer_name = param.name.replace('_enabled', '')
+                enabled = param.value
+
+                self.get_logger().info(
+                    f'参数变化: {param.name} = {enabled}'
+                )
+
+                # 更新客户端状态
+                client = self._tcp_clients.get(printer_name)
+                if client:
+                    # 在 asyncio 循环中执行
+                    future = asyncio.run_coroutine_threadsafe(
+                        client.set_enabled(enabled),
+                        self._loop
+                    )
+                    try:
+                        result = future.result(timeout=3.0)
+                        if not result:
+                            self.get_logger().error(f'设置 {printer_name} enabled 失败')
+                            successful = False
+                    except Exception as e:
+                        self.get_logger().error(f'设置 {printer_name} enabled 异常: {e}')
+                        successful = False
+                else:
+                    self.get_logger().error(f'未找到打印机客户端: {printer_name}')
+                    successful = False
+
+        from rclpy.parameter import SetParametersResult
+        return SetParametersResult(successful=successful)
+
+    # ========== 服务处理函数 - 设置打印机启用状态 ==========
+    def _handle_set_enabled(self, request, response):
+        """
+        处理设置打印机启用状态的服务请求
+
+        流程：
+        1. 更新 ROS 2 参数（触发参数回调 -> 更新内存 -> 控制连接）
+        2. 持久化到 yaml 文件
+        """
+        printer_name_raw = request.printer_name.lower().strip()
+        enabled = request.enabled
+
+        self.get_logger().info(
+            f'收到设置启用状态请求: printer={printer_name_raw}, enabled={enabled}'
+        )
+
+        # 解析打印机名称
+        if printer_name_raw == 'all':
+            # 设置所有打印机
+            results = []
+            for pname in ['left', 'center', 'right']:
+                success, msg = self._set_single_printer_enabled(pname, enabled)
+                results.append(f'{pname}: {msg}')
+
+            response.success = True
+            response.message = '\n'.join(results)
+            return response
+        else:
+            # 单个打印机
+            # 规范化名称
+            if printer_name_raw in ['left', 'printer_left']:
+                printer_short = 'left'
+            elif printer_name_raw in ['center', 'printer_center']:
+                printer_short = 'center'
+            elif printer_name_raw in ['right', 'printer_right']:
+                printer_short = 'right'
+            else:
+                response.success = False
+                response.message = f'未知的打印机: {printer_name_raw}，支持: left/center/right/all'
+                return response
+
+            success, msg = self._set_single_printer_enabled(printer_short, enabled)
+            response.success = success
+            response.message = msg
+            return response
+
+    def _set_single_printer_enabled(self, printer_short: str, enabled: bool):
+        """
+        设置单个打印机的启用状态
+
+        Args:
+            printer_short: 打印机短名称 (left/center/right)
+            enabled: 是否启用
+
+        Returns:
+            (成功标志, 消息) 元组
+        """
+        printer_name = f'printer_{printer_short}'
+        param_name = f'{printer_name}_enabled'
+
+        # 1. 更新 ROS 2 参数（会触发参数回调）
+        try:
+            self.set_parameters([Parameter(param_name, Parameter.Type.BOOL, enabled)])
+            self.get_logger().info(f'已更新参数: {param_name} = {enabled}')
+        except Exception as e:
+            msg = f'更新参数失败: {str(e)}'
+            self.get_logger().error(msg)
+            return False, msg
+
+        # 2. 持久化到 yaml 文件
+        try:
+            self._persist_enabled_to_yaml(printer_name, enabled)
+            msg = f'[{printer_name}] 启用状态已设置为 {enabled} 并持久化'
+            self.get_logger().info(msg)
+            return True, msg
+        except Exception as e:
+            msg = f'[{printer_name}] 启用状态已设置为 {enabled}，但持久化失败: {str(e)}'
+            self.get_logger().warning(msg)
+            return True, msg  # 即使持久化失败，参数已更新，仍返回成功
+
+    def _persist_enabled_to_yaml(self, printer_name: str, enabled: bool) -> None:
+        """
+        持久化 enabled 参数到 yaml 文件
+
+        Args:
+            printer_name: 打印机名称 (printer_left/printer_center/printer_right)
+            enabled: 是否启用
+        """
+        try:
+            # 读取现有配置
+            with self._config_path.open('r', encoding='utf-8') as f:
+                config = yaml.safe_load(f) or {}
+
+            # 更新 enabled 字段
+            if 'connections' in config and printer_name in config['connections']:
+                config['connections'][printer_name]['enabled'] = enabled
+                self.get_logger().debug(
+                    f'更新配置: connections.{printer_name}.enabled = {enabled}'
+                )
+            else:
+                raise ValueError(f'配置文件中未找到 {printer_name}')
+
+            # 写回文件
+            with self._config_path.open('w', encoding='utf-8') as f:
+                yaml.dump(
+                    config,
+                    f,
+                    default_flow_style=False,
+                    allow_unicode=True,
+                    sort_keys=False
+                )
+
+            self.get_logger().info(f'已持久化 {printer_name}.enabled = {enabled} 到 {self._config_path}')
+
+        except Exception as e:
+            self.get_logger().error(f'持久化到 yaml 失败: {e}')
+            raise
 
     def destroy_node(self) -> bool:
         """优雅关闭节点"""
