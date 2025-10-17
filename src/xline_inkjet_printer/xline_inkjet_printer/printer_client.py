@@ -153,6 +153,24 @@ class PrinterClient:
         """
         return self._call_quick_command('clean_nozzle', intensity, timeout_sec)
 
+    def query_ink_level(self, timeout_sec: float = 3.0) -> Tuple[bool, str]:
+        """
+        查询墨盒模量
+
+        Args:
+            timeout_sec: 超时时间（秒）
+
+        Returns:
+            (成功标志, 消息) 元组
+            成功时消息包含墨盒模量值，例如："墨盒模量: 98 (0x62)"
+
+        Examples:
+            >>> success, msg = client.query_ink_level()
+            >>> if success:
+            >>>     print(msg)  # 输出: [printer_left] 墨盒模量: 98 (0x62)
+        """
+        return self._call_quick_command('ink_level', 0, timeout_sec)
+
     def get_status(self, timeout_sec: float = 3.0) -> Tuple[bool, Optional[dict]]:
         """
         获取打印机状态
@@ -387,4 +405,12 @@ class MultiPrinterClient:
             'left': self.left.get_status(timeout_sec),
             'center': self.center.get_status(timeout_sec),
             'right': self.right.get_status(timeout_sec)
+        }
+
+    def query_ink_level_all(self, timeout_sec: float = 3.0) -> dict:
+        """查询所有打印机墨盒模量"""
+        return {
+            'left': self.left.query_ink_level(timeout_sec),
+            'center': self.center.query_ink_level(timeout_sec),
+            'right': self.right.query_ink_level(timeout_sec)
         }

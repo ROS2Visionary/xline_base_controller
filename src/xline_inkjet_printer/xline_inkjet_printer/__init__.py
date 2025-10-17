@@ -31,6 +31,13 @@ from .printer_client import (
     MultiPrinterClient
 )
 
+# 墨盒查询
+from .ink_level_query import (
+    InkLevelQuery,
+    query_ink_level_async,
+    query_ink_level_sync
+)
+
 # 节点
 from .async_inkjet_node import AsyncInkjetPrinterNode
 
@@ -58,6 +65,11 @@ __all__ = [
     # 客户端工具
     'PrinterClient',
     'MultiPrinterClient',
+
+    # 墨盒查询
+    'InkLevelQuery',
+    'query_ink_level_async',
+    'query_ink_level_sync',
 
     # 节点
     'AsyncInkjetPrinterNode',

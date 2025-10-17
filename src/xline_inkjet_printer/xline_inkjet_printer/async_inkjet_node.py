@@ -19,6 +19,7 @@ from xline_msgs.srv import PrinterCommand, QuickCommand
 from .async_tcp_client import AsyncTcpClient
 from .protocol import InkjetCommand
 from .command_templates import PrinterCommandTemplates
+from .ink_level_query import InkLevelQuery
 
 
 class AsyncInkjetPrinterNode(Node):
@@ -53,6 +54,9 @@ class AsyncInkjetPrinterNode(Node):
         # TCP 客户端字典
         self._tcp_clients: Dict[str, AsyncTcpClient] = {}
 
+        # 墨盒查询器字典
+        self._ink_queries: Dict[str, InkLevelQuery] = {}
+
         # 创建三路打印机客户端（每个打印机可以有不同的设备号）
         client_configs = {
             'printer_left': device_id_left,
@@ -74,6 +78,10 @@ class AsyncInkjetPrinterNode(Node):
             client.set_state_callback(self._create_state_callback(name))
 
             self._tcp_clients[name] = client
+
+            # 创建墨盒查询器（使用相同IP，端口8010）
+            ip = client._ip
+            self._ink_queries[name] = InkLevelQuery(host=ip, port=8010, timeout=3.0)
 
         # ROS 2 发布者
         self._status_pub = self.create_publisher(String, 'printer_status', 10)
@@ -337,12 +345,16 @@ class AsyncInkjetPrinterNode(Node):
         """
         处理快速命令请求
 
-        支持的动作: beep, start_print, stop_print, clean_nozzle
+        支持的动作: beep, start_print, stop_print, clean_nozzle, ink_level
         支持的打印机: left, center, right, all
         """
         action = request.action.lower().strip()
         printer_name_raw = request.printer_name.lower().strip()
         param = request.param if request.param > 0 else None
+
+        # 墨盒查询特殊处理（不使用模板）
+        if action in ['ink_level', 'query_ink', 'ink']:
+            return self._handle_ink_level_query(printer_name_raw, response)
 
         # 解析动作
         action_map = {
@@ -357,7 +369,7 @@ class AsyncInkjetPrinterNode(Node):
 
         if action not in action_map:
             response.success = False
-            response.message = f'不支持的动作: {action}，支持: {", ".join(action_map.keys())}'
+            response.message = f'不支持的动作: {action}，支持: {", ".join(list(action_map.keys()) + ["ink_level"])}'
             return response
 
         action_name, template_func = action_map[action]
@@ -400,6 +412,88 @@ class AsyncInkjetPrinterNode(Node):
                 response.success = False
                 response.message = f'执行失败: {str(e)}'
                 return response
+
+    def _handle_ink_level_query(self, printer_name_raw: str, response):
+        """
+        处理墨盒模量查询
+
+        Args:
+            printer_name_raw: 打印机名称（left/center/right/all）
+            response: 响应对象
+
+        Returns:
+            填充后的响应对象
+        """
+        # 解析打印机名称
+        if printer_name_raw == 'all':
+            # 查询所有打印机
+            results = []
+            for pname in ['printer_left', 'printer_center', 'printer_right']:
+                query = self._ink_queries.get(pname)
+                if not query:
+                    results.append(f'{pname}: 查询器未初始化')
+                    continue
+
+                # 在 asyncio 循环中执行查询
+                future = asyncio.run_coroutine_threadsafe(
+                    query.query_ink_level(),
+                    self._loop
+                )
+
+                try:
+                    ink_level = future.result(timeout=3.0)
+                    if ink_level is not None:
+                        results.append(f'{pname}: {ink_level} (0x{ink_level:02X})')
+                    else:
+                        results.append(f'{pname}: 查询失败')
+                except Exception as e:
+                    results.append(f'{pname}: 异常 - {str(e)}')
+
+            response.success = True
+            response.message = '\n'.join(results)
+            return response
+        else:
+            # 单个打印机
+            # 规范化名称
+            if printer_name_raw in ['left', 'printer_left']:
+                printer_name = 'printer_left'
+            elif printer_name_raw in ['center', 'printer_center']:
+                printer_name = 'printer_center'
+            elif printer_name_raw in ['right', 'printer_right']:
+                printer_name = 'printer_right'
+            else:
+                response.success = False
+                response.message = f'未知的打印机: {printer_name_raw}，支持: left/center/right/all'
+                return response
+
+            query = self._ink_queries.get(printer_name)
+            if not query:
+                response.success = False
+                response.message = f'{printer_name} 查询器未初始化'
+                return response
+
+            # 在 asyncio 循环中执行查询
+            future = asyncio.run_coroutine_threadsafe(
+                query.query_ink_level(),
+                self._loop
+            )
+
+            try:
+                ink_level = future.result(timeout=3.0)
+                if ink_level is not None:
+                    response.success = True
+                    response.message = f'[{printer_name}] 墨盒模量: {ink_level} (0x{ink_level:02X})'
+                    self.get_logger().info(response.message)
+                else:
+                    response.success = False
+                    response.message = f'[{printer_name}] 墨盒模量查询失败'
+                    self.get_logger().warn(response.message)
+            except Exception as e:
+                response.success = False
+                response.message = f'[{printer_name}] 墨盒模量查询异常: {str(e)}'
+                self.get_logger().error(response.message)
+
+            return response
 
     def _execute_template_command(self, printer_name: str, command_code: int, json_data: dict, action_name: str, response):
         """
