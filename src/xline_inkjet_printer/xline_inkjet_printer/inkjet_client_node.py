@@ -65,7 +65,7 @@ class InkjetClientNode(Node):
         self.get_logger().info('可用服务:')
         self.get_logger().info('  - printer/send_command (通用命令)')
         self.get_logger().info('  - printer/quick_command (快速命令)')
-        self.get_logger().info('  - printer/set_enabled (设置打印机启用状态)')
+        self.get_logger().info('  - printer/set_enabled (设置打印机自动连接)')
         self.get_logger().info('  - printer_left/status (左打印机状态)')
         self.get_logger().info('  - printer_center/status (中打印机状态)')
         self.get_logger().info('  - printer_right/status (右打印机状态)')
@@ -483,24 +483,28 @@ class InkjetClientNode(Node):
         timeout_sec: float = 3.0
     ) -> Tuple[bool, str]:
         """
-        设置打印机启用状态
+        设置打印机自动连接状态
+
+        当设置为 True 时，打印机会自动连接并保持连接。
+        当设置为 False 时，打印机会断开连接并停止自动重连。
+        修改会立即生效并持久化到配置文件。
 
         Args:
             printer_name: 打印机名称 (left/center/right/all)
-            enabled: 是否启用
+            enabled: 是否启用自动连接
             timeout_sec: 超时时间（秒）
 
         Returns:
             (成功标志, 消息) 元组
 
         Examples:
-            >>> # 禁用左打印机
+            >>> # 禁用左打印机自动连接
             >>> success, msg = node.set_printer_enabled('left', False)
             >>>
-            >>> # 启用中打印机
+            >>> # 启用中打印机自动连接
             >>> success, msg = node.set_printer_enabled('center', True)
             >>>
-            >>> # 禁用所有打印机
+            >>> # 禁用所有打印机自动连接
             >>> success, msg = node.set_printer_enabled('all', False)
         """
         if not self._set_enabled_client.wait_for_service(timeout_sec=1.0):
@@ -534,38 +538,38 @@ class InkjetClientNode(Node):
             self.get_logger().error(msg)
             return False, msg
 
-    # 便捷方法 - 启用/禁用打印机
+    # 便捷方法 - 启用/禁用打印机自动连接
 
     def enable_printer_left(self, timeout_sec: float = 3.0) -> Tuple[bool, str]:
-        """启用左打印机"""
+        """启用左打印机自动连接"""
         return self.set_printer_enabled('left', True, timeout_sec)
 
     def disable_printer_left(self, timeout_sec: float = 3.0) -> Tuple[bool, str]:
-        """禁用左打印机"""
+        """禁用左打印机自动连接"""
         return self.set_printer_enabled('left', False, timeout_sec)
 
     def enable_printer_center(self, timeout_sec: float = 3.0) -> Tuple[bool, str]:
-        """启用中打印机"""
+        """启用中打印机自动连接"""
         return self.set_printer_enabled('center', True, timeout_sec)
 
     def disable_printer_center(self, timeout_sec: float = 3.0) -> Tuple[bool, str]:
-        """禁用中打印机"""
+        """禁用中打印机自动连接"""
         return self.set_printer_enabled('center', False, timeout_sec)
 
     def enable_printer_right(self, timeout_sec: float = 3.0) -> Tuple[bool, str]:
-        """启用右打印机"""
+        """启用右打印机自动连接"""
         return self.set_printer_enabled('right', True, timeout_sec)
 
     def disable_printer_right(self, timeout_sec: float = 3.0) -> Tuple[bool, str]:
-        """禁用右打印机"""
+        """禁用右打印机自动连接"""
         return self.set_printer_enabled('right', False, timeout_sec)
 
     def enable_all_printers(self, timeout_sec: float = 3.0) -> Tuple[bool, str]:
-        """启用所有打印机"""
+        """启用所有打印机自动连接"""
         return self.set_printer_enabled('all', True, timeout_sec)
 
     def disable_all_printers(self, timeout_sec: float = 3.0) -> Tuple[bool, str]:
-        """禁用所有打印机"""
+        """禁用所有打印机自动连接"""
         return self.set_printer_enabled('all', False, timeout_sec)
 
 

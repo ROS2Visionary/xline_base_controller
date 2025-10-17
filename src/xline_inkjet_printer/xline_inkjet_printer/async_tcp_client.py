@@ -53,7 +53,7 @@ class AsyncTcpClient:
         self._connect_timeout: float = 3.0
         self._max_reconnect_attempts: int = 0  # 0 = 无限重连
         self._reconnect_interval: float = 2.0
-        self._enabled: bool = True
+        self._auto_connect: bool = True  # 是否自动连接
 
         # asyncio 组件
         self._reader: Optional[asyncio.StreamReader] = None
@@ -94,7 +94,7 @@ class AsyncTcpClient:
             self._logger.info(
                 f'[{self._name}] 配置加载成功: '
                 f'{self._ip}:{self._port}, '
-                f'enabled={self._enabled}'
+                f'auto_connect={self._auto_connect}'
             )
 
         except Exception as e:
@@ -145,8 +145,14 @@ class AsyncTcpClient:
         if 'reconnect_interval' in config:
             self._reconnect_interval = config['reconnect_interval']
 
-        if 'enabled' in config:
-            self._enabled = config['enabled']
+        if 'auto_connect' in config:
+            self._auto_connect = config['auto_connect']
+        elif 'enabled' in config:
+            # 向后兼容：如果配置文件还在使用旧的 'enabled' 字段
+            self._auto_connect = config['enabled']
+            self._logger.warning(
+                f'[{self._name}] 配置使用了旧字段 "enabled"，请改用 "auto_connect"'
+            )
 
     async def connect(self) -> bool:
         """
@@ -326,8 +332,8 @@ class AsyncTcpClient:
 
         while not self._stop_event.is_set():
             try:
-                # 如果禁用，则等待
-                if not self._enabled:
+                # 如果未启用自动连接，则等待
+                if not self._auto_connect:
                     await asyncio.sleep(self._reconnect_interval)
                     continue
 
@@ -363,8 +369,8 @@ class AsyncTcpClient:
 
     async def start(self) -> None:
         """启动客户端（启动后台任务）"""
-        if not self._enabled:
-            self._logger.info(f'[{self._name}] 已禁用，跳过启动')
+        if not self._auto_connect:
+            self._logger.info(f'[{self._name}] 自动连接已禁用，跳过启动')
             return
 
         self._stop_event.clear()
@@ -410,14 +416,14 @@ class AsyncTcpClient:
         """是否已连接"""
         return self._connected
 
-    def is_enabled(self) -> bool:
-        """是否已启用"""
-        return self._enabled
+    def is_auto_connect(self) -> bool:
+        """是否启用自动连接"""
+        return self._auto_connect
 
     def get_status(self) -> str:
         """获取状态字符串"""
-        if not self._enabled:
-            return '已禁用'
+        if not self._auto_connect:
+            return '自动连接已禁用'
         elif self._connected:
             return '已连接'
         elif self._gave_up:
@@ -429,41 +435,41 @@ class AsyncTcpClient:
         """获取设备号"""
         return self._device_id
 
-    async def set_enabled(self, enabled: bool) -> bool:
+    async def set_auto_connect(self, auto_connect: bool) -> bool:
         """
-        动态设置启用状态
+        动态设置自动连接状态
 
         Args:
-            enabled: 是否启用
+            auto_connect: 是否启用自动连接
 
         Returns:
             是否设置成功
         """
-        if self._enabled == enabled:
+        if self._auto_connect == auto_connect:
             # 状态未改变
-            self._logger.debug(f'[{self._name}] enabled状态未改变: {enabled}')
+            self._logger.debug(f'[{self._name}] auto_connect状态未改变: {auto_connect}')
             return True
 
-        old_enabled = self._enabled
-        self._enabled = enabled
+        old_auto_connect = self._auto_connect
+        self._auto_connect = auto_connect
 
-        self._logger.info(f'[{self._name}] enabled状态变化: {old_enabled} -> {enabled}')
+        self._logger.info(f'[{self._name}] auto_connect状态变化: {old_auto_connect} -> {auto_connect}')
 
-        if enabled:
+        if auto_connect:
             # 从禁用变为启用：启动重连循环（如果未运行）
             if self._reconnect_task is None or self._reconnect_task.done():
                 self._logger.info(f'[{self._name}] 启动重连循环...')
                 self._stop_event.clear()
                 self._reconnect_task = asyncio.create_task(self._reconnect_loop())
             else:
-                # 重连循环已在运行，它会自动检测 _enabled 的变化
+                # 重连循环已在运行，它会自动检测 _auto_connect 的变化
                 self._logger.info(f'[{self._name}] 重连循环已在运行，将自动连接')
         else:
             # 从启用变为禁用：断开当前连接
             if self._connected:
                 self._logger.info(f'[{self._name}] 断开连接...')
                 await self._disconnect()
-            # 重连循环会检查 _enabled 并自动停止尝试重连
-            self._logger.info(f'[{self._name}] 已禁用，停止重连')
+            # 重连循环会检查 _auto_connect 并自动停止尝试重连
+            self._logger.info(f'[{self._name}] 自动连接已禁用，停止重连')
 
         return True

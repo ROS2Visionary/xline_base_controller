@@ -47,10 +47,10 @@ class AsyncInkjetPrinterNode(Node):
         self.declare_parameter('device_id_center', 0)
         self.declare_parameter('device_id_right', 0)
 
-        # 声明 enabled 参数（从配置文件读取初始值）
-        self.declare_parameter('printer_left_enabled', True)
-        self.declare_parameter('printer_center_enabled', True)
-        self.declare_parameter('printer_right_enabled', True)
+        # 声明 auto_connect 参数（从配置文件读取初始值）
+        self.declare_parameter('printer_left_auto_connect', True)
+        self.declare_parameter('printer_center_auto_connect', True)
+        self.declare_parameter('printer_right_auto_connect', True)
 
         # 获取参数
         config_file = self.get_parameter('config_file').value
@@ -217,7 +217,7 @@ class AsyncInkjetPrinterNode(Node):
         for name, client in self._tcp_clients.items():
             status_data[name] = {
                 'connected': client.is_connected(),
-                'enabled': client.is_enabled(),
+                'auto_connect': client.is_auto_connect(),
                 'status': client.get_status(),
                 'device_id': client.get_device_id()
             }
@@ -350,7 +350,7 @@ class AsyncInkjetPrinterNode(Node):
         status_info = {
             'name': printer_name,
             'connected': client.is_connected(),
-            'enabled': client.is_enabled(),
+            'auto_connect': client.is_auto_connect(),
             'status': client.get_status(),
             'device_id': client.get_device_id()
         }
@@ -573,13 +573,13 @@ class AsyncInkjetPrinterNode(Node):
         """
         successful = True
         for param in params:
-            if param.name in ['printer_left_enabled', 'printer_center_enabled', 'printer_right_enabled']:
+            if param.name in ['printer_left_auto_connect', 'printer_center_auto_connect', 'printer_right_auto_connect']:
                 # 解析打印机名称
-                printer_name = param.name.replace('_enabled', '')
-                enabled = param.value
+                printer_name = param.name.replace('_auto_connect', '')
+                auto_connect = param.value
 
                 self.get_logger().info(
-                    f'参数变化: {param.name} = {enabled}'
+                    f'参数变化: {param.name} = {auto_connect}'
                 )
 
                 # 更新客户端状态
@@ -587,16 +587,16 @@ class AsyncInkjetPrinterNode(Node):
                 if client:
                     # 在 asyncio 循环中执行
                     future = asyncio.run_coroutine_threadsafe(
-                        client.set_enabled(enabled),
+                        client.set_auto_connect(auto_connect),
                         self._loop
                     )
                     try:
                         result = future.result(timeout=3.0)
                         if not result:
-                            self.get_logger().error(f'设置 {printer_name} enabled 失败')
+                            self.get_logger().error(f'设置 {printer_name} auto_connect 失败')
                             successful = False
                     except Exception as e:
-                        self.get_logger().error(f'设置 {printer_name} enabled 异常: {e}')
+                        self.get_logger().error(f'设置 {printer_name} auto_connect 异常: {e}')
                         successful = False
                 else:
                     self.get_logger().error(f'未找到打印机客户端: {printer_name}')
@@ -605,10 +605,10 @@ class AsyncInkjetPrinterNode(Node):
         from rclpy.parameter import SetParametersResult
         return SetParametersResult(successful=successful)
 
-    # ========== 服务处理函数 - 设置打印机启用状态 ==========
+    # ========== 服务处理函数 - 设置打印机自动连接状态 ==========
     def _handle_set_enabled(self, request, response):
         """
-        处理设置打印机启用状态的服务请求
+        处理设置打印机自动连接状态的服务请求
 
         流程：
         1. 更新 ROS 2 参数（触发参数回调 -> 更新内存 -> 控制连接）
@@ -618,7 +618,7 @@ class AsyncInkjetPrinterNode(Node):
         enabled = request.enabled
 
         self.get_logger().info(
-            f'收到设置启用状态请求: printer={printer_name_raw}, enabled={enabled}'
+            f'收到设置自动连接状态请求: printer={printer_name_raw}, auto_connect={enabled}'
         )
 
         # 解析打印机名称
@@ -653,17 +653,17 @@ class AsyncInkjetPrinterNode(Node):
 
     def _set_single_printer_enabled(self, printer_short: str, enabled: bool):
         """
-        设置单个打印机的启用状态
+        设置单个打印机的自动连接状态
 
         Args:
             printer_short: 打印机短名称 (left/center/right)
-            enabled: 是否启用
+            enabled: 是否启用自动连接
 
         Returns:
             (成功标志, 消息) 元组
         """
         printer_name = f'printer_{printer_short}'
-        param_name = f'{printer_name}_enabled'
+        param_name = f'{printer_name}_auto_connect'
 
         # 1. 更新 ROS 2 参数（会触发参数回调）
         try:
@@ -676,33 +676,33 @@ class AsyncInkjetPrinterNode(Node):
 
         # 2. 持久化到 yaml 文件
         try:
-            self._persist_enabled_to_yaml(printer_name, enabled)
-            msg = f'[{printer_name}] 启用状态已设置为 {enabled} 并持久化'
+            self._persist_auto_connect_to_yaml(printer_name, enabled)
+            msg = f'[{printer_name}] 自动连接状态已设置为 {enabled} 并持久化'
             self.get_logger().info(msg)
             return True, msg
         except Exception as e:
-            msg = f'[{printer_name}] 启用状态已设置为 {enabled}，但持久化失败: {str(e)}'
+            msg = f'[{printer_name}] 自动连接状态已设置为 {enabled}，但持久化失败: {str(e)}'
             self.get_logger().warning(msg)
             return True, msg  # 即使持久化失败，参数已更新，仍返回成功
 
-    def _persist_enabled_to_yaml(self, printer_name: str, enabled: bool) -> None:
+    def _persist_auto_connect_to_yaml(self, printer_name: str, auto_connect: bool) -> None:
         """
-        持久化 enabled 参数到 yaml 文件
+        持久化 auto_connect 参数到 yaml 文件
 
         Args:
             printer_name: 打印机名称 (printer_left/printer_center/printer_right)
-            enabled: 是否启用
+            auto_connect: 是否启用自动连接
         """
         try:
             # 读取现有配置
             with self._config_path.open('r', encoding='utf-8') as f:
                 config = yaml.safe_load(f) or {}
 
-            # 更新 enabled 字段
+            # 更新 auto_connect 字段
             if 'connections' in config and printer_name in config['connections']:
-                config['connections'][printer_name]['enabled'] = enabled
+                config['connections'][printer_name]['auto_connect'] = auto_connect
                 self.get_logger().debug(
-                    f'更新配置: connections.{printer_name}.enabled = {enabled}'
+                    f'更新配置: connections.{printer_name}.auto_connect = {auto_connect}'
                 )
             else:
                 raise ValueError(f'配置文件中未找到 {printer_name}')
@@ -717,7 +717,7 @@ class AsyncInkjetPrinterNode(Node):
                     sort_keys=False
                 )
 
-            self.get_logger().info(f'已持久化 {printer_name}.enabled = {enabled} 到 {self._config_path}')
+            self.get_logger().info(f'已持久化 {printer_name}.auto_connect = {auto_connect} 到 {self._config_path}')
 
         except Exception as e:
             self.get_logger().error(f'持久化到 yaml 失败: {e}')
