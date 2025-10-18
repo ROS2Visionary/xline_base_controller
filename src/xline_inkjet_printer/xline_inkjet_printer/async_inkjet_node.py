@@ -15,6 +15,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.parameter import Parameter
+from rcl_interfaces.msg import SetParametersResult
 from std_srvs.srv import Trigger
 from std_msgs.msg import String
 from xline_msgs.srv import PrinterCommand, QuickCommand, SetPrinterEnabled, SetPrinterActive
@@ -655,7 +656,6 @@ class AsyncInkjetPrinterNode(Node):
                     self.get_logger().error(f'未找到打印机客户端: {printer_name}')
                     successful = False
 
-        from rclpy.parameter import SetParametersResult
         return SetParametersResult(successful=successful)
 
     # ========== 服务处理函数 - 设置打印机自动连接状态 ==========
