@@ -10,6 +10,7 @@ from typing import Dict, Optional
 import json
 from pathlib import Path
 import yaml
+import time
 
 import rclpy
 from rclpy.node import Node
@@ -163,6 +164,18 @@ class AsyncInkjetPrinterNode(Node):
         self.get_logger().info(f'设备号映射: {client_configs}')
         self.get_logger().info('=' * 60)
 
+    def _service_delay(self, duration: float) -> None:
+        """
+        服务响应延时
+
+        会阻塞当前服务处理线程，但不影响其他线程处理新请求。
+        MultiThreadedExecutor 会使用多个线程并发处理服务请求。
+
+        Args:
+            duration: 延时时长（秒）
+        """
+        time.sleep(duration)
+
     def _start_async_loop(self) -> None:
         """在独立线程启动 asyncio 事件循环"""
         def run_loop():
@@ -257,6 +270,7 @@ class AsyncInkjetPrinterNode(Node):
         else:
             response.success = False
             response.message = f'未知的打印机标识: {request.printer_name}，支持: left/center/right'
+            self._service_delay(1)
             return response
 
         return self._handle_send_command(printer_name, request, response)
@@ -272,17 +286,20 @@ class AsyncInkjetPrinterNode(Node):
         if not client:
             response.success = False
             response.message = f'打印机 {printer_name} 不存在'
+            self._service_delay(1)
             return response
 
         if not client.is_connected():
             response.success = False
             response.message = f'{printer_name} 未连接'
+            self._service_delay(1)
             return response
 
         # 检查是否允许发送指令（功能控制层）
         if not client.is_enabled():
             response.success = False
             response.message = f'{printer_name} 已禁用，不允许发送指令'
+            self._service_delay(1)
             return response
 
         # 解析指令码
@@ -303,11 +320,13 @@ class AsyncInkjetPrinterNode(Node):
                 except KeyError:
                     response.success = False
                     response.message = f'未知指令: {command_str}'
+                    self._service_delay(1)
                     return response
 
         except (ValueError, AttributeError) as e:
             response.success = False
             response.message = f'指令格式错误: {command_str}, {str(e)}'
+            self._service_delay(1)
             return response
 
         # 解析 JSON 数据
@@ -316,6 +335,7 @@ class AsyncInkjetPrinterNode(Node):
         except json.JSONDecodeError as e:
             response.success = False
             response.message = f'JSON 解析失败: {str(e)}'
+            self._service_delay(1)
             return response
 
         # 在 asyncio 循环中执行发送命令
@@ -338,6 +358,7 @@ class AsyncInkjetPrinterNode(Node):
             response.success = False
             response.message = f'发送异常: {str(e)}'
 
+        self._service_delay(1)
         return response
 
     def _get_command_name(self, command_code: int) -> str:
@@ -363,6 +384,7 @@ class AsyncInkjetPrinterNode(Node):
         if not client:
             response.success = False
             response.message = f'打印机 {printer_name} 不存在'
+            self._service_delay(1)
             return response
 
         status_info = {
@@ -376,6 +398,7 @@ class AsyncInkjetPrinterNode(Node):
 
         response.success = True
         response.message = json.dumps(status_info, ensure_ascii=False, indent=2)
+        self._service_delay(1)
         return response
 
     # 便捷服务处理函数 - 统一快速命令
@@ -408,6 +431,7 @@ class AsyncInkjetPrinterNode(Node):
         if action not in action_map:
             response.success = False
             response.message = f'不支持的动作: {action}，支持: {", ".join(list(action_map.keys()) + ["ink_level"])}'
+            self._service_delay(1)
             return response
 
         action_name, template_func = action_map[action]
@@ -428,6 +452,7 @@ class AsyncInkjetPrinterNode(Node):
 
             response.success = True
             response.message = '\n'.join(results)
+            self._service_delay(1)
             return response
         else:
             # 单个打印机
@@ -441,6 +466,7 @@ class AsyncInkjetPrinterNode(Node):
             else:
                 response.success = False
                 response.message = f'未知的打印机: {printer_name_raw}，支持: left/center/right/all'
+                self._service_delay(1)
                 return response
 
             try:
@@ -449,6 +475,7 @@ class AsyncInkjetPrinterNode(Node):
             except Exception as e:
                 response.success = False
                 response.message = f'执行失败: {str(e)}'
+                self._service_delay(1)
                 return response
 
     def _handle_ink_level_query(self, printer_name_raw: str, response):
@@ -489,6 +516,7 @@ class AsyncInkjetPrinterNode(Node):
 
             response.success = True
             response.message = '\n'.join(results)
+            self._service_delay(1)
             return response
         else:
             # 单个打印机
@@ -502,12 +530,14 @@ class AsyncInkjetPrinterNode(Node):
             else:
                 response.success = False
                 response.message = f'未知的打印机: {printer_name_raw}，支持: left/center/right/all'
+                self._service_delay(1)
                 return response
 
             query = self._ink_queries.get(printer_name)
             if not query:
                 response.success = False
                 response.message = f'{printer_name} 查询器未初始化'
+                self._service_delay(1)
                 return response
 
             # 在 asyncio 循环中执行查询
@@ -531,6 +561,7 @@ class AsyncInkjetPrinterNode(Node):
                 response.message = f'[{printer_name}] 墨盒模量查询异常: {str(e)}'
                 self.get_logger().error(response.message)
 
+            self._service_delay(1)
             return response
 
     def _execute_template_command(self, printer_name: str, command_code: int, json_data: dict, action_name: str, response):
@@ -551,17 +582,20 @@ class AsyncInkjetPrinterNode(Node):
         if not client:
             response.success = False
             response.message = f'打印机 {printer_name} 不存在'
+            self._service_delay(1)
             return response
 
         if not client.is_connected():
             response.success = False
             response.message = f'{printer_name} 未连接'
+            self._service_delay(1)
             return response
 
         # 检查是否允许发送指令（功能控制层）
         if not client.is_enabled():
             response.success = False
             response.message = f'{printer_name} 已禁用，不允许发送指令'
+            self._service_delay(1)
             return response
 
         # 在 asyncio 循环中执行发送命令
@@ -587,6 +621,7 @@ class AsyncInkjetPrinterNode(Node):
             response.message = f'[{printer_name}] {action_name}命令异常: {str(e)}'
             self.get_logger().error(response.message)
 
+        self._service_delay(1)
         return response
 
     # ========== 参数回调 ==========
@@ -684,6 +719,7 @@ class AsyncInkjetPrinterNode(Node):
 
             response.success = True
             response.message = '\n'.join(results)
+            self._service_delay(1)
             return response
         else:
             # 单个打印机
@@ -697,11 +733,13 @@ class AsyncInkjetPrinterNode(Node):
             else:
                 response.success = False
                 response.message = f'未知的打印机: {printer_name_raw}，支持: left/center/right/all'
+                self._service_delay(1)
                 return response
 
             success, msg = self._set_single_printer_enabled(printer_short, enabled)
             response.success = success
             response.message = msg
+            self._service_delay(1)
             return response
 
     def _set_single_printer_enabled(self, printer_short: str, enabled: bool):
@@ -802,6 +840,7 @@ class AsyncInkjetPrinterNode(Node):
 
             response.success = True
             response.message = '\n'.join(results)
+            self._service_delay(1)
             return response
         else:
             # 单个打印机
@@ -815,11 +854,13 @@ class AsyncInkjetPrinterNode(Node):
             else:
                 response.success = False
                 response.message = f'未知的打印机: {printer_name_raw}，支持: left/center/right/all'
+                self._service_delay(1)
                 return response
 
             success, msg = self._set_single_printer_active(printer_short, active)
             response.success = success
             response.message = msg
+            self._service_delay(1)
             return response
 
     def _set_single_printer_active(self, printer_short: str, active: bool):
@@ -923,7 +964,7 @@ def main(args=None) -> None:
     node = AsyncInkjetPrinterNode()
 
     # 使用多线程执行器
-    executor = MultiThreadedExecutor(num_threads=4)
+    executor = MultiThreadedExecutor(num_threads=10)
     executor.add_node(node)
 
     try:
