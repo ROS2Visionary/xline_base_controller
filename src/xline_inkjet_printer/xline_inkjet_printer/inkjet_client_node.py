@@ -9,7 +9,7 @@ from typing import Tuple, Optional, Dict
 import rclpy
 from rclpy.node import Node
 from std_srvs.srv import Trigger
-from xline_msgs.srv import PrinterCommand, QuickCommand, SetPrinterEnabled
+from xline_msgs.srv import PrinterCommand, QuickCommand, SetPrinterEnabled, SetPrinterActive
 
 
 class InkjetClientNode(Node):
@@ -59,6 +59,12 @@ class InkjetClientNode(Node):
             'printer/set_enabled'
         )
 
+        # 创建设置打印机激活状态服务客户端
+        self._set_active_client = self.create_client(
+            SetPrinterActive,
+            'printer/set_active'
+        )
+
         self.get_logger().info('所有服务客户端已创建')
         self.get_logger().info('=' * 60)
         self.get_logger().info('喷墨打印机客户端节点已启动')
@@ -66,6 +72,7 @@ class InkjetClientNode(Node):
         self.get_logger().info('  - printer/send_command (通用命令)')
         self.get_logger().info('  - printer/quick_command (快速命令)')
         self.get_logger().info('  - printer/set_enabled (设置打印机自动连接)')
+        self.get_logger().info('  - printer/set_active (设置打印机激活状态)')
         self.get_logger().info('  - printer_left/status (左打印机状态)')
         self.get_logger().info('  - printer_center/status (中打印机状态)')
         self.get_logger().info('  - printer_right/status (右打印机状态)')
@@ -87,6 +94,7 @@ class InkjetClientNode(Node):
             (self._send_command_client, 'printer/send_command'),
             (self._quick_command_client, 'printer/quick_command'),
             (self._set_enabled_client, 'printer/set_enabled'),
+            (self._set_active_client, 'printer/set_active'),
             (self._status_left_client, 'printer_left/status'),
             (self._status_center_client, 'printer_center/status'),
             (self._status_right_client, 'printer_right/status')
@@ -571,6 +579,108 @@ class InkjetClientNode(Node):
     def disable_all_printers(self, timeout_sec: float = 3.0) -> Tuple[bool, str]:
         """禁用所有打印机自动连接"""
         return self.set_printer_enabled('all', False, timeout_sec)
+
+    # ========== 设置打印机激活状态服务方法（功能控制层） ==========
+
+    def set_printer_active(
+        self,
+        printer_name: str,
+        active: bool,
+        timeout_sec: float = 3.0
+    ) -> Tuple[bool, str]:
+        """
+        设置打印机激活状态（功能控制层）
+
+        当设置为 True 时，打印机允许发送指令（前提是已连接）。
+        当设置为 False 时，打印机禁止发送指令（即使已连接）。
+        修改会立即生效并持久化到配置文件。
+
+        区别于 set_printer_enabled（auto_connect 控制层）：
+        - set_printer_enabled: 控制是否自动连接（物理连接层）
+        - set_printer_active: 控制是否允许发送指令（逻辑权限层）
+
+        Args:
+            printer_name: 打印机名称 (left/center/right/all)
+            active: 是否激活（允许发送指令）
+            timeout_sec: 超时时间（秒）
+
+        Returns:
+            (成功标志, 消息) 元组
+
+        Examples:
+            >>> # 禁用左打印机发送指令
+            >>> success, msg = node.set_printer_active('left', False)
+            >>>
+            >>> # 启用中打印机发送指令
+            >>> success, msg = node.set_printer_active('center', True)
+            >>>
+            >>> # 禁用所有打印机发送指令
+            >>> success, msg = node.set_printer_active('all', False)
+        """
+        if not self._set_active_client.wait_for_service(timeout_sec=1.0):
+            msg = 'printer/set_active 服务不可用'
+            self.get_logger().error(msg)
+            return False, msg
+
+        request = SetPrinterActive.Request()
+        request.printer_name = printer_name
+        request.active = active
+
+        try:
+            self.get_logger().info(f'设置打印机激活状态: printer={printer_name}, active={active}')
+            future = self._set_active_client.call_async(request)
+            rclpy.spin_until_future_complete(self, future, timeout_sec=timeout_sec)
+
+            if future.result() is not None:
+                response = future.result()
+                if response.success:
+                    self.get_logger().info(f'设置成功: {response.message}')
+                else:
+                    self.get_logger().warning(f'设置失败: {response.message}')
+                return response.success, response.message
+            else:
+                msg = '服务调用超时'
+                self.get_logger().error(msg)
+                return False, msg
+
+        except Exception as e:
+            msg = f'设置异常: {str(e)}'
+            self.get_logger().error(msg)
+            return False, msg
+
+    # 便捷方法 - 激活/禁用打印机
+
+    def activate_printer_left(self, timeout_sec: float = 3.0) -> Tuple[bool, str]:
+        """激活左打印机（允许发送指令）"""
+        return self.set_printer_active('left', True, timeout_sec)
+
+    def deactivate_printer_left(self, timeout_sec: float = 3.0) -> Tuple[bool, str]:
+        """禁用左打印机（禁止发送指令）"""
+        return self.set_printer_active('left', False, timeout_sec)
+
+    def activate_printer_center(self, timeout_sec: float = 3.0) -> Tuple[bool, str]:
+        """激活中打印机（允许发送指令）"""
+        return self.set_printer_active('center', True, timeout_sec)
+
+    def deactivate_printer_center(self, timeout_sec: float = 3.0) -> Tuple[bool, str]:
+        """禁用中打印机（禁止发送指令）"""
+        return self.set_printer_active('center', False, timeout_sec)
+
+    def activate_printer_right(self, timeout_sec: float = 3.0) -> Tuple[bool, str]:
+        """激活右打印机（允许发送指令）"""
+        return self.set_printer_active('right', True, timeout_sec)
+
+    def deactivate_printer_right(self, timeout_sec: float = 3.0) -> Tuple[bool, str]:
+        """禁用右打印机（禁止发送指令）"""
+        return self.set_printer_active('right', False, timeout_sec)
+
+    def activate_all_printers(self, timeout_sec: float = 3.0) -> Tuple[bool, str]:
+        """激活所有打印机（允许发送指令）"""
+        return self.set_printer_active('all', True, timeout_sec)
+
+    def deactivate_all_printers(self, timeout_sec: float = 3.0) -> Tuple[bool, str]:
+        """禁用所有打印机（禁止发送指令）"""
+        return self.set_printer_active('all', False, timeout_sec)
 
 
 def main(args=None):

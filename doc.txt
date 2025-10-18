@@ -85,7 +85,8 @@ src/xline_inkjet_printer/xline_inkjet_printer/inkjet_node.py,创建一个tcp连�
 
 现在还有一个需求是，需要分别查询墨盒的模量，但是查询墨盒模量时使用的是另外一个端口8010（IP地址相同），需要发送的指令统一是：1B 02 00 26 01 1B 03 9E；服务端回码是：1B 06 00 12 26 62 1B 03 27，其中62所在的位置代表模量。现在需要你将该功能添加到快捷指令中，深度思考，使用最佳的方式实现
 服务 → ROS 2 参数 → 参数回调 → 控制连接 → [可选]持久化到yaml
-
-auto_connect 比 enabled 
-
+enabled
+ 比 enabled 
+现在有一个需求是：需要添加一个启用/禁用喷码机的开关，这个开关不是用来控制是否连接到喷码机，而是用来比如如果禁用了，那就不允许给喷码机发送指令哪怕现在喷码机处于连接状态，我的想法是添加多一个参数enabled，然后在src/xline_msgs新增一个服务类型，
+enabled要像auto_connect那样也需要持久化到文件src/xline_inkjet_printer/xline_inkjet_printer/config/printers.yaml中。先详细分析我的需求，然后实现
 src/xline_inkjet_printer在该包中,左中右三个喷码机是否连接是由src/xline_inkjet_printer/xline_inkjet_printer/config/printers.yaml来控制,现在有个需求是:这三个喷码机是否连接可以由外部实时控制,并且控制过后需要持久化结果,为了实现这个需求我有个想法:喷码机的启用与否继续由src/xline_inkjet_printer/xline_inkjet_printer/config/printers.yaml来控制,先创建一个服务用于实时接收控制喷码机是否连接的指令,可能需要你基于此在src/xline_msgs自定义一个服务类型，接收到指令后先更新src/xline_inkjet_printer/xline_inkjet_printer/config/printers.yaml里面的参数enabled，然后主动更新参数，根据具体的enabled来决定是否连接，深度分析我的设计合理与否

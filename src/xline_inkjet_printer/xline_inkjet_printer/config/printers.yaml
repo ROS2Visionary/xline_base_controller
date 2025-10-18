@@ -7,15 +7,18 @@ connections:
   printer_left:
     ip: 192.168.0.23
     port: 6000
-    auto_connect: false  # 是否在节点启动时自动连接到该打印机
+    auto_connect: false  # 是否在节点启动时自动连接到该打印机（连接控制层）
+    enabled: true        # 是否允许向该打印机发送指令（功能控制层）
 
   printer_center:
     ip: 192.168.0.24
     port: 6000
-    auto_connect: true   # 是否在节点启动时自动连接到该打印机
+    auto_connect: true   # 是否在节点启动时自动连接到该打印机（连接控制层）
+    enabled: true        # 是否允许向该打印机发送指令（功能控制层）
 
   printer_right:
     ip: 192.168.0.26
     port: 6000
-    auto_connect: false  # 是否在节点启动时自动连接到该打印机
+    auto_connect: false  # 是否在节点启动时自动连接到该打印机（连接控制层）
+    enabled: true        # 是否允许向该打印机发送指令（功能控制层）
 

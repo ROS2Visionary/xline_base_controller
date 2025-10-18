@@ -17,7 +17,7 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.parameter import Parameter
 from std_srvs.srv import Trigger
 from std_msgs.msg import String
-from xline_msgs.srv import PrinterCommand, QuickCommand, SetPrinterEnabled
+from xline_msgs.srv import PrinterCommand, QuickCommand, SetPrinterEnabled, SetPrinterActive
 
 from .async_tcp_client import AsyncTcpClient
 from .protocol import InkjetCommand
@@ -51,6 +51,11 @@ class AsyncInkjetPrinterNode(Node):
         self.declare_parameter('printer_left_auto_connect', True)
         self.declare_parameter('printer_center_auto_connect', True)
         self.declare_parameter('printer_right_auto_connect', True)
+
+        # 声明 enabled 参数（从配置文件读取初始值）
+        self.declare_parameter('printer_left_enabled', True)
+        self.declare_parameter('printer_center_enabled', True)
+        self.declare_parameter('printer_right_enabled', True)
 
         # 获取参数
         config_file = self.get_parameter('config_file').value
@@ -119,9 +124,14 @@ class AsyncInkjetPrinterNode(Node):
             Trigger, 'printer_right/status', self._handle_status_right
         )
 
-        # ROS 2 服务 - 设置打印机启用状态
+        # ROS 2 服务 - 设置打印机自动连接状态
         self._set_enabled_srv = self.create_service(
             SetPrinterEnabled, 'printer/set_enabled', self._handle_set_enabled
+        )
+
+        # ROS 2 服务 - 设置打印机激活状态（功能控制层）
+        self._set_active_srv = self.create_service(
+            SetPrinterActive, 'printer/set_active', self._handle_set_active
         )
 
         # ROS 2 定时器 - 发布状态
@@ -218,6 +228,7 @@ class AsyncInkjetPrinterNode(Node):
             status_data[name] = {
                 'connected': client.is_connected(),
                 'auto_connect': client.is_auto_connect(),
+                'enabled': client.is_enabled(),
                 'status': client.get_status(),
                 'device_id': client.get_device_id()
             }
@@ -265,6 +276,12 @@ class AsyncInkjetPrinterNode(Node):
         if not client.is_connected():
             response.success = False
             response.message = f'{printer_name} 未连接'
+            return response
+
+        # 检查是否允许发送指令（功能控制层）
+        if not client.is_enabled():
+            response.success = False
+            response.message = f'{printer_name} 已禁用，不允许发送指令'
             return response
 
         # 解析指令码
@@ -351,6 +368,7 @@ class AsyncInkjetPrinterNode(Node):
             'name': printer_name,
             'connected': client.is_connected(),
             'auto_connect': client.is_auto_connect(),
+            'enabled': client.is_enabled(),
             'status': client.get_status(),
             'device_id': client.get_device_id()
         }
@@ -539,6 +557,12 @@ class AsyncInkjetPrinterNode(Node):
             response.message = f'{printer_name} 未连接'
             return response
 
+        # 检查是否允许发送指令（功能控制层）
+        if not client.is_enabled():
+            response.success = False
+            response.message = f'{printer_name} 已禁用，不允许发送指令'
+            return response
+
         # 在 asyncio 循环中执行发送命令
         future = asyncio.run_coroutine_threadsafe(
             client.send_command(command_code, json_data),
@@ -597,6 +621,35 @@ class AsyncInkjetPrinterNode(Node):
                             successful = False
                     except Exception as e:
                         self.get_logger().error(f'设置 {printer_name} auto_connect 异常: {e}')
+                        successful = False
+                else:
+                    self.get_logger().error(f'未找到打印机客户端: {printer_name}')
+                    successful = False
+
+            elif param.name in ['printer_left_enabled', 'printer_center_enabled', 'printer_right_enabled']:
+                # 解析打印机名称
+                printer_name = param.name.replace('_enabled', '')
+                enabled = param.value
+
+                self.get_logger().info(
+                    f'参数变化: {param.name} = {enabled}'
+                )
+
+                # 更新客户端状态
+                client = self._tcp_clients.get(printer_name)
+                if client:
+                    # 在 asyncio 循环中执行
+                    future = asyncio.run_coroutine_threadsafe(
+                        client.set_enabled(enabled),
+                        self._loop
+                    )
+                    try:
+                        result = future.result(timeout=3.0)
+                        if not result:
+                            self.get_logger().error(f'设置 {printer_name} enabled 失败')
+                            successful = False
+                    except Exception as e:
+                        self.get_logger().error(f'设置 {printer_name} enabled 异常: {e}')
                         successful = False
                 else:
                     self.get_logger().error(f'未找到打印机客户端: {printer_name}')
@@ -718,6 +771,124 @@ class AsyncInkjetPrinterNode(Node):
                 )
 
             self.get_logger().info(f'已持久化 {printer_name}.auto_connect = {auto_connect} 到 {self._config_path}')
+
+        except Exception as e:
+            self.get_logger().error(f'持久化到 yaml 失败: {e}')
+            raise
+
+    # ========== 服务处理函数 - 设置打印机激活状态（功能控制层） ==========
+    def _handle_set_active(self, request, response):
+        """
+        处理设置打印机激活状态的服务请求
+
+        流程：
+        1. 更新 ROS 2 参数（触发参数回调 -> 更新内存 -> 控制功能）
+        2. 持久化到 yaml 文件
+        """
+        printer_name_raw = request.printer_name.lower().strip()
+        active = request.active
+
+        self.get_logger().info(
+            f'收到设置激活状态请求: printer={printer_name_raw}, active={active}'
+        )
+
+        # 解析打印机名称
+        if printer_name_raw == 'all':
+            # 设置所有打印机
+            results = []
+            for pname in ['left', 'center', 'right']:
+                success, msg = self._set_single_printer_active(pname, active)
+                results.append(f'{pname}: {msg}')
+
+            response.success = True
+            response.message = '\n'.join(results)
+            return response
+        else:
+            # 单个打印机
+            # 规范化名称
+            if printer_name_raw in ['left', 'printer_left']:
+                printer_short = 'left'
+            elif printer_name_raw in ['center', 'printer_center']:
+                printer_short = 'center'
+            elif printer_name_raw in ['right', 'printer_right']:
+                printer_short = 'right'
+            else:
+                response.success = False
+                response.message = f'未知的打印机: {printer_name_raw}，支持: left/center/right/all'
+                return response
+
+            success, msg = self._set_single_printer_active(printer_short, active)
+            response.success = success
+            response.message = msg
+            return response
+
+    def _set_single_printer_active(self, printer_short: str, active: bool):
+        """
+        设置单个打印机的激活状态
+
+        Args:
+            printer_short: 打印机短名称 (left/center/right)
+            active: 是否激活（允许发送指令）
+
+        Returns:
+            (成功标志, 消息) 元组
+        """
+        printer_name = f'printer_{printer_short}'
+        param_name = f'{printer_name}_enabled'
+
+        # 1. 更新 ROS 2 参数（会触发参数回调）
+        try:
+            self.set_parameters([Parameter(param_name, Parameter.Type.BOOL, active)])
+            self.get_logger().info(f'已更新参数: {param_name} = {active}')
+        except Exception as e:
+            msg = f'更新参数失败: {str(e)}'
+            self.get_logger().error(msg)
+            return False, msg
+
+        # 2. 持久化到 yaml 文件
+        try:
+            self._persist_enabled_to_yaml(printer_name, active)
+            msg = f'[{printer_name}] 激活状态已设置为 {active} 并持久化'
+            self.get_logger().info(msg)
+            return True, msg
+        except Exception as e:
+            msg = f'[{printer_name}] 激活状态已设置为 {active}，但持久化失败: {str(e)}'
+            self.get_logger().warning(msg)
+            return True, msg  # 即使持久化失败，参数已更新，仍返回成功
+
+    def _persist_enabled_to_yaml(self, printer_name: str, enabled: bool) -> None:
+        """
+        持久化 enabled 参数到 yaml 文件
+
+        Args:
+            printer_name: 打印机名称 (printer_left/printer_center/printer_right)
+            enabled: 是否允许发送指令
+        """
+        try:
+            # 读取现有配置
+            with self._config_path.open('r', encoding='utf-8') as f:
+                config = yaml.safe_load(f) or {}
+
+            # 更新 enabled 字段
+            if 'connections' in config and printer_name in config['connections']:
+                config['connections'][printer_name]['enabled'] = enabled
+                self.get_logger().debug(
+                    f'更新配置: connections.{printer_name}.enabled = {enabled}'
+                )
+            else:
+                raise ValueError(f'配置文件中未找到 {printer_name}')
+
+            # 写回文件
+            with self._config_path.open('w', encoding='utf-8') as f:
+                yaml.dump(
+                    config,
+                    f,
+                    default_flow_style=False,
+                    allow_unicode=True,
+                    sort_keys=False
+                )
+
+            self.get_logger().info(f'已持久化 {printer_name}.enabled = {enabled} 到 {self._config_path}')
 
         except Exception as e:
             self.get_logger().error(f'持久化到 yaml 失败: {e}')

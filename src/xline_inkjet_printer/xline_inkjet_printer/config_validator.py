@@ -217,6 +217,33 @@ class ConfigValidator:
 
         return False, f"auto_connect must be a boolean value, got: {type(auto_connect).__name__}"
 
+    @staticmethod
+    def validate_enabled(enabled: Any) -> Tuple[bool, str]:
+        """
+        验证启用标志（功能控制层）
+
+        Args:
+            enabled: 启用标志（bool或可转换的值）
+
+        Returns:
+            (是否有效, 错误信息/规范化后的布尔字符串)
+        """
+        if isinstance(enabled, bool):
+            return True, str(enabled)
+
+        # 尝试转换常见的布尔值表示
+        if isinstance(enabled, str):
+            enabled_lower = enabled.lower().strip()
+            if enabled_lower in ('true', 'yes', '1', 'on'):
+                return True, 'True'
+            elif enabled_lower in ('false', 'no', '0', 'off'):
+                return True, 'False'
+
+        if isinstance(enabled, int):
+            return True, str(bool(enabled))
+
+        return False, f"enabled must be a boolean value, got: {type(enabled).__name__}"
+
     @classmethod
     def validate_connection_config(cls, config: Dict[str, Any], section_name: str = "unknown") -> Dict[str, Any]:
         """
@@ -286,13 +313,14 @@ class ConfigValidator:
                 validated['auto_connect'] = result.lower() == 'true'
             else:
                 errors.append(f"[{section_name}] auto_connect: {result}")
-        elif 'enabled' in config:
-            # 向后兼容：支持旧的 'enabled' 字段
-            is_valid, result = cls.validate_auto_connect(config['enabled'])
+
+        # 验证启用标志（功能控制层，可选）
+        if 'enabled' in config:
+            is_valid, result = cls.validate_enabled(config['enabled'])
             if is_valid:
-                validated['auto_connect'] = result.lower() == 'true'
+                validated['enabled'] = result.lower() == 'true'
             else:
-                errors.append(f"[{section_name}] enabled (deprecated, use auto_connect): {result}")
+                errors.append(f"[{section_name}] enabled: {result}")
 
         # 如果有错误，抛出异常
         if errors:

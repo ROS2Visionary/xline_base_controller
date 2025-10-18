@@ -53,7 +53,8 @@ class AsyncTcpClient:
         self._connect_timeout: float = 3.0
         self._max_reconnect_attempts: int = 0  # 0 = 无限重连
         self._reconnect_interval: float = 2.0
-        self._auto_connect: bool = True  # 是否自动连接
+        self._auto_connect: bool = True  # 是否自动连接（连接控制层）
+        self._enabled: bool = True  # 是否允许发送指令（功能控制层）
 
         # asyncio 组件
         self._reader: Optional[asyncio.StreamReader] = None
@@ -94,7 +95,8 @@ class AsyncTcpClient:
             self._logger.info(
                 f'[{self._name}] 配置加载成功: '
                 f'{self._ip}:{self._port}, '
-                f'auto_connect={self._auto_connect}'
+                f'auto_connect={self._auto_connect}, '
+                f'enabled={self._enabled}'
             )
 
         except Exception as e:
@@ -147,12 +149,9 @@ class AsyncTcpClient:
 
         if 'auto_connect' in config:
             self._auto_connect = config['auto_connect']
-        elif 'enabled' in config:
-            # 向后兼容：如果配置文件还在使用旧的 'enabled' 字段
-            self._auto_connect = config['enabled']
-            self._logger.warning(
-                f'[{self._name}] 配置使用了旧字段 "enabled"，请改用 "auto_connect"'
-            )
+
+        if 'enabled' in config:
+            self._enabled = config['enabled']
 
     async def connect(self) -> bool:
         """
@@ -420,6 +419,10 @@ class AsyncTcpClient:
         """是否启用自动连接"""
         return self._auto_connect
 
+    def is_enabled(self) -> bool:
+        """是否允许发送指令（功能控制层）"""
+        return self._enabled
+
     def get_status(self) -> str:
         """获取状态字符串"""
         if not self._auto_connect:
@@ -471,5 +474,27 @@ class AsyncTcpClient:
                 await self._disconnect()
             # 重连循环会检查 _auto_connect 并自动停止尝试重连
             self._logger.info(f'[{self._name}] 自动连接已禁用，停止重连')
+
+        return True
+
+    async def set_enabled(self, enabled: bool) -> bool:
+        """
+        动态设置启用状态（功能控制层）
+
+        Args:
+            enabled: 是否允许发送指令
+
+        Returns:
+            是否设置成功
+        """
+        if self._enabled == enabled:
+            # 状态未改变
+            self._logger.debug(f'[{self._name}] enabled状态未改变: {enabled}')
+            return True
+
+        old_enabled = self._enabled
+        self._enabled = enabled
+
+        self._logger.info(f'[{self._name}] enabled状态变化: {old_enabled} -> {enabled}')
 
         return True

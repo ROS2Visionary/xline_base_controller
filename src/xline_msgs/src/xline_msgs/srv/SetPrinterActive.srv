@@ -1,0 +1,21 @@
+# 设置打印机激活状态服务
+#
+# 功能：控制打印机是否允许发送指令（功能控制层）
+# 区别于 SetPrinterEnabled（auto_connect 控制层）：
+# - SetPrinterEnabled: 控制是否自动连接（物理连接层）
+# - SetPrinterActive: 控制是否允许发送指令（逻辑权限层）
+#
+# 使用场景：
+# - active=true: 允许向打印机发送指令
+# - active=false: 禁止向打印机发送指令（即使已连接）
+#
+# 修改会立即生效并持久化到配置文件
+
+# 请求
+string printer_name    # 打印机名称 (left/center/right/all)
+bool active            # 是否激活（允许发送指令）
+
+---
+# 响应
+bool success           # 是否成功
+string message         # 返回消息
