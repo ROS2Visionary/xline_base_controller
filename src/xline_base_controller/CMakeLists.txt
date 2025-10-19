@@ -19,6 +19,7 @@ find_package(geometry_msgs REQUIRED)
 add_executable(base_controller_node
   src/base_controller_node.cpp
   src/motion_control_center.cpp
+  src/inkjet_controller.cpp
 )
 target_include_directories(base_controller_node PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
