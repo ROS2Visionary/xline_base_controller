@@ -61,9 +61,15 @@ namespace xline
       RCLCPP_INFO(get_logger(), "暂停服务已创建: '/execution/pause'");
       RCLCPP_INFO(get_logger(), "恢复服务已创建: '/execution/resume'");
       RCLCPP_INFO(get_logger(), "姿态校正服务已创建: '/motion_control/execute_calibration'");
+
+      // 创建路径跟随控制器
       line_follow_controller_ = std::make_shared<xline::follow_controller::LineFollowController>();
       rpp_follow_controller_ = std::make_shared<xline::follow_controller::RPPController>();
       base_follow_controller_ = nullptr;
+
+      // 创建喷墨控制器（只创建一次，重复使用）
+      inkjet_controller_ = std::make_shared<InkjetController>(this);
+      RCLCPP_INFO(get_logger(), "喷墨控制器已创建（服务客户端已就绪）");
     }
 
     MotionControlCenter::~MotionControlCenter()
@@ -74,6 +80,14 @@ namespace xline
 
       // 唤醒可能正在暂停等待的线程
       pause_cv_.notify_all();
+
+      // 清理喷墨控制器
+      if (inkjet_controller_)
+      {
+        inkjet_controller_->cleanup();
+        inkjet_controller_.reset();
+        RCLCPP_DEBUG(get_logger(), "喷墨控制器已清理");
+      }
 
       // 给执行线程一些时间完成清理
       std::this_thread::sleep_for(std::chrono::milliseconds(200));
@@ -193,12 +207,37 @@ namespace xline
 
       RCLCPP_INFO(get_logger(), "开始执行计划,路径id: %u", line["id"].asUInt());
 
+      // 解析喷墨配置并初始化喷墨控制器
+      InkConfig ink_config;
+      if (line.isMember("ink") && !line["ink"].isNull())
+      {
+        ink_config = parseInkConfig(line["ink"]);
+      }
+
+      // 重置喷墨控制器状态（清理上次执行的残留状态）
+      if (inkjet_controller_)
+      {
+        inkjet_controller_->reset();
+      }
+
+      // 初始化喷墨（配置文字等）- 使用全局的 inkjet_controller_
+      if (inkjet_controller_ && !inkjet_controller_->initialize(ink_config))
+      {
+        RCLCPP_WARN(get_logger(), "喷墨初始化失败，继续执行路径");
+      }
+
       // 支持取消：收到取消则返回 canceled
       if (goal_handle->is_canceling())
       {
         // 停止机器人
         geometry_msgs::msg::Twist stop;
         cmd_vel_publisher_->publish(stop);
+
+        // 清理喷墨状态（停止打印）
+        if (inkjet_controller_)
+        {
+          inkjet_controller_->cleanup();
+        }
 
         // 清理暂停标志（防止在暂停状态下取消时标志残留）
         is_paused_.store(false);
@@ -222,6 +261,13 @@ namespace xline
       {
         geometry_msgs::msg::Twist stop;
         cmd_vel_publisher_->publish(stop);
+
+        // 清理喷墨状态（停止打印）
+        if (inkjet_controller_)
+        {
+          inkjet_controller_->cleanup();
+        }
+        
         is_paused_.store(false);
 
         result->success = false;
@@ -276,6 +322,13 @@ namespace xline
         // 【修复11】添加停止机器人操作，确保取消处理的一致性和安全性
         geometry_msgs::msg::Twist stop;
         cmd_vel_publisher_->publish(stop);
+
+        // 清理喷墨状态（停止打印）
+        if (inkjet_controller_)
+        {
+          inkjet_controller_->cleanup();
+        }
+
         is_paused_.store(false);
 
         result->success = false;
@@ -285,7 +338,24 @@ namespace xline
         return;
       }
 
+      // 开始喷墨
+      if (inkjet_controller_)
+      {
+        inkjet_controller_->startPrint();
+      }
+
+      // 重置行驶距离追踪
+      traveled_distance_mm_ = 0.0;
+      has_last_pose_ = false;
+
       compute_velocity(goal_handle, result);
+
+      // 停止喷墨并清理状态（为下次执行做准备）
+      if (inkjet_controller_)
+      {
+        inkjet_controller_->stopPrint();
+        inkjet_controller_->cleanup();
+      }
 
       // ✅ 根据结果和取消状态决定如何结束Action
       if (goal_handle->is_canceling())
@@ -392,6 +462,24 @@ namespace xline
           has_warned_no_pose = false;
         }
 
+        // 计算行驶距离（用于虚线模式）
+        if (has_last_pose_)
+        {
+          double dx = robot_pose.pose.position.x - last_pose_.pose.position.x;
+          double dy = robot_pose.pose.position.y - last_pose_.pose.position.y;
+          double distance_m = std::sqrt(dx * dx + dy * dy);
+          traveled_distance_mm_ += distance_m * 1000.0; // 转换为毫米
+
+          // 更新喷墨状态（虚线模式会在这里切换）
+          if (inkjet_controller_)
+          {
+            inkjet_controller_->update(traveled_distance_mm_);
+          }
+        }
+
+        last_pose_ = robot_pose;
+        has_last_pose_ = true;
+
         // 到达检测
         if (base_follow_controller_->isGoalReached())
         {
@@ -489,6 +577,100 @@ namespace xline
       RCLCPP_DEBUG(get_logger(), "提取Arc数据: 圆心(%.2f, %.2f), 半径%.2f, 起始角%.2f rad, 结束角%.2f rad", data.center_x,
                    data.center_y, data.radius, data.start_angle, data.end_angle);
       return data;
+    }
+
+    /**
+     * 解析喷墨配置
+     * ink对象包含: enabled, mode, printer (单数)
+     * 以及模式特定的参数(如虚线的dash_length_mm, 文字的content等)
+     */
+    InkConfig MotionControlCenter::parseInkConfig(const Json::Value &ink_obj)
+    {
+      InkConfig config;
+
+      // 检查 ink 对象是否存在且不为 null
+      if (ink_obj.isNull())
+      {
+        config.enabled = false;
+        return config;
+      }
+
+      // 解析 enabled 字段
+      if (ink_obj.isMember("enabled"))
+      {
+        config.enabled = ink_obj["enabled"].asBool();
+      }
+
+      if (!config.enabled)
+      {
+        return config;
+      }
+
+      // 解析 mode 字段
+      if (ink_obj.isMember("mode"))
+      {
+        config.mode = ink_obj["mode"].asString();
+      }
+
+      // 解析打印机（单数格式）
+      if (ink_obj.isMember("printer"))
+      {
+        config.printers.push_back(ink_obj["printer"].asString());
+      }
+
+      // 解析通用参数
+      if (ink_obj.isMember("start_delay_ms"))
+      {
+        config.start_delay_ms = ink_obj["start_delay_ms"].asInt();
+      }
+
+      if (ink_obj.isMember("stop_delay_ms"))
+      {
+        config.stop_delay_ms = ink_obj["stop_delay_ms"].asInt();
+      }
+
+      // 虚线模式参数
+      if (config.mode == "dashed")
+      {
+        if (ink_obj.isMember("dash_length_mm"))
+        {
+          config.dash_length_mm = ink_obj["dash_length_mm"].asDouble();
+        }
+
+        if (ink_obj.isMember("gap_length_mm"))
+        {
+          config.gap_length_mm = ink_obj["gap_length_mm"].asDouble();
+        }
+
+        if (ink_obj.isMember("start_with_dash"))
+        {
+          config.start_with_dash = ink_obj["start_with_dash"].asBool();
+        }
+      }
+
+      // 文字模式参数
+      if (config.mode == "text")
+      {
+        if (ink_obj.isMember("content"))
+        {
+          config.text_content = ink_obj["content"].asString();
+        }
+
+        if (ink_obj.isMember("font_size"))
+        {
+          config.font_size = ink_obj["font_size"].asInt();
+        }
+
+        if (ink_obj.isMember("repeat"))
+        {
+          config.repeat = ink_obj["repeat"].asBool();
+        }
+      }
+
+      RCLCPP_DEBUG(get_logger(), "解析喷墨配置 - 启用: %s, 模式: %s, 打印机数量: %zu",
+                   config.enabled ? "是" : "否", config.mode.c_str(), config.printers.size());
+
+      return config;
     }
 
     /**

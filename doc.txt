@@ -101,5 +101,33 @@ enabled要像auto_connect那样也需要持久化到文件src/xline_inkjet_print
       }                                                     
     }  
 
+    {
+      "color": "#D3D3D3",
+      "end": {
+        "x": -1003.8460303073251,
+        "y": 626.8985882246766
+      },
+      "hidden": false,
+      "id": 1000000,
+      "ink": {
+        "enabled": false,
+        "mode": "solid",
+        "printer": "center"
+      },
+      "layer": "TRANSITION",
+      "layer_id": 1000000,
+      "line_type": "",
+      "opacity": 0.5,
+      "order": 1,
+      "printed": false,
+      "selected": false,
+      "start": {
+        "x": -1043.3972714137565,
+        "y": 587.253924940167
+      },
+      "thickness": 1.0,
+      "type": "line",
+      "work": false
+    }
 
-
+好的！我现在结合最新的action数据结构，在 MotionControlCenter 中集成 InkjetController。我注意到实际的 JSON 格式中 ink 字段使用的是 printer（单数），而不是 printers（复数）。

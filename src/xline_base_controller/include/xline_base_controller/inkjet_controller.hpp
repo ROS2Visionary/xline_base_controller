@@ -44,20 +44,23 @@ namespace xline
     /**
      * 喷墨控制器类
      * 负责管理喷墨打印机的控制逻辑，支持实线、虚线、文字三种打印模式
+     * 内部自动创建和管理所需的服务客户端
      */
     class InkjetController
     {
     public:
       /**
        * 构造函数
-       * @param node ROS 2 节点指针
-       * @param quick_client QuickCommand 服务客户端(用于 start_print/stop_print)
-       * @param config_client ConfigurePrint 服务客户端(用于配置文字内容)
+       * @param node ROS 2 节点指针（用于创建服务客户端）
        */
-      InkjetController(
-          rclcpp::Node* node,
-          rclcpp::Client<xline_msgs::srv::QuickCommand>::SharedPtr quick_client,
-          rclcpp::Client<xline_msgs::srv::ConfigurePrint>::SharedPtr config_client);
+      explicit InkjetController(rclcpp::Node* node);
+
+      /**
+       * 重置控制器状态
+       * 清理所有内部状态，为下一次使用做准备
+       * 注意：不会销毁服务客户端，只是重置状态变量
+       */
+      void reset();
 
       /**
        * 初始化喷墨控制器

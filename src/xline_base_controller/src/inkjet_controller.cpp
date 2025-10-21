@@ -5,14 +5,37 @@ namespace xline
   namespace base_controller
   {
 
-    InkjetController::InkjetController(
-        rclcpp::Node* node,
-        rclcpp::Client<xline_msgs::srv::QuickCommand>::SharedPtr quick_client,
-        rclcpp::Client<xline_msgs::srv::ConfigurePrint>::SharedPtr config_client)
-        : node_(node),
-          quick_client_(quick_client),
-          config_client_(config_client)
+    InkjetController::InkjetController(rclcpp::Node* node)
+        : node_(node)
     {
+      // 创建 QuickCommand 服务客户端（用于 start_print/stop_print）
+      quick_client_ = node_->create_client<xline_msgs::srv::QuickCommand>(
+          "printer/quick_command");
+
+      // 创建 ConfigurePrint 服务客户端（用于配置文字内容）
+      config_client_ = node_->create_client<xline_msgs::srv::ConfigurePrint>(
+          "printer/configure_print");
+
+      RCLCPP_DEBUG(node_->get_logger(), "InkjetController 已创建服务客户端");
+    }
+
+    void InkjetController::reset()
+    {
+      // 确保停止所有打印操作
+      if (is_printing_)
+      {
+        RCLCPP_DEBUG(node_->get_logger(), "重置前停止打印");
+        stopPrint();
+      }
+
+      // 重置所有状态标志
+      is_printing_ = false;
+      last_switch_distance_ = 0.0;
+
+      // 清空配置（重置为默认值）
+      config_ = InkConfig();
+
+      RCLCPP_DEBUG(node_->get_logger(), "InkjetController 状态已重置");
     }
 
     bool InkjetController::initialize(const InkConfig& config)
@@ -50,8 +73,17 @@ namespace xline
 
     bool InkjetController::startPrint()
     {
+      // 检查是否启用喷墨
       if (!config_.enabled)
       {
+        RCLCPP_DEBUG(node_->get_logger(), "喷墨未启用，跳过开始打印");
+        return true;
+      }
+
+      // 检查是否已经在打印中（避免重复调用）
+      if (is_printing_)
+      {
+        RCLCPP_DEBUG(node_->get_logger(), "已经在打印中，跳过重复的开始打印命令");
         return true;
       }
 
@@ -85,8 +117,17 @@ namespace xline
 
     bool InkjetController::stopPrint()
     {
-      if (!config_.enabled || !is_printing_)
+      // 检查是否启用喷墨
+      if (!config_.enabled)
       {
+        RCLCPP_DEBUG(node_->get_logger(), "喷墨未启用，跳过停止打印");
+        return true;
+      }
+
+      // 检查是否已经停止（避免重复调用）
+      if (!is_printing_)
+      {
+        RCLCPP_DEBUG(node_->get_logger(), "已经停止打印，跳过重复的停止打印命令");
         return true;
       }
 
@@ -166,12 +207,13 @@ namespace xline
 
     void InkjetController::cleanup()
     {
-      // 确保停止打印
-      if (is_printing_)
-      {
-        RCLCPP_INFO(node_->get_logger(), "清理喷墨控制器，停止所有打印");
-        stopPrint();
-      }
+      // 停止打印（stopPrint() 内部已经有状态检查，无需重复检查）
+      stopPrint();
+
+      // 未来可以在这里添加其他清理逻辑：
+      // - 清理缓存
+      // - 重置某些标志
+      // - 断开连接等
     }
 
     bool InkjetController::controlInkjet(const std::string& action, const std::string& printer_name)
