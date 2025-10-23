@@ -238,9 +238,8 @@ namespace xline
       auto future = quick_client_->async_send_request(request);
 
       // 等待服务响应(最多3秒)
-      if (rclcpp::spin_until_future_complete(node_->get_node_base_interface(), future,
-                                              std::chrono::seconds(3)) ==
-          rclcpp::FutureReturnCode::SUCCESS)
+      auto status = future.wait_for(std::chrono::seconds(3));
+      if (status == std::future_status::ready)
       {
         auto response = future.get();
         if (!response->success)
@@ -284,9 +283,8 @@ namespace xline
         auto future = config_client_->async_send_request(request);
 
         // 等待服务响应(最多3秒)
-        if (rclcpp::spin_until_future_complete(node_->get_node_base_interface(), future,
-                                                std::chrono::seconds(3)) ==
-            rclcpp::FutureReturnCode::SUCCESS)
+        auto status = future.wait_for(std::chrono::seconds(3));
+        if (status == std::future_status::ready)
         {
           auto response = future.get();
           RCLCPP_INFO(node_->get_logger(), "文字配置 [%s]: %s",
