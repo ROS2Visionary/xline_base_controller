@@ -406,7 +406,7 @@ class AsyncInkjetPrinterNode(Node):
         """
         处理快速命令请求
 
-        支持的动作: beep, start_print, stop_print, clean_nozzle, ink_level
+        支持的动作: beep, start_print, stop_print, clean_nozzle, test_print, ink_level
         支持的打印机: left, center, right, all
         """
         action = request.action.lower().strip()
@@ -426,6 +426,8 @@ class AsyncInkjetPrinterNode(Node):
             'stop': ('关闭打印', lambda p: PrinterCommandTemplates.stop_print()),
             'clean_nozzle': ('清洗喷头', lambda p: PrinterCommandTemplates.clean_nozzle(p if p else 20)),
             'clean': ('清洗喷头', lambda p: PrinterCommandTemplates.clean_nozzle(p if p else 20)),
+            'test_print': ('测试打印', lambda p: PrinterCommandTemplates.test_print()),
+            'test': ('测试打印', lambda p: PrinterCommandTemplates.test_print()),
         }
 
         if action not in action_map:
@@ -563,6 +565,263 @@ class AsyncInkjetPrinterNode(Node):
 
             self._service_delay(1)
             return response
+
+    # ========== 内部便捷方法 - 设置打印模式 ==========
+
+    async def set_print_mode_internal(
+        self,
+        printer_name: str,
+        interval: int = 75
+    ) -> bool:
+        """
+        内部便捷方法：设置打印模式
+
+        直接设置打印机的打印间隔参数，供节点内部代码调用。
+
+        Args:
+            printer_name: 打印机名称 (printer_left/printer_center/printer_right)
+            interval: 打印间隔（毫秒），默认75ms
+
+        Returns:
+            成功标志
+
+        Examples:
+            >>> # 在节点内部调用
+            >>> await self.set_print_mode_internal('printer_left', interval=100)
+            True
+        """
+        client = self._tcp_clients.get(printer_name)
+        if not client:
+            self.get_logger().error(f'打印机 {printer_name} 不存在')
+            return False
+
+        if not client.is_connected():
+            self.get_logger().warning(f'{printer_name} 未连接')
+            return False
+
+        if not client.is_enabled():
+            self.get_logger().warning(f'{printer_name} 已禁用')
+            return False
+
+        # 构造设置打印模式的指令
+        command_code = 0x34  # PRINT_MODE
+        json_data = {
+            "PrintMode": {
+                "interval": interval,
+                "isFullEnd": 0,
+                "mode": 1
+            }
+        }
+
+        try:
+            result = await client.send_command(command_code, json_data)
+            if result:
+                self.get_logger().info(
+                    f'[{printer_name}] 设置打印模式成功: interval={interval}ms'
+                )
+            else:
+                self.get_logger().warning(
+                    f'[{printer_name}] 设置打印模式失败'
+                )
+            return result
+        except Exception as e:
+            self.get_logger().error(
+                f'[{printer_name}] 设置打印模式异常: {str(e)}'
+            )
+            return False
+
+    def set_print_mode(
+        self,
+        printer_name: str,
+        interval: int = 75
+    ) -> bool:
+        """
+        同步版本：设置打印模式
+
+        供节点内部同步代码调用的便捷方法。
+
+        Args:
+            printer_name: 打印机名称 (printer_left/printer_center/printer_right)
+            interval: 打印间隔（毫秒），默认75ms
+
+        Returns:
+            成功标志
+
+        Examples:
+            >>> # 在节点内部同步代码调用
+            >>> success = self.set_print_mode('printer_left', interval=100)
+        """
+        if self._loop is None:
+            self.get_logger().error('异步事件循环未初始化')
+            return False
+
+        future = asyncio.run_coroutine_threadsafe(
+            self.set_print_mode_internal(printer_name, interval),
+            self._loop
+        )
+
+        try:
+            result = future.result(timeout=3.0)
+            return result
+        except Exception as e:
+            self.get_logger().error(f'设置打印模式异常: {str(e)}')
+            return False
+
+    # ========== 内部便捷方法 - 开始/停止打印 ==========
+
+    async def start_print_internal(self, printer_name: str) -> bool:
+        """
+        内部便捷方法：开始打印（异步版本）
+
+        直接发送开始打印指令，供节点内部代码调用。
+
+        Args:
+            printer_name: 打印机名称 (printer_left/printer_center/printer_right)
+
+        Returns:
+            成功标志
+
+        Examples:
+            >>> # 在节点内部异步代码调用
+            >>> await self.start_print_internal('printer_left')
+            True
+        """
+        client = self._tcp_clients.get(printer_name)
+        if not client:
+            self.get_logger().error(f'打印机 {printer_name} 不存在')
+            return False
+
+        if not client.is_connected():
+            self.get_logger().warning(f'{printer_name} 未连接')
+            return False
+
+        if not client.is_enabled():
+            self.get_logger().warning(f'{printer_name} 已禁用')
+            return False
+
+        # 构造开始打印指令
+        command_code = 0x19  # SETUP_EVENT
+        json_data = {"EU2L": {"setupEvent": 1}}
+
+        try:
+            result = await client.send_command(command_code, json_data)
+            if result:
+                self.get_logger().info(f'[{printer_name}] 开始打印成功')
+            else:
+                self.get_logger().warning(f'[{printer_name}] 开始打印失败')
+            return result
+        except Exception as e:
+            self.get_logger().error(f'[{printer_name}] 开始打印异常: {str(e)}')
+            return False
+
+    async def stop_print_internal(self, printer_name: str) -> bool:
+        """
+        内部便捷方法：停止打印（异步版本）
+
+        直接发送停止打印指令，供节点内部代码调用。
+
+        Args:
+            printer_name: 打印机名称 (printer_left/printer_center/printer_right)
+
+        Returns:
+            成功标志
+
+        Examples:
+            >>> # 在节点内部异步代码调用
+            >>> await self.stop_print_internal('printer_left')
+            True
+        """
+        client = self._tcp_clients.get(printer_name)
+        if not client:
+            self.get_logger().error(f'打印机 {printer_name} 不存在')
+            return False
+
+        if not client.is_connected():
+            self.get_logger().warning(f'{printer_name} 未连接')
+            return False
+
+        if not client.is_enabled():
+            self.get_logger().warning(f'{printer_name} 已禁用')
+            return False
+
+        # 构造停止打印指令
+        command_code = 0x19  # SETUP_EVENT
+        json_data = {"EU2L": {"setupEvent": 0}}
+
+        try:
+            result = await client.send_command(command_code, json_data)
+            if result:
+                self.get_logger().info(f'[{printer_name}] 停止打印成功')
+            else:
+                self.get_logger().warning(f'[{printer_name}] 停止打印失败')
+            return result
+        except Exception as e:
+            self.get_logger().error(f'[{printer_name}] 停止打印异常: {str(e)}')
+            return False
+
+    def start_print(self, printer_name: str) -> bool:
+        """
+        同步版本：开始打印
+
+        供节点内部同步代码调用的便捷方法。
+
+        Args:
+            printer_name: 打印机名称 (printer_left/printer_center/printer_right)
+
+        Returns:
+            成功标志
+
+        Examples:
+            >>> # 在节点内部同步代码调用
+            >>> success = self.start_print('printer_left')
+        """
+        if self._loop is None:
+            self.get_logger().error('异步事件循环未初始化')
+            return False
+
+        future = asyncio.run_coroutine_threadsafe(
+            self.start_print_internal(printer_name),
+            self._loop
+        )
+
+        try:
+            result = future.result(timeout=3.0)
+            return result
+        except Exception as e:
+            self.get_logger().error(f'开始打印异常: {str(e)}')
+            return False
+
+    def stop_print(self, printer_name: str) -> bool:
+        """
+        同步版本：停止打印
+
+        供节点内部同步代码调用的便捷方法。
+
+        Args:
+            printer_name: 打印机名称 (printer_left/printer_center/printer_right)
+
+        Returns:
+            成功标志
+
+        Examples:
+            >>> # 在节点内部同步代码调用
+            >>> success = self.stop_print('printer_left')
+        """
+        if self._loop is None:
+            self.get_logger().error('异步事件循环未初始化')
+            return False
+
+        future = asyncio.run_coroutine_threadsafe(
+            self.stop_print_internal(printer_name),
+            self._loop
+        )
+
+        try:
+            result = future.result(timeout=3.0)
+            return result
+        except Exception as e:
+            self.get_logger().error(f'停止打印异常: {str(e)}')
+            return False
 
     def _execute_template_command(self, printer_name: str, command_code: int, json_data: dict, action_name: str, response):
         """

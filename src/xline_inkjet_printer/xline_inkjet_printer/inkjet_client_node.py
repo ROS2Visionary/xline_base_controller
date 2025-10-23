@@ -177,7 +177,7 @@ class InkjetClientNode(Node):
 
         Args:
             printer_name: 打印机名称 (left/center/right/all)
-            action: 动作名称 (beep/start_print/stop_print/clean_nozzle/ink_level)
+            action: 动作名称 (beep/start_print/stop_print/clean_nozzle/test_print/ink_level)
             param: 参数值（如蜂鸣次数、清洗强度）
             timeout_sec: 超时时间（秒）
 
@@ -375,6 +375,39 @@ class InkjetClientNode(Node):
     def query_ink_level_all(self, timeout_sec: float = 3.0) -> Tuple[bool, str]:
         """查询所有打印机墨盒模量"""
         return self.query_ink_level('all', timeout_sec)
+
+    # ========== 便捷方法 - 测试打印 ==========
+
+    def test_print(self, printer_name: str, timeout_sec: float = 3.0) -> Tuple[bool, str]:
+        """
+        测试打印
+
+        发送完整的测试打印内容，包含文本和装饰图形，用于验证打印机功能。
+
+        Args:
+            printer_name: 打印机名称 (left/center/right/all)
+            timeout_sec: 超时时间（秒）
+
+        Returns:
+            (成功标志, 消息) 元组
+        """
+        return self.quick_command(printer_name, 'test_print', 0, timeout_sec)
+
+    def test_print_left(self, timeout_sec: float = 3.0) -> Tuple[bool, str]:
+        """左打印机测试打印"""
+        return self.test_print('left', timeout_sec)
+
+    def test_print_center(self, timeout_sec: float = 3.0) -> Tuple[bool, str]:
+        """中打印机测试打印"""
+        return self.test_print('center', timeout_sec)
+
+    def test_print_right(self, timeout_sec: float = 3.0) -> Tuple[bool, str]:
+        """右打印机测试打印"""
+        return self.test_print('right', timeout_sec)
+
+    def test_print_all(self, timeout_sec: float = 3.0) -> Tuple[bool, str]:
+        """所有打印机测试打印"""
+        return self.test_print('all', timeout_sec)
 
     # ========== 状态查询服务方法 ==========
 

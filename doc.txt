@@ -135,3 +135,12 @@ enabled要像auto_connect那样也需要持久化到文件src/xline_inkjet_print
     }
 
 好的！我现在结合最新的action数据结构，在 MotionControlCenter 中集成 InkjetController。我注意到实际的 JSON 格式中 ink 字段使用的是 printer（单数），而不是 printers（复数）。
+
+
+
+其实对测试指令的需求是（要区分left、center、right打印机）：
+1、先给对应的打印机发送指令设置打印模式的指令，打印间隔interval=75
+2、间隔1秒，然后发送测试指令，测试指令使用默认参数即可
+3、间隔1秒，然后给打印机发送开始打印指令
+
+以上就是执行开始测试打印的完整流程，测试指令给外部使用服务”一键触发“，结合代码以及我的需求，使用最佳的方式实现

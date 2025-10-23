@@ -4,9 +4,8 @@
 基于实际硬件协议设计，支持编码/解码打印机命令。
 """
 
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional
 import json
-import struct
 from enum import IntEnum
 
 
@@ -19,6 +18,7 @@ class InkjetCommand(IntEnum):
     NOISES = 0x15           # 蜂鸣
     SETUP_EVENT = 0x19      # 启动/关闭打印（通用指令码，具体功能由JSON内容决定）
     # 注意：CLEAN（清洗喷头）也使用 0x19 指令码，但通过不同的JSON内容区分
+    TEST = 0x54             # 测试指令
 
 
 
