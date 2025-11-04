@@ -2,6 +2,31 @@
 喷墨打印机 ROS 2 客户端节点
 
 一个完整的ROS 2节点，包含所有打印机服务客户端功能。
+
+使用示例 - 完整测试打印流程：
+    import rclpy
+    from xline_inkjet_printer.inkjet_client_node import InkjetClientNode
+
+    # 初始化
+    rclpy.init()
+    node = InkjetClientNode()
+    node.wait_for_all_services(timeout_sec=5.0)
+
+    # 执行完整的测试打印流程（一键触发）
+    # 自动执行：设置打印模式 -> 等待1秒 -> 测试指令 -> 等待1秒 -> 开始打印
+    success, msg = node.test_print_left()
+    if success:
+        print('左打印机测试流程执行成功')
+        print(msg)
+    else:
+        print('测试失败:', msg)
+
+    # 对所有打印机执行测试
+    success, msg = node.test_print_all()
+
+    # 清理
+    node.destroy_node()
+    rclpy.shutdown()
 """
 
 import json
@@ -18,6 +43,21 @@ class InkjetClientNode(Node):
 
     继承自Node，实现所有打印机服务的客户端功能。
     支持三个打印机：left、center、right
+
+    主要功能：
+    - 打印控制：beep(), start_print(), stop_print()
+    - 维护操作：clean_nozzle()
+    - 测试功能：test_print() - 执行完整测试流程
+    - 状态查询：query_ink_level(), get_status_*()
+    - 打印机管理：set_printer_enabled(), set_printer_active()
+
+    测试打印说明：
+        test_print() 方法会自动执行完整的测试流程：
+        1. 设置打印模式（interval=75ms）
+        2. 等待1秒
+        3. 发送测试指令（13个模块：文本+边框图形）
+        4. 等待1秒
+        5. 开始打印
     """
 
     def __init__(self):
@@ -378,35 +418,51 @@ class InkjetClientNode(Node):
 
     # ========== 便捷方法 - 测试打印 ==========
 
-    def test_print(self, printer_name: str, timeout_sec: float = 3.0) -> Tuple[bool, str]:
+    def test_print(self, printer_name: str, timeout_sec: float = 8.0) -> Tuple[bool, str]:
         """
-        测试打印
+        测试打印（完整流程）
 
-        发送完整的测试打印内容，包含文本和装饰图形，用于验证打印机功能。
+        执行完整的测试打印流程，一键触发以下步骤：
+        1. 设置打印模式（interval=75ms）
+        2. 等待1秒
+        3. 发送测试指令（包含文本和装饰图形，13个模块）
+        4. 等待1秒
+        5. 开始打印
+
+        这是一个自动化的测试流程，用于全面验证打印机功能。
 
         Args:
             printer_name: 打印机名称 (left/center/right/all)
-            timeout_sec: 超时时间（秒）
+            timeout_sec: 超时时间（秒），默认8秒（包含2秒等待时间）
 
         Returns:
             (成功标志, 消息) 元组
+
+        Examples:
+            >>> # 对左打印机执行完整测试流程
+            >>> success, msg = node.test_print('left')
+            >>> if success:
+            >>>     print('测试流程执行成功')
+
+            >>> # 对所有打印机执行测试
+            >>> success, msg = node.test_print('all')
         """
         return self.quick_command(printer_name, 'test_print', 0, timeout_sec)
 
-    def test_print_left(self, timeout_sec: float = 3.0) -> Tuple[bool, str]:
-        """左打印机测试打印"""
+    def test_print_left(self, timeout_sec: float = 8.0) -> Tuple[bool, str]:
+        """左打印机测试打印（完整流程）"""
         return self.test_print('left', timeout_sec)
 
-    def test_print_center(self, timeout_sec: float = 3.0) -> Tuple[bool, str]:
-        """中打印机测试打印"""
+    def test_print_center(self, timeout_sec: float = 8.0) -> Tuple[bool, str]:
+        """中打印机测试打印（完整流程）"""
         return self.test_print('center', timeout_sec)
 
-    def test_print_right(self, timeout_sec: float = 3.0) -> Tuple[bool, str]:
-        """右打印机测试打印"""
+    def test_print_right(self, timeout_sec: float = 8.0) -> Tuple[bool, str]:
+        """右打印机测试打印（完整流程）"""
         return self.test_print('right', timeout_sec)
 
-    def test_print_all(self, timeout_sec: float = 3.0) -> Tuple[bool, str]:
-        """所有打印机测试打印"""
+    def test_print_all(self, timeout_sec: float = 8.0) -> Tuple[bool, str]:
+        """所有打印机测试打印（完整流程）"""
         return self.test_print('all', timeout_sec)
 
     # ========== 状态查询服务方法 ==========

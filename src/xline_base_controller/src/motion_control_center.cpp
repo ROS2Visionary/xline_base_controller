@@ -251,6 +251,9 @@ namespace xline
 
       std::string type = line["type"].asString();
       uint32_t path_id = line["id"].asUInt();
+      uint32_t layer_id = line["layer_id"].asUInt();
+
+      bool is_start_from_robot = layer_id == 1000000 ? true : false;
 
       // 发布反馈 - 只发送current_id
       feedback->current_id = path_id;
@@ -283,7 +286,13 @@ namespace xline
         LineData line_data = extractLineData(line);
         RCLCPP_INFO(get_logger(), "[line, id=%u]: 起点(%.2f, %.2f) -> 终点(%.2f, %.2f)", path_id, line_data.start_x,
                     line_data.start_y, line_data.end_x, line_data.end_y);
-        line_follow_controller_->setPlan(line_data.start_x / 1000, line_data.start_y / 1000, line_data.end_x / 1000, line_data.end_y / 1000);
+        if(is_start_from_robot){ // 是否使用机器人位置作为路径的起点
+          geometry_msgs::msg::PoseStamped robot_pose;
+          getLatestPose(robot_pose);
+          line_follow_controller_->setPlan(robot_pose.pose.position.x, robot_pose.pose.position.y, line_data.end_x / 1000, line_data.end_y / 1000);
+        }else{
+          line_follow_controller_->setPlan(line_data.start_x / 1000, line_data.start_y / 1000, line_data.end_x / 1000, line_data.end_y / 1000);
+        }
         base_follow_controller_ = line_follow_controller_;
       }
       else if (type == "circle")
@@ -947,7 +956,7 @@ namespace xline
         return;
       }
 
-      // 【修复3】使用 RAII 确保执行标志被清理
+      // 使用 RAII 确保执行标志被清理
       auto cleanup = [this](void *)
       {
         is_executing_.store(false);

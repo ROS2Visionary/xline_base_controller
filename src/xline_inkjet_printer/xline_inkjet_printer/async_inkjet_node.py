@@ -417,6 +417,10 @@ class AsyncInkjetPrinterNode(Node):
         if action in ['ink_level', 'query_ink', 'ink']:
             return self._handle_ink_level_query(printer_name_raw, response)
 
+        # 测试打印特殊处理（执行完整流程）
+        if action in ['test_print', 'test']:
+            return self._handle_test_print_sequence(printer_name_raw, response)
+
         # 解析动作
         action_map = {
             'beep': ('蜂鸣', lambda p: PrinterCommandTemplates.beep(p if p else 1)),
@@ -426,13 +430,12 @@ class AsyncInkjetPrinterNode(Node):
             'stop': ('关闭打印', lambda p: PrinterCommandTemplates.stop_print()),
             'clean_nozzle': ('清洗喷头', lambda p: PrinterCommandTemplates.clean_nozzle(p if p else 20)),
             'clean': ('清洗喷头', lambda p: PrinterCommandTemplates.clean_nozzle(p if p else 20)),
-            'test_print': ('测试打印', lambda p: PrinterCommandTemplates.test_print()),
-            'test': ('测试打印', lambda p: PrinterCommandTemplates.test_print()),
+            # 注意：test_print 和 test 已在上面特殊处理，执行完整流程
         }
 
         if action not in action_map:
             response.success = False
-            response.message = f'不支持的动作: {action}，支持: {", ".join(list(action_map.keys()) + ["ink_level"])}'
+            response.message = f'不支持的动作: {action}，支持: {", ".join(list(action_map.keys()) + ["test_print", "ink_level"])}'
             self._service_delay(1)
             return response
 
@@ -479,6 +482,82 @@ class AsyncInkjetPrinterNode(Node):
                 response.message = f'执行失败: {str(e)}'
                 self._service_delay(1)
                 return response
+
+    def _handle_test_print_sequence(self, printer_name_raw: str, response):
+        """
+        处理测试打印流程（完整流程：设置模式->测试指令->开始打印）
+
+        Args:
+            printer_name_raw: 打印机名称（left/center/right/all）
+            response: 响应对象
+
+        Returns:
+            填充后的响应对象
+        """
+        # 解析打印机名称
+        if printer_name_raw == 'all':
+            # 对所有打印机执行测试流程
+            results = []
+            for pname in ['printer_left', 'printer_center', 'printer_right']:
+                # 在 asyncio 循环中执行测试流程
+                future = asyncio.run_coroutine_threadsafe(
+                    self.execute_test_print_sequence(pname),
+                    self._loop
+                )
+
+                try:
+                    # 等待完成（总超时时间约4秒：1秒+1秒+通信时间）
+                    success = future.result(timeout=6.0)
+                    if success:
+                        results.append(f'{pname}: 测试打印流程执行成功 ✓')
+                    else:
+                        results.append(f'{pname}: 测试打印流程执行失败')
+                except Exception as e:
+                    results.append(f'{pname}: 异常 - {str(e)}')
+
+            response.success = True
+            response.message = '\n'.join(results)
+            self._service_delay(1)
+            return response
+        else:
+            # 单个打印机
+            # 规范化名称
+            if printer_name_raw in ['left', 'printer_left']:
+                printer_name = 'printer_left'
+            elif printer_name_raw in ['center', 'printer_center']:
+                printer_name = 'printer_center'
+            elif printer_name_raw in ['right', 'printer_right']:
+                printer_name = 'printer_right'
+            else:
+                response.success = False
+                response.message = f'未知的打印机: {printer_name_raw}，支持: left/center/right/all'
+                self._service_delay(1)
+                return response
+
+            # 在 asyncio 循环中执行测试流程
+            future = asyncio.run_coroutine_threadsafe(
+                self.execute_test_print_sequence(printer_name),
+                self._loop
+            )
+
+            try:
+                # 等待完成（总超时时间约4秒）
+                success = future.result(timeout=6.0)
+                if success:
+                    response.success = True
+                    response.message = f'[{printer_name}] 测试打印流程执行成功 ✓'
+                    self.get_logger().info(response.message)
+                else:
+                    response.success = False
+                    response.message = f'[{printer_name}] 测试打印流程执行失败'
+                    self.get_logger().warning(response.message)
+            except Exception as e:
+                response.success = False
+                response.message = f'[{printer_name}] 测试打印流程异常: {str(e)}'
+                self.get_logger().error(response.message)
+
+            self._service_delay(1)
+            return response
 
     def _handle_ink_level_query(self, printer_name_raw: str, response):
         """
@@ -821,6 +900,116 @@ class AsyncInkjetPrinterNode(Node):
             return result
         except Exception as e:
             self.get_logger().error(f'停止打印异常: {str(e)}')
+            return False
+
+    # ========== 完整测试打印流程 ==========
+
+    async def execute_test_print_sequence(self, printer_name: str) -> bool:
+        """
+        执行完整的测试打印流程（异步版本）
+
+        完整流程：
+        1. 设置打印模式（interval=75ms）
+        2. 等待1秒
+        3. 发送测试指令（默认参数）
+        4. 等待1秒
+        5. 开始打印
+
+        Args:
+            printer_name: 打印机名称 (printer_left/printer_center/printer_right)
+
+        Returns:
+            成功标志
+
+        Examples:
+            >>> await self.execute_test_print_sequence('printer_left')
+            True
+        """
+        self.get_logger().info(f'[{printer_name}] 开始执行测试打印流程...')
+
+        # 检查打印机
+        client = self._tcp_clients.get(printer_name)
+        if not client:
+            self.get_logger().error(f'[{printer_name}] 打印机不存在')
+            return False
+
+        if not client.is_connected():
+            self.get_logger().error(f'[{printer_name}] 未连接')
+            return False
+
+        if not client.is_enabled():
+            self.get_logger().error(f'[{printer_name}] 已禁用')
+            return False
+
+        try:
+            # 步骤1: 设置打印模式（interval=75ms）
+            self.get_logger().info(f'[{printer_name}] 步骤1: 设置打印模式 (interval=75ms)')
+            if not await self.set_print_mode_internal(printer_name, interval=75):
+                self.get_logger().error(f'[{printer_name}] 设置打印模式失败')
+                return False
+
+            # 步骤2: 等待1秒
+            self.get_logger().info(f'[{printer_name}] 步骤2: 等待2秒')
+            await asyncio.sleep(2.0)
+
+            # 步骤3: 发送测试指令（使用默认参数）
+            self.get_logger().info(f'[{printer_name}] 步骤3: 发送测试指令')
+            command_code = 0x54  # TEST
+            # 完整的测试指令JSON（包含13个模块）
+            json_data = {
+                "Mesg": {
+                    "fileName": "txt.msg",
+                    "modules": [
+                        # 模块1: 文本
+                        {
+                            "direc": 0,
+                            "family": "Arial-MonoBold",
+                            "height": 159,
+                            "letterSpace": 0,
+                            "mtype": 0,
+                            "pixelSize": 140,
+                            "text": "12345",
+                            "width": 420,
+                            "x": 476,
+                            "y": -3
+                        },
+                        # 模块2-9: 水平图片
+                        {"direc": 0, "fileName": "矩形 1(1).bmp", "height": 5, "img": "Zlib64:AAAAPXicYyhkYPlPJvgAAIp3OS4=", "inverse": False, "mtype": 3, "sHeight": 5, "sWidth": 113, "scale": 1, "width": 113, "x": 150, "y": 10},
+                        {"direc": 0, "fileName": "矩形 1(1).bmp", "height": 5, "img": "Zlib64:AAAAPXicYyhkYPlPJvgAAIp3OS4=", "inverse": False, "mtype": 3, "sHeight": 5, "sWidth": 113, "scale": 1, "width": 113, "x": 150, "y": 25},
+                        {"direc": 0, "fileName": "矩形 1(1).bmp", "height": 5, "img": "Zlib64:AAAAPXicYyhkYPlPJvgAAIp3OS4=", "inverse": False, "mtype": 3, "sHeight": 5, "sWidth": 113, "scale": 1, "width": 113, "x": 150, "y": 40},
+                        {"direc": 0, "fileName": "矩形 1(1).bmp", "height": 5, "img": "Zlib64:AAAAPXicYyhkYPlPJvgAAIp3OS4=", "inverse": False, "mtype": 3, "sHeight": 5, "sWidth": 113, "scale": 1, "width": 113, "x": 150, "y": 58},
+                        {"direc": 0, "fileName": "矩形 1(1).bmp", "height": 5, "img": "Zlib64:AAAAPXicYyhkYPlPJvgAAIp3OS4=", "inverse": False, "mtype": 3, "sHeight": 5, "sWidth": 113, "scale": 1, "width": 113, "x": 150, "y": 78},
+                        {"direc": 0, "fileName": "矩形 1(1).bmp", "height": 5, "img": "Zlib64:AAAAPXicYyhkYPlPJvgAAIp3OS4=", "inverse": False, "mtype": 3, "sHeight": 5, "sWidth": 113, "scale": 1, "width": 113, "x": 150, "y": 96},
+                        {"direc": 0, "fileName": "矩形 1(1).bmp", "height": 5, "img": "Zlib64:AAAAPXicYyhkYPlPJvgAAIp3OS4=", "inverse": False, "mtype": 3, "sHeight": 5, "sWidth": 113, "scale": 1, "width": 113, "x": 150, "y": 117},
+                        {"direc": 0, "fileName": "矩形 1(1).bmp", "height": 5, "img": "Zlib64:AAAAPXicYyhkYPlPJvgAAIp3OS4=", "inverse": False, "mtype": 3, "sHeight": 5, "sWidth": 113, "scale": 1, "width": 113, "x": 150, "y": 137},
+                        # 模块10-13: 垂直图片
+                        {"direc": 90, "fileName": "矩形 1(1).bmp", "height": 140, "img": "Zlib64:AAAAPXicYyhkYPlPJvgAAIp3OS4=", "inverse": False, "mtype": 3, "sHeight": 5, "sWidth": 140, "scale": 1, "width": 5, "x": 316, "y": 5},
+                        {"direc": 90, "fileName": "矩形 1(1).bmp", "height": 140, "img": "Zlib64:AAAAPXicYyhkYPlPJvgAAIp3OS4=", "inverse": False, "mtype": 3, "sHeight": 5, "sWidth": 140, "scale": 1, "width": 5, "x": 348, "y": 5},
+                        {"direc": 90, "fileName": "矩形 1(1).bmp", "height": 140, "img": "Zlib64:AAAAPXicYyhkYPlPJvgAAIp3OS4=", "inverse": False, "mtype": 3, "sHeight": 5, "sWidth": 140, "scale": 1, "width": 5, "x": 380, "y": 4},
+                        {"direc": 90, "fileName": "矩形 1(1).bmp", "height": 140, "img": "Zlib64:AAAAPXicYyhkYPlPJvgAAIp3OS4=", "inverse": False, "mtype": 3, "sHeight": 5, "sWidth": 140, "scale": 1, "width": 5, "x": 411, "y": 5}
+                    ]
+                }
+            }
+
+            if not await client.send_command(command_code, json_data):
+                self.get_logger().error(f'[{printer_name}] 发送测试指令失败')
+                return False
+
+            # 步骤4: 等待1秒
+            self.get_logger().info(f'[{printer_name}] 步骤4: 等待2秒')
+            await asyncio.sleep(2.0)
+
+            # 步骤5: 开始打印
+            self.get_logger().info(f'[{printer_name}] 步骤5: 开始打印')
+            if not await self.start_print_internal(printer_name):
+                self.get_logger().error(f'[{printer_name}] 开始打印失败')
+                return False
+
+            self.get_logger().info(f'[{printer_name}] ✓ 测试打印流程执行成功')
+            return True
+
+        except Exception as e:
+            self.get_logger().error(f'[{printer_name}] 测试打印流程异常: {str(e)}')
             return False
 
     def _execute_template_command(self, printer_name: str, command_code: int, json_data: dict, action_name: str, response):
