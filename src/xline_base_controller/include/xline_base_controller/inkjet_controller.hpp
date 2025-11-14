@@ -10,6 +10,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <xline_msgs/srv/quick_command.hpp>
 #include <xline_msgs/srv/configure_print.hpp>
+#include <xline_msgs/srv/printer_command.hpp>
 
 namespace xline
 {
@@ -103,11 +104,27 @@ namespace xline
        */
       bool isPrinting() const { return is_printing_; }
 
+      /**
+       * 发送通用命令到打印机
+       * 提供对 printer/send_command 服务的快捷调用
+       * @param printer_name 打印机名称 ("left", "center", "right")
+       * @param command 指令名称或指令码（如 "NOISES", "0x15"）
+       * @param json_data JSON格式的命令数据
+       * @return 是否执行成功
+       */
+      bool sendCommand(const std::string& printer_name,
+                       const std::string& command,
+                       const std::string& json_data);
+
+      
+      void resetForLine();
+
     private:
       // ROS 2 节点和服务客户端
       rclcpp::Node* node_;
       rclcpp::Client<xline_msgs::srv::QuickCommand>::SharedPtr quick_client_;
       rclcpp::Client<xline_msgs::srv::ConfigurePrint>::SharedPtr config_client_;
+      rclcpp::Client<xline_msgs::srv::PrinterCommand>::SharedPtr send_command_client_;
 
       // 配置和状态
       InkConfig config_;

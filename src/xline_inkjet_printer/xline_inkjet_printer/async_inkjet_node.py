@@ -44,7 +44,7 @@ class AsyncInkjetPrinterNode(Node):
 
         # 声明参数
         self.declare_parameter('config_file', 'printers.yaml')
-        self.declare_parameter('status_publish_rate', 1.0)  # Hz
+        self.declare_parameter('status_publish_rate', 0.5)  # Hz
         self.declare_parameter('device_id_left', 0)
         self.declare_parameter('device_id_center', 0)
         self.declare_parameter('device_id_right', 0)
@@ -243,8 +243,10 @@ class AsyncInkjetPrinterNode(Node):
                 'connected': client.is_connected(),
                 'auto_connect': client.is_auto_connect(),
                 'enabled': client.is_enabled(),
+                'is_online': client.is_online(),
                 'status': client.get_status(),
-                'device_id': client.get_device_id()
+                'device_id': client.get_device_id(),
+                'ink_level': self._get_ink_level_for_status(name)  # 墨量余量（0-100）
             }
 
         # 发布为JSON字符串
@@ -387,19 +389,64 @@ class AsyncInkjetPrinterNode(Node):
             self._service_delay(1)
             return response
 
+        # 获取墨量
+        ink_level = self._get_ink_level_for_status(printer_name)
+
         status_info = {
             'name': printer_name,
             'connected': client.is_connected(),
             'auto_connect': client.is_auto_connect(),
             'enabled': client.is_enabled(),
+            'is_online': client.is_online(),
             'status': client.get_status(),
-            'device_id': client.get_device_id()
+            'device_id': client.get_device_id(),
+            'ink_level': ink_level  # 墨量余量（0-100）
         }
 
         response.success = True
         response.message = json.dumps(status_info, ensure_ascii=False, indent=2)
         self._service_delay(1)
         return response
+
+    def _get_ink_level_for_status(self, printer_name: str) -> int:
+        """
+        获取喷码机墨量余量（用于状态查询）
+
+        返回值范围：0-100（百分比）
+
+        当前实现：返回固定值0
+        后续扩展：可以调用真实的墨量查询API
+
+        Args:
+            printer_name: 打印机名称 (printer_left/printer_center/printer_right)
+
+        Returns:
+            墨量余量百分比（0-100），查询失败返回0
+
+        Examples:
+            后续接入真实查询的示例代码：
+
+            # 方式1: 实时查询（可能较慢，适合对准确性要求高的场景）
+            query = self._ink_queries.get(printer_name)
+            if query:
+                future = asyncio.run_coroutine_threadsafe(
+                    query.query_ink_level(),
+                    self._loop
+                )
+                try:
+                    raw_level = future.result(timeout=1.0)  # 短超时避免阻塞
+                    if raw_level is not None:
+                        # 将原始值转换为百分比（根据实际协议调整）
+                        return min(100, max(0, raw_level))
+                except Exception:
+                    pass
+
+            # 方式2: 使用缓存值（需要添加定时更新机制）
+            # return self._ink_level_cache.get(printer_name, 0)
+        """
+        # TODO: 当墨量查询接口就绪后，在此实现真实查询逻辑
+        # 目前返回固定值0，表示未查询或墨量未知
+        return 0
 
     # 便捷服务处理函数 - 统一快速命令
     def _handle_quick_command(self, request, response):

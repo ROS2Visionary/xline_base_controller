@@ -218,7 +218,7 @@ ros2 launch xline_inkjet_printer inkjet_printer.launch.py
 
 #### `/printer_status` (std_msgs/String)
 
-发布所有打印机的状态信息（JSON 格式），频率可配置（默认 5Hz）。
+发布所有打印机的状态信息（JSON 格式），频率可配置（默认 1Hz）。
 
 **示例输出**:
 
@@ -226,30 +226,56 @@ ros2 launch xline_inkjet_printer inkjet_printer.launch.py
 {
   "printer_left": {
     "connected": true,
+    "auto_connect": true,
     "enabled": true,
+    "is_online": true,
     "status": "已连接",
-    "stats_summary": "Connects: 5 | Success Rate: 100.0% | Uptime: 98.5% | Sent: 1.2KB | Recv: 850B | Avg Response: 12.3ms"
+    "device_id": 0,
+    "ink_level": 85
   },
   "printer_center": {
     "connected": true,
+    "auto_connect": true,
     "enabled": true,
+    "is_online": true,
     "status": "已连接",
-    "stats_summary": "..."
+    "device_id": 0,
+    "ink_level": 72
   },
   "printer_right": {
     "connected": false,
+    "auto_connect": false,
     "enabled": false,
-    "status": "已禁用",
-    "stats_summary": "..."
+    "is_online": false,
+    "status": "已断开",
+    "device_id": 0,
+    "ink_level": 0
   }
 }
 ```
+
+**字段说明**:
+- `connected`: TCP 连接状态
+- `auto_connect`: 自动重连开关
+- `enabled`: 功能启用状态
+- `is_online`: IP 在线状态（Ping 检测，TCP 连接时不检测）
+- `status`: 人类可读的状态描述（中文）
+- `device_id`: 设备ID（0-255）
+- `ink_level`: 墨量余量百分比（0-100，0表示未查询或查询失败）
+
+**`is_online` 字段说明**:
+- 检测机制：TCP 连接时不执行 Ping，未连接时每 2 秒检测一次
+- 用于网络诊断：
+  - `is_online=true, connected=false`：网络通但 TCP 失败（端口/防火墙问题）
+  - `is_online=false, connected=false`：网络不通或主机离线
 
 **订阅示例**:
 
 ```bash
 ros2 topic echo /printer_status
 ```
+
+**详细文档**: 请参阅 [TOPIC_printer_status.md](./TOPIC_printer_status.md)
 
 ---
 

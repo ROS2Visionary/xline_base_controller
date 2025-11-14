@@ -971,6 +971,11 @@ namespace xline
       // 执行姿态校正（复用已有的 executeLocalizationCalibration 函数）
       bool success = executeLocalizationCalibration(calibration_velocity, calibration_duration);
 
+      // 将喷码机状态恢复为画线（在新线程中执行）
+      std::thread([this]() {
+        inkjet_controller_->resetForLine();
+      }).detach();
+
       // 设置响应
       response->success = success;
       if (success)

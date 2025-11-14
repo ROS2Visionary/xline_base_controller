@@ -12,8 +12,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/SetPrinterEnabled.srv"
   "srv/SetPrinterActive.srv"
   "srv/ConfigurePrint.srv"
+  "srv/MotorCommand.srv"
 )
 
 ament_export_dependencies(rosidl_default_runtime)
 ament_package()
-

@@ -1,4 +1,5 @@
 #include "xline_base_controller/inkjet_controller.hpp"
+#include <chrono>
 
 namespace xline
 {
@@ -15,6 +16,10 @@ namespace xline
       // 创建 ConfigurePrint 服务客户端（用于配置文字内容）
       config_client_ = node_->create_client<xline_msgs::srv::ConfigurePrint>(
           "printer/configure_print");
+
+      // 创建 PrinterCommand 服务客户端（用于发送通用命令）
+      send_command_client_ = node_->create_client<xline_msgs::srv::PrinterCommand>(
+          "printer/send_command");
 
       RCLCPP_DEBUG(node_->get_logger(), "InkjetController 已创建服务客户端");
     }
@@ -36,6 +41,12 @@ namespace xline
       config_ = InkConfig();
 
       RCLCPP_DEBUG(node_->get_logger(), "InkjetController 状态已重置");
+    }
+
+    void InkjetController::resetForLine(){
+      sendCommand("center","0x36","{\"PrintMode\":{\"interval\":12,\"isFullEnd\":1,\"mode\":1}}");
+      std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+      sendCommand("center","0xe4","{\"Mesg\":{\"fileName\":\"line_1.msg\",\"modules\":[{\"direc\":0,\"fileName\":\" 1(1).bmp\",\"height\":5,\"img\":\"Zlib64:AAAAPXicYyhkYPlPJvgAAIp3OS4=\",\"inverse\":false,\"mtype\":3,\"sHeight\":5,\"sWidth\":150,\"scale\":1,\"width\":150,\"x\":0,\"y\":75}]}}");
     }
 
     bool InkjetController::initialize(const InkConfig& config)
@@ -299,6 +310,54 @@ namespace xline
       }
 
       return success;
+    }
+
+    bool InkjetController::sendCommand(const std::string& printer_name,
+                                       const std::string& command,
+                                       const std::string& json_data)
+    {
+      if (!send_command_client_)
+      {
+        RCLCPP_ERROR(node_->get_logger(), "PrinterCommand 服务客户端未初始化");
+        return false;
+      }
+
+      if (!send_command_client_->service_is_ready())
+      {
+        RCLCPP_WARN(node_->get_logger(), "PrinterCommand 服务不可用");
+        return false;
+      }
+
+      auto request = std::make_shared<xline_msgs::srv::PrinterCommand::Request>();
+      request->printer_name = printer_name;
+      request->command = command;
+      request->json_data = json_data;
+
+      auto future = send_command_client_->async_send_request(request);
+
+      // 等待服务响应(最多3秒)
+      auto status = future.wait_for(std::chrono::seconds(3));
+      if (status == std::future_status::ready)
+      {
+        auto response = future.get();
+        if (!response->success)
+        {
+          RCLCPP_WARN(node_->get_logger(), "发送命令失败 [%s, %s]: %s",
+                      printer_name.c_str(), command.c_str(), response->message.c_str());
+        }
+        else
+        {
+          RCLCPP_INFO(node_->get_logger(), "发送命令成功 [%s, %s]: %s",
+                      printer_name.c_str(), command.c_str(), response->message.c_str());
+        }
+        return response->success;
+      }
+      else
+      {
+        RCLCPP_ERROR(node_->get_logger(), "PrinterCommand 服务调用超时 [%s, %s]",
+                     printer_name.c_str(), command.c_str());
+        return false;
+      }
     }
 
   } // namespace base_controller

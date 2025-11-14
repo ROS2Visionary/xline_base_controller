@@ -1,0 +1,13 @@
+# 电机控制服务接口
+# Motor Control Service Interface
+
+# 请求部分 Request
+int32 motor_id          # 电机ID: 1 或 2
+string command          # 命令: "forward" 或 "reverse"
+
+---
+
+# 响应部分 Response
+bool success            # 是否成功
+string message          # 返回消息
+

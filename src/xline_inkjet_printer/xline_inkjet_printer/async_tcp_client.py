@@ -64,11 +64,16 @@ class AsyncTcpClient:
         # 后台任务
         self._reconnect_task: Optional[asyncio.Task] = None
         self._recv_task: Optional[asyncio.Task] = None
+        self._ping_task: Optional[asyncio.Task] = None
 
         # 重连状态
         self._reconnect_attempts_done: int = 0
         self._gave_up: bool = False
         self._stop_event: asyncio.Event = asyncio.Event()
+
+        # Ping 监测状态
+        self._is_online: bool = False  # IP 是否在线（可 ping 通）
+        self._ping_interval: float = 2.0  # ping 检测间隔（秒）
 
         # 协议层
         self._protocol = InkjetProtocol()
@@ -325,6 +330,74 @@ class AsyncTcpClient:
         finally:
             self._logger.debug(f'[{self._name}] 接收循环已退出')
 
+    async def _ping_check(self) -> bool:
+        """
+        检查 IP 地址是否可 ping 通
+
+        Returns:
+            是否可达
+        """
+        try:
+            import platform
+
+            # 根据操作系统选择 ping 命令参数
+            if platform.system().lower() == 'windows':
+                cmd = ['ping', '-n', '1', '-w', '1000', self._ip]
+            else:
+                cmd = ['ping', '-c', '1', '-W', '1', self._ip]
+
+            # 执行 ping 命令
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL
+            )
+
+            # 等待命令完成，超时 2 秒
+            await asyncio.wait_for(process.wait(), timeout=2.0)
+
+            return process.returncode == 0
+
+        except asyncio.TimeoutError:
+            self._logger.debug(f'[{self._name}] Ping 超时')
+            return False
+        except Exception as e:
+            self._logger.debug(f'[{self._name}] Ping 异常: {e}')
+            return False
+
+    async def _ping_loop(self) -> None:
+        """Ping 监测循环（后台任务，TCP 连接时停止）"""
+        self._logger.debug(f'[{self._name}] Ping 监测循环已启动')
+
+        while not self._stop_event.is_set():
+            try:
+                # 如果已连接，则暂停 ping（只在未连接时 ping）
+                if self._connected:
+                    await asyncio.sleep(self._ping_interval)
+                    continue
+
+                # 执行 ping 检测
+                is_online = await self._ping_check()
+
+                # 更新状态（如果状态变化则记录日志）
+                if is_online != self._is_online:
+                    self._is_online = is_online
+                    if is_online:
+                        self._logger.info(f'[{self._name}] IP {self._ip} 在线 (ping 可达)')
+                    else:
+                        self._logger.warning(f'[{self._name}] IP {self._ip} 离线 (ping 不可达)')
+                else:
+                    self._is_online = is_online
+
+                # 等待下一次检测
+                await asyncio.sleep(self._ping_interval)
+
+            except Exception as e:
+                self._logger.error(f'[{self._name}] Ping 监测循环异常: {e}')
+                await asyncio.sleep(self._ping_interval)
+
+        self._logger.debug(f'[{self._name}] Ping 监测循环已退出')
+
     async def _reconnect_loop(self) -> None:
         """重连循环（后台任务）"""
         self._logger.debug(f'[{self._name}] 重连循环已启动')
@@ -378,7 +451,11 @@ class AsyncTcpClient:
         if self._reconnect_task is None or self._reconnect_task.done():
             self._reconnect_task = asyncio.create_task(self._reconnect_loop())
 
-        self._logger.info(f'[{self._name}] 客户端已启动')
+        # 启动 Ping 监测循环
+        if self._ping_task is None or self._ping_task.done():
+            self._ping_task = asyncio.create_task(self._ping_loop())
+
+        self._logger.info(f'[{self._name}] 客户端已启动（包含 Ping 监测）')
 
     async def stop(self) -> None:
         """停止客户端"""
@@ -395,6 +472,8 @@ class AsyncTcpClient:
             tasks.append(self._reconnect_task)
         if self._recv_task and not self._recv_task.done():
             tasks.append(self._recv_task)
+        if self._ping_task and not self._ping_task.done():
+            tasks.append(self._ping_task)
 
         if tasks:
             await asyncio.wait(tasks, timeout=2.0)
@@ -414,6 +493,10 @@ class AsyncTcpClient:
     def is_connected(self) -> bool:
         """是否已连接"""
         return self._connected
+
+    def is_online(self) -> bool:
+        """IP 是否在线（可 ping 通）"""
+        return self._is_online
 
     def is_auto_connect(self) -> bool:
         """是否启用自动连接"""
