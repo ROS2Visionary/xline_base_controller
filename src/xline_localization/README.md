@@ -74,7 +74,7 @@ ros2 topic echo /estimated_pose
 
 ### 位置计算
 
-参考 `daosnrs_localization.cpp` 的实现:
+参考 `xline_localization.cpp` 的实现:
 
 1. **反射板位姿**: 从激光雷达获取反射板位置,从 IMU 计算姿态
 2. **坐标转换**: `global_to_base = global_to_reflector * reflector_to_base_tf`

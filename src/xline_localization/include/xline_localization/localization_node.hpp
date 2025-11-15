@@ -19,7 +19,7 @@
  *
  * 该节点负责融合多个传感器数据(IMU、激光反射板位置等)，
  * 计算机器人在全局坐标系中的实时位姿(位置、姿态)并发布。
- * 参考 daosnrs_localization 的实现方式。
+ * 参考 xline_localization 的实现方式。
  *
  * 订阅话题:
  * - /imu (sensor_msgs/Imu): IMU数据

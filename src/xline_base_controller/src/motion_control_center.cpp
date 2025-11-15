@@ -37,7 +37,7 @@ namespace xline
           std::bind(&MotionControlCenter::poseCallback, this, _1));
 
       // 创建 cmd_vel 发布器(用于校准时控制机器人移动)
-      cmd_vel_publisher_ = this->create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", // 话题名
+      cmd_vel_publisher_ = this->create_publisher<geometry_msgs::msg::Twist>("/task_cmd_vel", // 话题名
                                                                              10);        // QoS 队列大小
 
       // 创建定位校准服务客户端
@@ -396,7 +396,7 @@ namespace xline
     bool MotionControlCenter::compute_velocity(const std::shared_ptr<GoalHandleExecutePlan> goal_handle,
                                                ExecutePlan::Result::SharedPtr result)
     {
-      // 参考 daosnrs_controller.cpp::ControllerServer::computeControl 实现
+      // 参考 xline_controller.cpp::ControllerServer::computeControl 实现
       // 这里执行周期性控制：读取当前位姿 -> 计算速度 -> 发布速度 -> 判断是否到达
 
       if (!base_follow_controller_)

@@ -4,7 +4,7 @@
 
 ## 概述
 
-`RPPController`是DAOSNRS机器人的规则纯追踪控制器（Regulated Pure Pursuit Controller），专门用于曲线路径跟随和圆形路径跟踪。该控制器采用前瞻点算法，结合曲率约束和速度调节，实现精确的路径跟踪控制，特别适用于复杂的曲线轨迹和圆形路径。
+`RPPController`是xline机器人的规则纯追踪控制器（Regulated Pure Pursuit Controller），专门用于曲线路径跟随和圆形路径跟踪。该控制器采用前瞻点算法，结合曲率约束和速度调节，实现精确的路径跟踪控制，特别适用于复杂的曲线轨迹和圆形路径。
 
 **文件位置**: `follow_controller/src/rpp_follow_controller.cpp`
 
@@ -481,7 +481,7 @@ bool setPlanForCircle(double circle_center_x, double circle_center_y, double cir
                       const geometry_msgs::msg::PoseStamped& robot_pose);
 
 // 设置路径对象  
-bool setPlanForBasePath(const std::shared_ptr<daosnrs::geometry::BasePath>& path_object);
+bool setPlanForBasePath(const std::shared_ptr<xline::geometry::BasePath>& path_object);
 
 // 计算速度指令
 bool computeVelocityCommands(const geometry_msgs::msg::PoseStamped& pose,
@@ -656,11 +656,11 @@ y_offset: 0.0                    # Y方向偏置(m)
 
 ## 与主控制器集成
 
-在`daosnrs_controller.cpp`中的集成方式:
+在`xline_controller.cpp`中的集成方式:
 
 ### 1. 控制器选择
 ```cpp
-// daosnrs_controller.cpp:390-400
+// xline_controller.cpp:390-400
 if (path_type == PathType::Curve || path_type == PathType::Circle) {
     controller_ = rpp_controller_;
     
@@ -679,7 +679,7 @@ if (path_type == PathType::Curve || path_type == PathType::Circle) {
 
 ### 2. 速度计算和发布
 ```cpp
-// daosnrs_controller.cpp:719-769
+// xline_controller.cpp:719-769
 bool computeAndPublishVelocity() {
     geometry_msgs::msg::PoseStamped robot_pose;
     getRobotPose(robot_pose);
@@ -701,7 +701,7 @@ bool computeAndPublishVelocity() {
 
 ### 3. 目标到达判断
 ```cpp
-// daosnrs_controller.cpp:465-475
+// xline_controller.cpp:465-475
 if (controller_->isGoalReached()) {
     RCLCPP_INFO(get_logger(), "路径跟踪完成！");
     
@@ -772,4 +772,4 @@ if (controller_->isGoalReached()) {
 
 ## 总结
 
-`RPPController`是一个功能完备的纯追踪路径跟踪控制器，专门针对曲线路径和圆形轨迹进行了优化。通过多级滤波、约束控制和自适应参数调整，实现了高精度、高鲁棒性的路径跟踪。其丰富的配置选项和可视化功能使其能够适应各种复杂的应用场景，是DAOSNRS机器人系统中曲线路径跟踪的核心组件。
+`RPPController`是一个功能完备的纯追踪路径跟踪控制器，专门针对曲线路径和圆形轨迹进行了优化。通过多级滤波、约束控制和自适应参数调整，实现了高精度、高鲁棒性的路径跟踪。其丰富的配置选项和可视化功能使其能够适应各种复杂的应用场景，是xline机器人系统中曲线路径跟踪的核心组件。

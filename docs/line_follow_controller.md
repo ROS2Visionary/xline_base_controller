@@ -4,7 +4,7 @@
 
 ## 概述
 
-`LineFollowController`是DAOSNRS机器人直线路径跟随的核心控制器，负责执行精确的直线轨迹跟踪，支持前进和后退跟随模式，具备地形自适应和IMU融合功能。
+`LineFollowController`是xline机器人直线路径跟随的核心控制器，负责执行精确的直线轨迹跟踪，支持前进和后退跟随模式，具备地形自适应和IMU融合功能。
 
 **文件位置**: `follow_controller/src/line_follow_controller.cpp`
 
@@ -501,11 +501,11 @@ terrain_control:
 
 ## 与主控制器集成
 
-在`daosnrs_controller.cpp`中的集成方式:
+在`xline_controller.cpp`中的集成方式:
 
 ### 1. 控制器选择
 ```cpp
-// daosnrs_controller.cpp:376-388
+// xline_controller.cpp:376-388
 if (path_type == PathType::Line) {
     controller_ = line_follow_controller_;
     geometry_msgs::msg::PoseStamped robot_pose;
@@ -518,7 +518,7 @@ if (path_type == PathType::Line) {
 
 ### 2. 速度计算调用
 ```cpp
-// daosnrs_controller.cpp:719-769
+// xline_controller.cpp:719-769
 bool computeAndPublishVelocity() {
     geometry_msgs::msg::PoseStamped robot_pose;
     getRobotPose(robot_pose);
@@ -536,7 +536,7 @@ bool computeAndPublishVelocity() {
 
 ### 3. 目标到达检查
 ```cpp
-// daosnrs_controller.cpp:465
+// xline_controller.cpp:465
 if (goalReached()) {
     // 通过 line_follow_controller_->isGoalReached() 检查
     LOG_INFO("Reached the goal!");
