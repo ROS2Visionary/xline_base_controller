@@ -24,7 +24,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'cmd_vel_mux = xline_cmd_vel_mux.cmd_vel_mux:main',
+            'cmd_vel_mux_node = xline_cmd_vel_mux.cmd_vel_mux:main',
         ],
     },
 )
