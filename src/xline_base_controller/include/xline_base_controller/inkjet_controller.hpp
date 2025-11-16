@@ -117,7 +117,7 @@ namespace xline
                        const std::string& json_data);
 
       
-      void resetForLine();
+      void resetForSolid();
 
     private:
       // ROS 2 节点和服务客户端

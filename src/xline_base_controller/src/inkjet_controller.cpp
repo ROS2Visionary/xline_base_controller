@@ -43,7 +43,7 @@ namespace xline
       RCLCPP_DEBUG(node_->get_logger(), "InkjetController 状态已重置");
     }
 
-    void InkjetController::resetForLine(){
+    void InkjetController::resetForSolid(){
       sendCommand("center","0x36","{\"PrintMode\":{\"interval\":12,\"isFullEnd\":1,\"mode\":1}}");
       std::this_thread::sleep_for(std::chrono::milliseconds(1500));
       sendCommand("center","0xe4","{\"Mesg\":{\"fileName\":\"line_1.msg\",\"modules\":[{\"direc\":0,\"fileName\":\" 1(1).bmp\",\"height\":5,\"img\":\"Zlib64:AAAAPXicYyhkYPlPJvgAAIp3OS4=\",\"inverse\":false,\"mtype\":3,\"sHeight\":5,\"sWidth\":150,\"scale\":1,\"width\":150,\"x\":0,\"y\":75}]}}");
@@ -67,6 +67,12 @@ namespace xline
       {
         RCLCPP_INFO(node_->get_logger(), "配置文字内容: %s", config_.text_content.c_str());
         return configureText();
+      }
+
+      // 实线模式：输出实线参数
+      if (config_.mode == "solid")
+      {
+        resetForSolid();
       }
 
       // 虚线模式：输出虚线参数

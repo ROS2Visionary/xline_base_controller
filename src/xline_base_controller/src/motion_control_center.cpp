@@ -15,11 +15,7 @@ namespace xline
   namespace base_controller
   {
 
-    /**
-     * 构造函数
-     * - 设置节点名称为 "motion_control_center"
-     * - 创建 ExecutePlan 动作服务器，动作名为 "execute_plan"
-     */
+
     MotionControlCenter::MotionControlCenter(const rclcpp::NodeOptions &options)
         : rclcpp::Node("motion_control_center", options)
     {
@@ -30,7 +26,7 @@ namespace xline
                                                                  std::bind(&MotionControlCenter::handleCancel, this, _1),
                                                                  std::bind(&MotionControlCenter::handleAccepted, this, _1));
 
-      // 创建位姿订阅器(订阅状态估计器发布的融合位姿)
+      // 创建位姿订阅器
       pose_subscriber_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
           "/robot_pose", // 话题名
           10,            // QoS 队列大小
@@ -74,7 +70,7 @@ namespace xline
 
     MotionControlCenter::~MotionControlCenter()
     {
-      // 【修复8】在析构时通知所有执行线程退出
+      // 在析构时通知所有执行线程退出
       RCLCPP_INFO(get_logger(), "MotionControlCenter 正在关闭...");
       shutdown_.store(true);
 
@@ -142,7 +138,7 @@ namespace xline
       (void)goal_handle;
       RCLCPP_INFO(get_logger(), "收到取消请求，接受取消");
 
-      // ✅ 关键修复：唤醒可能正在暂停等待的线程
+      // 唤醒可能正在暂停等待的线程
       // 这样checkPauseState()中的条件变量会重新检查is_canceling()
       pause_cv_.notify_all();
 
@@ -160,7 +156,7 @@ namespace xline
 
     void MotionControlCenter::execute(const std::shared_ptr<GoalHandleExecutePlan> goal_handle)
     {
-      // 【修复1】使用 compare_exchange_strong 原子地检查并设置执行标志
+      // 使用 compare_exchange_strong 原子地检查并设置执行标志
       // 这样可以防止多个 goal 同时通过 handleGoal 检查后并发执行
       bool expected = false;
       if (!is_executing_.compare_exchange_strong(expected, true))
@@ -174,7 +170,7 @@ namespace xline
         return;
       }
 
-      // 【修复2】使用RAII确保函数退出时清除所有状态标志
+      // 使用RAII确保函数退出时清除所有状态标志
       auto cleanup = [this](void *)
       {
         is_executing_.store(false);
@@ -259,7 +255,7 @@ namespace xline
       feedback->current_id = path_id;
       goal_handle->publish_feedback(feedback);
 
-      // 【修复10】在路径配置前检查取消状态，提高取消响应速度
+      // 在路径配置前检查取消状态，提高取消响应速度
       if (goal_handle->is_canceling())
       {
         geometry_msgs::msg::Twist stop;
@@ -324,11 +320,11 @@ namespace xline
         RCLCPP_WARN(get_logger(), "[id=%u]: 未知类型 %s，跳过", path_id, type.c_str());
       }
 
-      // 【修复6】在开始执行控制循环前检查暂停/取消状态，提高响应速度
+      // 在开始执行控制循环前检查暂停/取消状态，提高响应速度
       checkPauseState(goal_handle);
       if (goal_handle->is_canceling())
       {
-        // 【修复11】添加停止机器人操作，确保取消处理的一致性和安全性
+        // 添加停止机器人操作，确保取消处理的一致性和安全性
         geometry_msgs::msg::Twist stop;
         cmd_vel_publisher_->publish(stop);
 
@@ -366,7 +362,7 @@ namespace xline
         inkjet_controller_->cleanup();
       }
 
-      // ✅ 根据结果和取消状态决定如何结束Action
+      // 根据结果和取消状态决定如何结束Action
       if (goal_handle->is_canceling())
       {
         // 取消状态：调用canceled
@@ -418,7 +414,7 @@ namespace xline
 
       // int temp_count = 0;  // 调试用，已禁用
 
-      // 【修复8】检查节点关闭标志，确保节点销毁时执行线程能及时退出
+      // 检查节点关闭标志，确保节点销毁时执行线程能及时退出
       while (rclcpp::ok() && !shutdown_.load())
       {
         rate.sleep();
@@ -451,7 +447,7 @@ namespace xline
         //   return true;
         // }
 
-        // 【修复4】获取最新位姿，检查返回值确保位姿数据有效
+        // 获取最新位姿，检查返回值确保位姿数据有效
         geometry_msgs::msg::PoseStamped robot_pose;
         if (!getLatestPose(robot_pose))
         {
@@ -800,7 +796,7 @@ namespace xline
     {
       (void)request;
 
-      // 【修复7】使用互斥锁保护服务调用，避免暂停/恢复服务并发时的状态不一致
+      // 使用互斥锁保护服务调用，避免暂停/恢复服务并发时的状态不一致
       std::lock_guard<std::mutex> lock(service_mutex_);
 
       // 检查是否有任务正在执行
@@ -824,13 +820,13 @@ namespace xline
       // 设置暂停标志
       is_paused_.store(true);
 
-      // 【修复9】立即停止机器人，避免60-100ms的响应延迟
+      // 立即停止机器人，避免60-100ms的响应延迟
       geometry_msgs::msg::Twist stop;
       cmd_vel_publisher_->publish(stop);
 
       response->success = true;
       response->message = "任务已暂停，机器人已停止";
-      RCLCPP_INFO(get_logger(), "✅ 执行已暂停，机器人已立即停止");
+      RCLCPP_INFO(get_logger(), "执行已暂停，机器人已立即停止");
     }
 
     /**
@@ -841,7 +837,7 @@ namespace xline
     {
       (void)request;
 
-      // 【修复7】使用互斥锁保护服务调用，避免暂停/恢复服务并发时的状态不一致
+      // 使用互斥锁保护服务调用，避免暂停/恢复服务并发时的状态不一致
       std::lock_guard<std::mutex> lock(service_mutex_);
 
       // 检查是否处于暂停状态
@@ -859,7 +855,7 @@ namespace xline
 
       response->success = true;
       response->message = "任务已恢复";
-      RCLCPP_INFO(get_logger(), "✅ 执行已恢复");
+      RCLCPP_INFO(get_logger(), "执行已恢复");
     }
 
     /**
@@ -868,11 +864,11 @@ namespace xline
      */
     void MotionControlCenter::checkPauseState(const std::shared_ptr<GoalHandleExecutePlan> goal_handle)
     {
-      // 【修复5】在锁保护下检查暂停状态，避免竞态条件
+      // 在锁保护下检查暂停状态，避免竞态条件
       std::unique_lock<std::mutex> lock(pause_mutex_);
       if (is_paused_.load())
       {
-        // 【修复12】只在第一次进入暂停时停止机器人并打印日志，避免重复操作
+        // 只在第一次进入暂停时停止机器人并打印日志，避免重复操作
         if (!pause_notified_)
         {
           // 在锁保护下停止机器人，确保状态一致性
@@ -883,35 +879,35 @@ namespace xline
           geometry_msgs::msg::PoseStamped pause_pose;
           if (getLatestPose(pause_pose))
           {
-            RCLCPP_INFO(get_logger(), "⏸️  任务已暂停，机器人已停止 - 位置(%.3f, %.3f), 朝向%.3f°",
+            RCLCPP_INFO(get_logger(), "任务已暂停，机器人已停止 - 位置(%.3f, %.3f), 朝向%.3f°",
                         pause_pose.pose.position.x,
                         pause_pose.pose.position.y,
                         tf2::getYaw(pause_pose.pose.orientation) * 180.0 / M_PI);
           }
           else
           {
-            RCLCPP_INFO(get_logger(), "⏸️  任务已暂停，机器人已停止，等待恢复...");
+            RCLCPP_INFO(get_logger(), "任务已暂停，机器人已停止，等待恢复...");
           }
           pause_notified_ = true;
         }
 
-        // 【修复8】等待恢复、取消或节点关闭（三者任一发生都会解除阻塞）
+        // 等待恢复、取消或节点关闭（三者任一发生都会解除阻塞）
         pause_cv_.wait(lock, [this, goal_handle]()
                        { return !is_paused_.load() || goal_handle->is_canceling() || shutdown_.load(); });
 
-        // 【修复12】重置暂停通知标志
+        // 重置暂停通知标志
         pause_notified_ = false;
 
-        // 【修复8】如果是取消或节点关闭导致的唤醒，清理暂停标志并直接返回
+        // 如果是取消或节点关闭导致的唤醒，清理暂停标志并直接返回
         if (goal_handle->is_canceling() || shutdown_.load())
         {
           if (goal_handle->is_canceling())
           {
-            RCLCPP_INFO(get_logger(), "🚫 暂停期间收到取消请求，即将退出");
+            RCLCPP_INFO(get_logger(), "暂停期间收到取消请求，即将退出");
           }
           else
           {
-            RCLCPP_INFO(get_logger(), "🚫 暂停期间节点关闭，即将退出");
+            RCLCPP_INFO(get_logger(), "暂停期间节点关闭，即将退出");
           }
           is_paused_.store(false); // 清理暂停标志
           return;
@@ -921,14 +917,14 @@ namespace xline
         geometry_msgs::msg::PoseStamped resume_pose;
         if (getLatestPose(resume_pose))
         {
-          RCLCPP_INFO(get_logger(), "▶️  任务已恢复 - 位置(%.3f, %.3f), 朝向%.3f°",
+          RCLCPP_INFO(get_logger(), "任务已恢复 - 位置(%.3f, %.3f), 朝向%.3f°",
                       resume_pose.pose.position.x,
                       resume_pose.pose.position.y,
                       tf2::getYaw(resume_pose.pose.orientation) * 180.0 / M_PI);
         }
         else
         {
-          RCLCPP_INFO(get_logger(), "▶️  任务已恢复");
+          RCLCPP_INFO(get_logger(), "任务已恢复");
         }
       }
     }
@@ -945,7 +941,7 @@ namespace xline
 
       RCLCPP_INFO(get_logger(), "收到姿态校正服务请求");
 
-      // 【修复3】使用 compare_exchange_strong 原子地检查并设置执行标志
+      // 使用 compare_exchange_strong 原子地检查并设置执行标志
       // 防止校准服务与 Action 任务并发执行，同时抢占 cmd_vel 控制权
       bool expected = false;
       if (!is_executing_.compare_exchange_strong(expected, true))
@@ -981,7 +977,7 @@ namespace xline
       if (success)
       {
         response->message = "姿态校正成功完成";
-        RCLCPP_INFO(get_logger(), "✅ %s", response->message.c_str());
+        RCLCPP_INFO(get_logger(), "%s", response->message.c_str());
       }
       else
       {

@@ -10,10 +10,10 @@ lidar_position:
 
 # 检测距离配置 (单位: 米，以机器人边界为基准)
 detection_distances:
-  front: 0.3      # 前方检测距离
-  back: 0.3       # 后方检测距离
-  left: 0.3       # 左侧检测距离
-  right: 0.3      # 右侧检测距离
+  front: 1.0      # 前方检测距离
+  back: 1.0       # 后方检测距离
+  left: 1.0       # 左侧检测距离
+  right: 1.0      # 右侧检测距离
     
 
 # 话题配置
@@ -21,5 +21,5 @@ topics:
   laser_topic: /scan
     
 mask:
-  mask_angle: 8.5
-  mask_range: 5.0
+  mask_angle: 0.0
+  mask_range: 3.0

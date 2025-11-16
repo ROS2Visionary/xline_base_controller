@@ -2,13 +2,14 @@
 # -*- coding: utf-8 -*-
 
 """
-XLine命令速度复用节点（带智能障碍物避障）
-订阅来自执行任务和平板操控的Twist消息，并根据障碍物检测结果智能转发到cmd_vel话题
+XLine命令速度复用节点（带智能障碍物动态减速 - 四方向停止距离版）
+订阅来自执行任务和平板操控的Twist消息，并根据障碍物检测结果智能减速转发到cmd_vel话题
 
 功能特性：
 1. 根据机器人运动状态智能判断需要关注的障碍物方向
-2. 支持可配置的安全距离参数（仅用于原地旋转）
-3. 当检测到障碍物时自动停止机器人
+2. 支持前后左右四个方向独立配置停止距离（分别针对平板操控和执行任务）
+3. 根据障碍物距离动态计算减速比例，实现平滑减速
+4. 在各方向设定的停止距离处完全停止机器人
 """
 
 import rclpy
@@ -20,8 +21,8 @@ import math
 
 class CmdVelMux(Node):
     """
-    命令速度复用节点（带智能障碍物避障）
-    订阅来自执行任务和平板操控的Twist消息，并根据障碍物检测智能转发
+    命令速度复用节点（带智能障碍物动态减速 - 四方向版）
+    订阅来自执行任务和平板操控的Twist消息，并根据障碍物检测智能减速转发
     """
     
     # 障碍物方向索引
@@ -33,17 +34,57 @@ class CmdVelMux(Node):
     def __init__(self):
         super().__init__('cmd_vel_mux')
         
-        # 声明参数
-        self.declare_parameter('obstacle_safe_distance', 0.1)  # 安全距离（米），仅用于原地旋转
+        # 声明参数 - 障碍物检测相关
         self.declare_parameter('enable_obstacle_detection', True)  # 是否启用障碍物检测
+        self.declare_parameter('obstacle_detection_range', 1.0)  # 障碍物检测范围（米）
         self.declare_parameter('linear_velocity_threshold', 0.01)  # 线速度零值判断阈值（米/秒）
         self.declare_parameter('angular_velocity_threshold', 0.01)  # 角速度零值判断阈值（弧度/秒）
         
-        # 获取参数值
-        self.safe_distance = self.get_parameter('obstacle_safe_distance').value
+        # 声明参数 - 平板操控相关（四方向停止距离）
+        self.declare_parameter('tablet_max_linear_speed', 1.5)  # 平板最大线速度（米/秒）
+        self.declare_parameter('tablet_max_angular_speed', 1.5)  # 平板最大角速度（弧度/秒）
+        self.declare_parameter('tablet_stop_distance_front', 0.2)   # 前方停止距离（米）
+        self.declare_parameter('tablet_stop_distance_back', 0.2)    # 后方停止距离（米）
+        self.declare_parameter('tablet_stop_distance_left', 0.1)   # 左侧停止距离（米）
+        self.declare_parameter('tablet_stop_distance_right', 0.1)  # 右侧停止距离（米）
+        self.declare_parameter('tablet_rotate_stop_distance', 0.1) # 原地旋转停止距离（米）
+        
+        # 声明参数 - 执行任务相关（四方向停止距离）
+        self.declare_parameter('task_max_linear_speed', 0.4)  # 任务最大线速度（米/秒）
+        self.declare_parameter('task_max_angular_speed', 1.5)  # 任务最大角速度（弧度/秒）
+        self.declare_parameter('task_stop_distance_front', 0.2)    # 前方停止距离（米）
+        self.declare_parameter('task_stop_distance_back', 0.2)     # 后方停止距离（米）
+        self.declare_parameter('task_stop_distance_left', 0.15)    # 左侧停止距离（米）
+        self.declare_parameter('task_stop_distance_right', 0.15)   # 右侧停止距离（米）
+        self.declare_parameter('task_rotate_stop_distance', 0.1)   # 原地旋转停止距离（米）
+        
+        # 获取参数值 - 通用参数
         self.enable_obstacle_detection = self.get_parameter('enable_obstacle_detection').value
+        self.detection_range = self.get_parameter('obstacle_detection_range').value
         self.linear_threshold = self.get_parameter('linear_velocity_threshold').value
         self.angular_threshold = self.get_parameter('angular_velocity_threshold').value
+        
+        # 获取参数值 - 平板操控参数（四方向）
+        self.tablet_max_linear = self.get_parameter('tablet_max_linear_speed').value
+        self.tablet_max_angular = self.get_parameter('tablet_max_angular_speed').value
+        self.tablet_stop_dist = {
+            'front': self.get_parameter('tablet_stop_distance_front').value,
+            'back': self.get_parameter('tablet_stop_distance_back').value,
+            'left': self.get_parameter('tablet_stop_distance_left').value,
+            'right': self.get_parameter('tablet_stop_distance_right').value,
+            'rotate': self.get_parameter('tablet_rotate_stop_distance').value
+        }
+        
+        # 获取参数值 - 执行任务参数（四方向）
+        self.task_max_linear = self.get_parameter('task_max_linear_speed').value
+        self.task_max_angular = self.get_parameter('task_max_angular_speed').value
+        self.task_stop_dist = {
+            'front': self.get_parameter('task_stop_distance_front').value,
+            'back': self.get_parameter('task_stop_distance_back').value,
+            'left': self.get_parameter('task_stop_distance_left').value,
+            'right': self.get_parameter('task_stop_distance_right').value,
+            'rotate': self.get_parameter('task_rotate_stop_distance').value
+        }
         
         # 障碍物距离数组 [前方, 后方, 左侧, 右侧]
         # 0.0 表示无障碍物或距离无穷大
@@ -51,12 +92,10 @@ class CmdVelMux(Node):
         
         # 当前机器人的运动状态（最后实际发布的速度）
         self.current_cmd_vel = Twist()
+        self.current_source = None  # 当前指令来源
         
         # 上一次的运动状态（用于检测状态变化）
         self.last_motion_state = 'stopped'
-        
-        # 是否已经因为障碍物停止
-        self.is_stopped_by_obstacle = False
         
         # 创建发布者 - 发布到 cmd_vel
         self.cmd_vel_publisher = self.create_publisher(
@@ -90,35 +129,63 @@ class CmdVelMux(Node):
         )
         
         # 打印启动信息
-        self.get_logger().info('=' * 60)
-        self.get_logger().info('CmdVelMux节点已启动（智能障碍物避障）')
-        self.get_logger().info('=' * 60)
+        self.print_startup_info()
+    
+    def print_startup_info(self):
+        """打印启动信息"""
+        self.get_logger().info('=' * 75)
+        self.get_logger().info('CmdVelMux节点已启动（智能障碍物动态减速 - 四方向停止距离版）')
+        self.get_logger().info('=' * 75)
         self.get_logger().info('订阅话题:')
         self.get_logger().info('  - task_cmd_vel: 执行任务控制指令')
         self.get_logger().info('  - tablet_cmd_vel: 平板操控指令')
         self.get_logger().info('  - /obstacle_detected: 障碍物检测数据')
         self.get_logger().info('发布话题:')
         self.get_logger().info('  - cmd_vel: 最终控制指令')
-        self.get_logger().info('-' * 60)
+        self.get_logger().info('-' * 75)
         self.get_logger().info('障碍物检测参数:')
         self.get_logger().info(f'  - 启用状态: {self.enable_obstacle_detection}')
-        self.get_logger().info(f'  - 安全距离(原地旋转): {self.safe_distance:.2f}m')
-        self.get_logger().info('  - 检测规则:')
-        self.get_logger().info('    * 直线前进: 只检查前方障碍物')
-        self.get_logger().info('    * 直线后退: 只检查后方障碍物')
-        self.get_logger().info('    * 转弯运动: 检查运动方向的障碍物')
-        self.get_logger().info('    * 原地旋转: 检查四周，障碍物距离<安全距离时停止')
-        self.get_logger().info('-' * 60)
-        self.get_logger().info('速度判断阈值:')
-        self.get_logger().info(f'  - 线速度零值阈值: {self.linear_threshold:.3f}m/s')
-        self.get_logger().info(f'  - 角速度零值阈值: {self.angular_threshold:.3f}rad/s')
-        self.get_logger().info(f'  - 说明: 速度绝对值小于阈值时判定为0')
-        self.get_logger().info('=' * 60)
+        self.get_logger().info(f'  - 检测范围: {self.detection_range:.2f}m')
+        self.get_logger().info('-' * 75)
+        self.get_logger().info('平板操控参数:')
+        self.get_logger().info(f'  - 最大线速度: {self.tablet_max_linear:.2f}m/s')
+        self.get_logger().info(f'  - 最大角速度: {self.tablet_max_angular:.2f}rad/s')
+        self.get_logger().info(f'  - 停止距离 [前方]: {self.tablet_stop_dist["front"]:.2f}m')
+        self.get_logger().info(f'  - 停止距离 [后方]: {self.tablet_stop_dist["back"]:.2f}m')
+        self.get_logger().info(f'  - 停止距离 [左侧]: {self.tablet_stop_dist["left"]:.2f}m')
+        self.get_logger().info(f'  - 停止距离 [右侧]: {self.tablet_stop_dist["right"]:.2f}m')
+        self.get_logger().info(f'  - 停止距离 [旋转]: {self.tablet_stop_dist["rotate"]:.2f}m (四周)')
+        self.get_logger().info('-' * 75)
+        self.get_logger().info('执行任务参数:')
+        self.get_logger().info(f'  - 最大线速度: {self.task_max_linear:.2f}m/s')
+        self.get_logger().info(f'  - 最大角速度: {self.task_max_angular:.2f}rad/s')
+        self.get_logger().info(f'  - 停止距离 [前方]: {self.task_stop_dist["front"]:.2f}m')
+        self.get_logger().info(f'  - 停止距离 [后方]: {self.task_stop_dist["back"]:.2f}m')
+        self.get_logger().info(f'  - 停止距离 [左侧]: {self.task_stop_dist["left"]:.2f}m')
+        self.get_logger().info(f'  - 停止距离 [右侧]: {self.task_stop_dist["right"]:.2f}m')
+        self.get_logger().info(f'  - 停止距离 [旋转]: {self.task_stop_dist["rotate"]:.2f}m (四周)')
+        self.get_logger().info('-' * 75)
+        self.get_logger().info('动态减速策略:')
+        self.get_logger().info('  - 障碍物距离 > 检测范围: 不减速 (100%速度)')
+        self.get_logger().info('  - 检测范围 >= 距离 > 停止距离: 线性减速')
+        self.get_logger().info('  - 距离 <= 停止距离: 完全停止 (0%速度)')
+        self.get_logger().info('  - 减速公式: 速度比例 = (距离-停止距离)/(检测范围-停止距离)')
+        self.get_logger().info('  - 各方向独立计算，取最严格限制')
+        self.get_logger().info('-' * 75)
+        self.get_logger().info('智能检测规则:')
+        self.get_logger().info('  - 直线前进: 检查前方 (使用前方停止距离)')
+        self.get_logger().info('  - 直线后退: 检查后方 (使用后方停止距离)')
+        self.get_logger().info('  - 前进左转: 检查前方+左侧 (使用各自停止距离)')
+        self.get_logger().info('  - 前进右转: 检查前方+右侧 (使用各自停止距离)')
+        self.get_logger().info('  - 后退左转: 检查后方+左侧 (使用各自停止距离)')
+        self.get_logger().info('  - 后退右转: 检查后方+右侧 (使用各自停止距离)')
+        self.get_logger().info('  - 原地旋转: 检查四周 (使用旋转停止距离)')
+        self.get_logger().info('=' * 75)
     
     def obstacle_callback(self, msg):
         """
         障碍物检测话题回调函数
-        重要：每次收到障碍物数据时，都检查当前运动状态是否安全
+        更新障碍物距离数据，并重新评估当前运动状态
         """
         if len(msg.data) >= 4:
             self.obstacle_distances = list(msg.data[:4])
@@ -127,106 +194,112 @@ class CmdVelMux(Node):
             if not self.enable_obstacle_detection:
                 return
             
-            # 检查当前运动状态是否安全
-            # 即使没有新的速度指令，也要持续保护机器人安全
-            self.check_and_protect()
+            # 如果当前有运动指令，重新评估并调整
+            if self.current_source is not None:
+                self.recheck_current_motion()
     
-    def check_and_protect(self):
+    def recheck_current_motion(self):
         """
-        检查当前运动状态，如果检测到危险则主动停止机器人
-        这个函数在两种情况下被调用：
-        1. 收到新的障碍物数据时（obstacle_callback）
-        2. 收到新的速度指令时（process_and_forward）
+        重新检查当前运动状态，根据最新的障碍物数据调整速度
         """
-        # 如果机器人已经停止，不需要重复检查
-        current_motion_state = self.get_motion_state(self.current_cmd_vel)
-        if current_motion_state == 'stopped':
-            self.is_stopped_by_obstacle = False
+        if self.current_source is None:
             return
         
-        # 检查当前运动状态下是否有危险
-        should_stop, stop_reason = self.check_obstacle(self.current_cmd_vel, current_motion_state)
+        # 根据当前来源获取停止距离字典
+        if self.current_source == 'task':
+            stop_distances = self.task_stop_dist
+        else:  # tablet
+            stop_distances = self.tablet_stop_dist
         
-        if should_stop:
-            # 检测到危险，主动发布零速度
-            if not self.is_stopped_by_obstacle:
-                # 只在第一次检测到危险时发布和打印日志
-                stop_msg = Twist()
-                self.cmd_vel_publisher.publish(stop_msg)
-                
-                # 更新当前状态
-                self.current_cmd_vel = stop_msg
-                self.is_stopped_by_obstacle = True
-                
-                self.get_logger().warn(
-                    f'动态障碍物检测! 已紧急停止! '
-                    f'状态:{current_motion_state}, 原因:{stop_reason}'
-                )
-        else:
-            # 安全状态，重置标志
-            if self.is_stopped_by_obstacle:
-                self.get_logger().info('障碍物已清除，可以继续运动')
-                self.is_stopped_by_obstacle = False
+        # 判断运动状态
+        motion_state = self.get_motion_state(self.current_cmd_vel)
+        
+        # 计算减速比例
+        scale = self.calculate_scale_factor(
+            self.current_cmd_vel,
+            motion_state,
+            stop_distances
+        )
+        
+        # 应用减速比例
+        scaled_cmd = self.apply_scale(self.current_cmd_vel, scale)
+        
+        # 发布调整后的速度
+        self.cmd_vel_publisher.publish(scaled_cmd)
+        
+        # 如果减速比例变化显著，打印日志
+        if abs(scale - 1.0) > 0.1:  # 减速超过10%
+            self.get_logger().debug(
+                f'[动态调整] 来源:{self.current_source}, '
+                f'状态:{motion_state}, 减速比例:{scale:.2f}'
+            )
     
     def task_callback(self, msg):
         """执行任务话题回调函数"""
-        self.get_logger().debug('收到执行任务指令')
         self.process_and_forward(msg, source='task')
     
     def tablet_callback(self, msg):
         """平板操控话题回调函数"""
-        self.get_logger().debug('收到平板操控指令')
         self.process_and_forward(msg, source='tablet')
     
     def process_and_forward(self, cmd_vel_msg, source='unknown'):
         """
-        处理速度指令并根据障碍物检测结果转发
+        处理速度指令并根据障碍物检测结果动态减速转发
         
         Args:
             cmd_vel_msg: 原始Twist消息
             source: 指令来源（'task'或'tablet'）
         """
         
-        # 如果未启用障碍物检测，直接转发并更新状态
+        # 更新当前来源和原始指令
+        self.current_source = source
+        self.current_cmd_vel = cmd_vel_msg
+        
+        # 如果未启用障碍物检测，直接转发
         if not self.enable_obstacle_detection:
             self.cmd_vel_publisher.publish(cmd_vel_msg)
-            self.current_cmd_vel = cmd_vel_msg
             return
         
-        # 判断新指令的运动状态
+        # 根据来源获取对应的停止距离字典
+        if source == 'task':
+            stop_distances = self.task_stop_dist
+        else:  # tablet
+            stop_distances = self.tablet_stop_dist
+        
+        # 判断运动状态
         motion_state = self.get_motion_state(cmd_vel_msg)
         
-        # 检查新指令是否会遇到障碍物
-        should_stop, stop_reason = self.check_obstacle(cmd_vel_msg, motion_state)
+        # 计算减速比例
+        scale = self.calculate_scale_factor(
+            cmd_vel_msg,
+            motion_state,
+            stop_distances
+        )
         
-        if should_stop:
-            # 新指令有危险，发布零速度
-            stop_msg = Twist()
-            self.cmd_vel_publisher.publish(stop_msg)
-            
-            # 更新当前状态为停止
-            self.current_cmd_vel = stop_msg
-            self.is_stopped_by_obstacle = True
-            
-            # 打印警告信息
-            self.get_logger().warn(
-                f'[{source}] 指令被阻止! '
-                f'目标状态:{motion_state}, 原因:{stop_reason}'
-            )
-        else:
-            # 新指令安全，正常转发
-            self.cmd_vel_publisher.publish(cmd_vel_msg)
-            
-            # 更新当前状态为新指令
-            self.current_cmd_vel = cmd_vel_msg
-            self.is_stopped_by_obstacle = False
-            
-            # 打印调试信息（仅在状态变化时）
-            if motion_state != self.last_motion_state:
-                self.get_logger().debug(
-                    f'[{source}] 运动状态变化: {self.last_motion_state} → {motion_state}'
+        # 应用减速比例
+        scaled_cmd = self.apply_scale(cmd_vel_msg, scale)
+        
+        # 发布调整后的速度
+        self.cmd_vel_publisher.publish(scaled_cmd)
+        
+        # 打印调试信息（状态变化或显著减速时）
+        if motion_state != self.last_motion_state or abs(scale - 1.0) > 0.1:
+            if scale < 0.01:  # 完全停止
+                self.get_logger().warn(
+                    f'[{source}] 障碍物过近，已停止! 状态:{motion_state}'
                 )
-                self.last_motion_state = motion_state
+            elif scale < 1.0:  # 减速中
+                self.get_logger().info(
+                    f'[{source}] 动态减速中，状态:{motion_state}, '
+                    f'速度比例:{scale:.2%}'
+                )
+            else:  # 正常通过
+                if motion_state != self.last_motion_state:
+                    self.get_logger().debug(
+                        f'[{source}] 状态变化: {self.last_motion_state} → {motion_state}'
+                    )
+            
+            self.last_motion_state = motion_state
     
     def get_motion_state(self, cmd_vel):
         """
@@ -279,120 +352,122 @@ class CmdVelMux(Node):
         else:
             return 'unknown'
     
-    def check_obstacle(self, cmd_vel, motion_state):
+    def calculate_scale_factor(self, cmd_vel, motion_state, stop_distances):
         """
-        根据运动状态检查障碍物
+        根据运动状态和障碍物距离计算速度缩放因子（支持四方向独立停止距离）
         
         Args:
             cmd_vel: Twist消息
             motion_state: 运动状态
+            stop_distances: 停止距离字典，包含 'front', 'back', 'left', 'right', 'rotate' 键
             
         Returns:
-            tuple: (是否应该停止, 停止原因)
+            float: 速度缩放因子 [0.0, 1.0]
+                  1.0 = 不减速
+                  0.0 = 完全停止
         """
         front_dist = self.obstacle_distances[self.FRONT]
         back_dist = self.obstacle_distances[self.BACK]
         left_dist = self.obstacle_distances[self.LEFT]
         right_dist = self.obstacle_distances[self.RIGHT]
         
-        # 辅助函数：检查距离是否触发停止
-        def is_dangerous(distance, use_safe_distance=False):
+        # 辅助函数：计算单个方向的减速比例
+        def calc_direction_scale(distance, target_stop_distance):
             """
-            检查距离是否危险
+            计算单个方向的减速比例
             
             Args:
                 distance: 障碍物距离（0表示无障碍物）
-                use_safe_distance: 是否使用安全距离判断（True=原地旋转模式，False=普通运动模式）
+                target_stop_distance: 目标停止距离
             
             Returns:
-                bool: 是否危险
-                
-            逻辑说明：
-                - distance <= 0: 无障碍物，返回False
-                - use_safe_distance=False（普通运动）: 只要有障碍物(distance>0)就返回True
-                - use_safe_distance=True（原地旋转）: 只有当0<distance<safe_distance时返回True
-            """
-            if distance <= 0.0:  # 0.0表示无障碍物
-                return False
+                float: 减速比例 [0.0, 1.0]
             
-            if use_safe_distance:
-                # 原地旋转模式：只有当障碍物距离小于安全距离时才停止
-                return distance < self.safe_distance
-            else:
-                # 普通运动模式：只要检测到障碍物（距离>0）就停止
-                return True
+            逻辑：
+                - distance <= 0: 无障碍物，返回1.0（不减速）
+                - distance <= target_stop_distance: 返回0.0（完全停止）
+                - target_stop_distance < distance <= detection_range: 线性减速
+                - distance > detection_range: 返回1.0（不减速）
+            """
+            if distance <= 0.0:  # 无障碍物
+                return 1.0
+            
+            if distance <= target_stop_distance:  # 太近，完全停止
+                return 0.0
+            
+            if distance >= self.detection_range:  # 超出检测范围，不减速
+                return 1.0
+            
+            # 在减速区间内，线性计算
+            # scale = (distance - stop_distance) / (detection_range - stop_distance)
+            scale = (distance - target_stop_distance) / (self.detection_range - target_stop_distance)
+            return max(0.0, min(1.0, scale))  # 确保在[0, 1]范围内
         
-        # 根据运动状态判断需要检查的方向
+        # 初始化缩放因子为1.0（不减速）
+        scale = 1.0
+        
+        # 根据运动状态选择需要检查的方向（使用各方向独立的停止距离）
         if motion_state == 'stopped':
-            # 静止状态，不需要检查
-            return False, ''
+            # 静止状态，不需要减速
+            return 1.0
         
         elif motion_state == 'forward':
-            # 前进直线：只检查前方（有障碍物即停），忽略左右
-            if is_dangerous(front_dist):
-                return True, f'前方检测到障碍物{front_dist:.2f}m'
+            # 前进直线：只检查前方，使用前方停止距离
+            scale = min(scale, calc_direction_scale(front_dist, stop_distances['front']))
         
         elif motion_state == 'backward':
-            # 后退直线：只检查后方（有障碍物即停），忽略左右
-            if is_dangerous(back_dist):
-                return True, f'后方检测到障碍物{back_dist:.2f}m'
+            # 后退直线：只检查后方，使用后方停止距离
+            scale = min(scale, calc_direction_scale(back_dist, stop_distances['back']))
         
         elif motion_state == 'forward_left':
-            # 前进左转：检查前方、左侧（有障碍物即停）
-            if is_dangerous(front_dist):
-                return True, f'前方检测到障碍物{front_dist:.2f}m'
-            if is_dangerous(left_dist):
-                return True, f'左侧检测到障碍物{left_dist:.2f}m'
+            # 前进左转：检查前方、左侧，使用各自的停止距离
+            scale = min(scale, calc_direction_scale(front_dist, stop_distances['front']))
+            scale = min(scale, calc_direction_scale(left_dist, stop_distances['left']))
         
         elif motion_state == 'forward_right':
-            # 前进右转：检查前方、右侧（有障碍物即停）
-            if is_dangerous(front_dist):
-                return True, f'前方检测到障碍物{front_dist:.2f}m'
-            if is_dangerous(right_dist):
-                return True, f'右侧检测到障碍物{right_dist:.2f}m'
+            # 前进右转：检查前方、右侧，使用各自的停止距离
+            scale = min(scale, calc_direction_scale(front_dist, stop_distances['front']))
+            scale = min(scale, calc_direction_scale(right_dist, stop_distances['right']))
         
         elif motion_state == 'backward_left':
-            # 后退左转：检查后方、左侧（有障碍物即停）
-            if is_dangerous(back_dist):
-                return True, f'后方检测到障碍物{back_dist:.2f}m'
-            if is_dangerous(left_dist):
-                return True, f'左侧检测到障碍物{left_dist:.2f}m'
+            # 后退左转：检查后方、左侧，使用各自的停止距离
+            scale = min(scale, calc_direction_scale(back_dist, stop_distances['back']))
+            scale = min(scale, calc_direction_scale(left_dist, stop_distances['left']))
         
         elif motion_state == 'backward_right':
-            # 后退右转：检查后方、右侧（有障碍物即停）
-            if is_dangerous(back_dist):
-                return True, f'后方检测到障碍物{back_dist:.2f}m'
-            if is_dangerous(right_dist):
-                return True, f'右侧检测到障碍物{right_dist:.2f}m'
+            # 后退右转：检查后方、右侧，使用各自的停止距离
+            scale = min(scale, calc_direction_scale(back_dist, stop_distances['back']))
+            scale = min(scale, calc_direction_scale(right_dist, stop_distances['right']))
         
-        elif motion_state == 'rotate_left':
-            # 原地左转：检查所有方向，使用安全距离判断
-            # 原地旋转时，机器人会以自身中心为轴旋转
-            # 只有当障碍物距离小于安全距离时才停止
-            if is_dangerous(front_dist, use_safe_distance=True):
-                return True, f'前方安全距离不足{front_dist:.2f}m'
-            if is_dangerous(back_dist, use_safe_distance=True):
-                return True, f'后方安全距离不足{back_dist:.2f}m'
-            if is_dangerous(left_dist, use_safe_distance=True):
-                return True, f'左侧安全距离不足{left_dist:.2f}m'
-            if is_dangerous(right_dist, use_safe_distance=True):
-                return True, f'右侧安全距离不足{right_dist:.2f}m'
+        elif motion_state == 'rotate_left' or motion_state == 'rotate_right':
+            # 原地旋转：检查所有方向，使用旋转停止距离（四周统一）
+            rotate_stop = stop_distances['rotate']
+            scale = min(scale, calc_direction_scale(front_dist, rotate_stop))
+            scale = min(scale, calc_direction_scale(back_dist, rotate_stop))
+            scale = min(scale, calc_direction_scale(left_dist, rotate_stop))
+            scale = min(scale, calc_direction_scale(right_dist, rotate_stop))
         
-        elif motion_state == 'rotate_right':
-            # 原地右转：检查所有方向，使用安全距离判断
-            # 原地旋转时，机器人会以自身中心为轴旋转
-            # 只有当障碍物距离小于安全距离时才停止
-            if is_dangerous(front_dist, use_safe_distance=True):
-                return True, f'前方安全距离不足{front_dist:.2f}m'
-            if is_dangerous(back_dist, use_safe_distance=True):
-                return True, f'后方安全距离不足{back_dist:.2f}m'
-            if is_dangerous(left_dist, use_safe_distance=True):
-                return True, f'左侧安全距离不足{left_dist:.2f}m'
-            if is_dangerous(right_dist, use_safe_distance=True):
-                return True, f'右侧安全距离不足{right_dist:.2f}m'
+        return scale
+    
+    def apply_scale(self, cmd_vel, scale):
+        """
+        应用缩放因子到速度指令
         
-        # 未触发任何停止条件
-        return False, ''
+        Args:
+            cmd_vel: 原始Twist消息
+            scale: 缩放因子 [0.0, 1.0]
+            
+        Returns:
+            Twist: 缩放后的Twist消息
+        """
+        scaled_cmd = Twist()
+        scaled_cmd.linear.x = cmd_vel.linear.x * scale
+        scaled_cmd.linear.y = cmd_vel.linear.y * scale
+        scaled_cmd.linear.z = cmd_vel.linear.z * scale
+        scaled_cmd.angular.x = cmd_vel.angular.x * scale
+        scaled_cmd.angular.y = cmd_vel.angular.y * scale
+        scaled_cmd.angular.z = cmd_vel.angular.z * scale
+        return scaled_cmd
 
 
 def main(args=None):
