@@ -7,7 +7,7 @@ XLine命令速度复用节点（带智能障碍物避障）
 
 功能特性：
 1. 根据机器人运动状态智能判断需要关注的障碍物方向
-2. 支持可配置的安全距离参数
+2. 支持可配置的安全距离参数（仅用于原地旋转）
 3. 当检测到障碍物时自动停止机器人
 """
 
@@ -34,14 +34,16 @@ class CmdVelMux(Node):
         super().__init__('cmd_vel_mux')
         
         # 声明参数
-        self.declare_parameter('obstacle_safe_distance', 0.15)  # 安全距离（米）
-        self.declare_parameter('obstacle_stop_distance', 0.15)  # 紧急停止距离（米）
+        self.declare_parameter('obstacle_safe_distance', 0.1)  # 安全距离（米），仅用于原地旋转
         self.declare_parameter('enable_obstacle_detection', True)  # 是否启用障碍物检测
+        self.declare_parameter('linear_velocity_threshold', 0.01)  # 线速度零值判断阈值（米/秒）
+        self.declare_parameter('angular_velocity_threshold', 0.01)  # 角速度零值判断阈值（弧度/秒）
         
         # 获取参数值
         self.safe_distance = self.get_parameter('obstacle_safe_distance').value
-        self.stop_distance = self.get_parameter('obstacle_stop_distance').value
         self.enable_obstacle_detection = self.get_parameter('enable_obstacle_detection').value
+        self.linear_threshold = self.get_parameter('linear_velocity_threshold').value
+        self.angular_threshold = self.get_parameter('angular_velocity_threshold').value
         
         # 障碍物距离数组 [前方, 后方, 左侧, 右侧]
         # 0.0 表示无障碍物或距离无穷大
@@ -100,8 +102,17 @@ class CmdVelMux(Node):
         self.get_logger().info('-' * 60)
         self.get_logger().info('障碍物检测参数:')
         self.get_logger().info(f'  - 启用状态: {self.enable_obstacle_detection}')
-        self.get_logger().info(f'  - 安全距离: {self.safe_distance:.2f}m')
-        self.get_logger().info(f'  - 紧急停止距离: {self.stop_distance:.2f}m')
+        self.get_logger().info(f'  - 安全距离(原地旋转): {self.safe_distance:.2f}m')
+        self.get_logger().info('  - 检测规则:')
+        self.get_logger().info('    * 直线前进: 只检查前方障碍物')
+        self.get_logger().info('    * 直线后退: 只检查后方障碍物')
+        self.get_logger().info('    * 转弯运动: 检查运动方向的障碍物')
+        self.get_logger().info('    * 原地旋转: 检查四周，障碍物距离<安全距离时停止')
+        self.get_logger().info('-' * 60)
+        self.get_logger().info('速度判断阈值:')
+        self.get_logger().info(f'  - 线速度零值阈值: {self.linear_threshold:.3f}m/s')
+        self.get_logger().info(f'  - 角速度零值阈值: {self.angular_threshold:.3f}rad/s')
+        self.get_logger().info(f'  - 说明: 速度绝对值小于阈值时判定为0')
         self.get_logger().info('=' * 60)
     
     def obstacle_callback(self, msg):
@@ -176,8 +187,6 @@ class CmdVelMux(Node):
             source: 指令来源（'task'或'tablet'）
         """
         
-        cmd_vel_msg.angular.z = -cmd_vel_msg.angular.z
-
         # 如果未启用障碍物检测，直接转发并更新状态
         if not self.enable_obstacle_detection:
             self.cmd_vel_publisher.publish(cmd_vel_msg)
@@ -232,16 +241,16 @@ class CmdVelMux(Node):
         linear_x = cmd_vel.linear.x
         angular_z = cmd_vel.angular.z
         
-        # 判断线速度方向
-        if abs(linear_x) == 0:
+        # 判断线速度方向（使用阈值判断是否为0）
+        if abs(linear_x) < self.linear_threshold:
             linear_state = 'stop'
         elif linear_x > 0:
             linear_state = 'forward'
         else:
             linear_state = 'backward'
         
-        # 判断角速度方向
-        if abs(angular_z) == 0:
+        # 判断角速度方向（使用阈值判断是否为0）
+        if abs(angular_z) < self.angular_threshold:
             angular_state = 'straight'
         elif angular_z > 0:
             angular_state = 'turn_left'
@@ -287,16 +296,31 @@ class CmdVelMux(Node):
         right_dist = self.obstacle_distances[self.RIGHT]
         
         # 辅助函数：检查距离是否触发停止
-        def is_dangerous(distance, critical=False):
+        def is_dangerous(distance, use_safe_distance=False):
             """
             检查距离是否危险
-            critical=True: 使用紧急停止距离
-            critical=False: 使用安全距离
+            
+            Args:
+                distance: 障碍物距离（0表示无障碍物）
+                use_safe_distance: 是否使用安全距离判断（True=原地旋转模式，False=普通运动模式）
+            
+            Returns:
+                bool: 是否危险
+                
+            逻辑说明：
+                - distance <= 0: 无障碍物，返回False
+                - use_safe_distance=False（普通运动）: 只要有障碍物(distance>0)就返回True
+                - use_safe_distance=True（原地旋转）: 只有当0<distance<safe_distance时返回True
             """
             if distance <= 0.0:  # 0.0表示无障碍物
                 return False
-            threshold = self.stop_distance if critical else self.safe_distance
-            return distance < threshold
+            
+            if use_safe_distance:
+                # 原地旋转模式：只有当障碍物距离小于安全距离时才停止
+                return distance < self.safe_distance
+            else:
+                # 普通运动模式：只要检测到障碍物（距离>0）就停止
+                return True
         
         # 根据运动状态判断需要检查的方向
         if motion_state == 'stopped':
@@ -304,75 +328,67 @@ class CmdVelMux(Node):
             return False, ''
         
         elif motion_state == 'forward':
-            # 前进直线：主要检查前方，左右侧作为安全距离检查
-            if is_dangerous(front_dist, critical=True):
-                return True, f'前方障碍物{front_dist:.2f}m'
-            if is_dangerous(left_dist):
-                return True, f'左侧安全距离不足{left_dist:.2f}m'
-            if is_dangerous(right_dist):
-                return True, f'右侧安全距离不足{right_dist:.2f}m'
+            # 前进直线：只检查前方（有障碍物即停），忽略左右
+            if is_dangerous(front_dist):
+                return True, f'前方检测到障碍物{front_dist:.2f}m'
         
         elif motion_state == 'backward':
-            # 后退直线：主要检查后方，左右侧作为安全距离检查
-            if is_dangerous(back_dist, critical=True):
-                return True, f'后方障碍物{back_dist:.2f}m'
-            if is_dangerous(left_dist):
-                return True, f'左侧安全距离不足{left_dist:.2f}m'
-            if is_dangerous(right_dist):
-                return True, f'右侧安全距离不足{right_dist:.2f}m'
+            # 后退直线：只检查后方（有障碍物即停），忽略左右
+            if is_dangerous(back_dist):
+                return True, f'后方检测到障碍物{back_dist:.2f}m'
         
         elif motion_state == 'forward_left':
-            # 前进左转：检查前方、左侧，忽略右后
-            if is_dangerous(front_dist, critical=True):
-                return True, f'前方障碍物{front_dist:.2f}m'
-            if is_dangerous(left_dist, critical=True):
-                return True, f'左侧障碍物{left_dist:.2f}m'
+            # 前进左转：检查前方、左侧（有障碍物即停）
+            if is_dangerous(front_dist):
+                return True, f'前方检测到障碍物{front_dist:.2f}m'
+            if is_dangerous(left_dist):
+                return True, f'左侧检测到障碍物{left_dist:.2f}m'
         
         elif motion_state == 'forward_right':
-            # 前进右转：检查前方、右侧，忽略左后
-            if is_dangerous(front_dist, critical=True):
-                return True, f'前方障碍物{front_dist:.2f}m'
-            if is_dangerous(right_dist, critical=True):
-                return True, f'右侧障碍物{right_dist:.2f}m'
+            # 前进右转：检查前方、右侧（有障碍物即停）
+            if is_dangerous(front_dist):
+                return True, f'前方检测到障碍物{front_dist:.2f}m'
+            if is_dangerous(right_dist):
+                return True, f'右侧检测到障碍物{right_dist:.2f}m'
         
         elif motion_state == 'backward_left':
-            # 后退左转：检查后方、左侧，忽略右前
-            if is_dangerous(back_dist, critical=True):
-                return True, f'后方障碍物{back_dist:.2f}m'
-            if is_dangerous(left_dist, critical=True):
-                return True, f'左侧障碍物{left_dist:.2f}m'
+            # 后退左转：检查后方、左侧（有障碍物即停）
+            if is_dangerous(back_dist):
+                return True, f'后方检测到障碍物{back_dist:.2f}m'
+            if is_dangerous(left_dist):
+                return True, f'左侧检测到障碍物{left_dist:.2f}m'
         
         elif motion_state == 'backward_right':
-            # 后退右转：检查后方、右侧，忽略左前
-            if is_dangerous(back_dist, critical=True):
-                return True, f'后方障碍物{back_dist:.2f}m'
-            if is_dangerous(right_dist, critical=True):
-                return True, f'右侧障碍物{right_dist:.2f}m'
+            # 后退右转：检查后方、右侧（有障碍物即停）
+            if is_dangerous(back_dist):
+                return True, f'后方检测到障碍物{back_dist:.2f}m'
+            if is_dangerous(right_dist):
+                return True, f'右侧检测到障碍物{right_dist:.2f}m'
         
         elif motion_state == 'rotate_left':
-            # 原地左转：检查所有方向（四周安全）
+            # 原地左转：检查所有方向，使用安全距离判断
             # 原地旋转时，机器人会以自身中心为轴旋转
-            # 四周任何方向的障碍物都可能被碰到，因此需要全方位检测
-            if is_dangerous(front_dist):
+            # 只有当障碍物距离小于安全距离时才停止
+            if is_dangerous(front_dist, use_safe_distance=True):
                 return True, f'前方安全距离不足{front_dist:.2f}m'
-            if is_dangerous(back_dist):
+            if is_dangerous(back_dist, use_safe_distance=True):
                 return True, f'后方安全距离不足{back_dist:.2f}m'
-            if is_dangerous(left_dist):
+            if is_dangerous(left_dist, use_safe_distance=True):
                 return True, f'左侧安全距离不足{left_dist:.2f}m'
-            if is_dangerous(right_dist):
+            if is_dangerous(right_dist, use_safe_distance=True):
                 return True, f'右侧安全距离不足{right_dist:.2f}m'
         
         elif motion_state == 'rotate_right':
-            # 原地右转：检查所有方向（四周安全）
+            # 原地右转：检查所有方向，使用安全距离判断
             # 原地旋转时，机器人会以自身中心为轴旋转
-            # 四周任何方向的障碍物都可能被碰到，因此需要全方位检测
-            if is_dangerous(front_dist):
+            # 只有当障碍物距离小于安全距离时才停止
+            if is_dangerous(front_dist, use_safe_distance=True):
                 return True, f'前方安全距离不足{front_dist:.2f}m'
-            if is_dangerous(back_dist):
+            if is_dangerous(back_dist, use_safe_distance=True):
                 return True, f'后方安全距离不足{back_dist:.2f}m'
-            if is_dangerous(left_dist):
+            if is_dangerous(left_dist, use_safe_distance=True):
                 return True, f'左侧安全距离不足{left_dist:.2f}m'
-            if is_dangerous(right_dist):
+            if is_dangerous(right_dist, use_safe_distance=True):
                 return True, f'右侧安全距离不足{right_dist:.2f}m'
         
         # 未触发任何停止条件
