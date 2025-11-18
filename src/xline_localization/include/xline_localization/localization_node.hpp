@@ -6,7 +6,6 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/imu.hpp>
-#include <nav_msgs/msg/odometry.hpp>
 #include <geometry_msgs/msg/point_stamped.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <std_srvs/srv/trigger.hpp>
@@ -23,7 +22,6 @@
  *
  * 订阅话题:
  * - /imu (sensor_msgs/Imu): IMU数据
- * - /odom (nav_msgs/Odometry): 里程计数据
  * - /reflector_position (geometry_msgs/PointStamped): 激光反射板位置
  *
  * 发布话题:
@@ -50,7 +48,6 @@ public:
 private:
   // 订阅器
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_subscriber_;
-  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_subscriber_;
   rclcpp::Subscription<geometry_msgs::msg::PointStamped>::SharedPtr reflector_position_subscriber_;
 
   // 发布器
@@ -91,9 +88,8 @@ private:
   bool reflector_updated_{false};
 
   // 数据源监控
-  rclcpp::Time last_odom_time_;
   rclcpp::Time last_reflector_time_;
-  double data_timeout_threshold_{0.15};  // 超时阈值：150ms（约3个周期）
+  double data_timeout_threshold_{1.0};  
 
   // 位置数据收集相关
   std::vector<std::vector<double>> position_samples_;  // 收集的位置点
@@ -112,10 +108,6 @@ private:
    */
   void imuCallback(const sensor_msgs::msg::Imu::SharedPtr msg);
 
-  /**
-   * 里程计数据回调函数
-   */
-  void odomCallback(const nav_msgs::msg::Odometry::SharedPtr msg);
 
   /**
    * 反射板位置回调函数

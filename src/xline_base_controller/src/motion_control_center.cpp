@@ -969,7 +969,7 @@ namespace xline
 
       // 将喷码机状态恢复为画线（在新线程中执行）
       std::thread([this]() {
-        inkjet_controller_->resetForLine();
+        inkjet_controller_->resetForSolid();
       }).detach();
 
       // 设置响应

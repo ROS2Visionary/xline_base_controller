@@ -25,11 +25,6 @@ LocalizationNode::LocalizationNode(const rclcpp::NodeOptions & options)
       rclcpp::SensorDataQoS(),
       std::bind(&LocalizationNode::imuCallback, this, _1));
 
-  // 创建里程计订阅器
-  odom_subscriber_ = this->create_subscription<nav_msgs::msg::Odometry>(
-      "/odom",
-      rclcpp::QoS{10},
-      std::bind(&LocalizationNode::odomCallback, this, _1));
 
   // 创建反射板位置订阅器
   reflector_position_subscriber_ = this->create_subscription<geometry_msgs::msg::PointStamped>(
@@ -52,7 +47,6 @@ LocalizationNode::LocalizationNode(const rclcpp::NodeOptions & options)
   robot_pose_.header.frame_id = "map";
 
   // 初始化数据源时间戳（使用节点时钟，设为0表示从未接收）
-  last_odom_time_ = rclcpp::Time(0LL, RCL_ROS_TIME);
   last_reflector_time_ = rclcpp::Time(0LL, RCL_ROS_TIME);
 
   // 创建watchdog定时器（20Hz，与数据源同频）
@@ -65,8 +59,6 @@ LocalizationNode::LocalizationNode(const rclcpp::NodeOptions & options)
               reflector_to_base_offset_.x(),
               reflector_to_base_offset_.y(),
               reflector_to_base_offset_.z());
-  RCLCPP_INFO(get_logger(), "订阅话题: /imu, /odom, /reflector_position");
-  RCLCPP_INFO(get_logger(), "发布话题: /estimated_pose");
   RCLCPP_INFO(get_logger(), "服务: ~/calibrate_pose");
 }
 
@@ -92,92 +84,17 @@ void LocalizationNode::imuCallback(const sensor_msgs::msg::Imu::SharedPtr msg)
   RCLCPP_DEBUG(get_logger(), "收到 IMU 数据");
 }
 
-void LocalizationNode::odomCallback(const nav_msgs::msg::Odometry::SharedPtr msg)
-{
-  // 更新数据接收时间戳
-  last_odom_time_ = this->now();
-
-  // 提取机器人位置
-  geometry_msgs::msg::Point robot_position;
-  robot_position.x = msg->pose.pose.position.x;
-  robot_position.y = msg->pose.pose.position.y;
-
-  // 如果正在收集数据,记录位置点
-  {
-    // std::scoped_lock<std::mutex> lock(collection_mutex_);
-    if (is_collecting_) {
-      // 过滤无效数据(0,0)
-      if (robot_position.x != 0.0 || robot_position.y != 0.0) {
-        position_samples_.push_back({robot_position.x, robot_position.y});
-        RCLCPP_INFO(get_logger(), "收集位置点: [%.3f, %.3f], 总数: %zu",
-                     robot_position.x, robot_position.y, position_samples_.size());
-      }else{
-        RCLCPP_INFO(get_logger(),"无效点");
-      }
-    }
-  }
-
-  if (!initialized_) {
-    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
-                         "定位节点未初始化,请调用 ~/calibrate_pose 服务进行校准");
-    // publishZeroPose();
-    // return;
-  }
-
-  // 获取最新的IMU数据
-  sensor_msgs::msg::Imu latest_imu;
-  getImu(latest_imu);
-
-  // 计算机器人姿态(基于IMU姿态差值)
-  double imu_yaw = tf2::getYaw(latest_imu.orientation);
-  double diff = imu_yaw - imu_initial_yaw_;
-  diff = std::remainder(diff, 2 * M_PI);
-  double robot_yaw = diff + robot_initial_yaw_;
-  robot_yaw = std::remainder(robot_yaw, 2 * M_PI);
-
-  // 根据里程计位置反推反射板位置
-  // robot_position = reflector_position + reflector_to_base_offset (在机器人坐标系下)
-  // 因此: reflector_position = robot_position - reflector_to_base_offset
-  tf2::Quaternion q;
-  q.setRPY(0.0, 0.0, robot_yaw);
-  robot_pose_.pose.orientation = tf2::toMsg(q);
-  robot_pose_.pose.position = robot_position;
-  // tf2::Transform global_to_base(
-  //   q,
-  //   tf2::Vector3(robot_position.x, robot_position.y, robot_position.z));
-
-  // // 计算反射板在全局坐标系的位置
-  // tf2::Transform global_to_reflector = global_to_base * reflector_to_base_tf_.inverse();
-
-  // 更新反射板位姿
-  // {
-  //   std::scoped_lock<std::mutex> lock(pose_mutex_);
-
-  //   reflector_pose_.header.stamp = this->now();
-  //   reflector_pose_.pose.position.x = global_to_reflector.getOrigin().getX();
-  //   reflector_pose_.pose.position.y = global_to_reflector.getOrigin().getY();
-  //   reflector_pose_.pose.position.z = global_to_reflector.getOrigin().getZ();
-  //   reflector_pose_.pose.orientation = tf2::toMsg(q);
-  // }
-
-  // 计算机器人位姿
-  // calcRobotPose();
-
-  // 直接发布估计的位姿
-  {
-    std::scoped_lock<std::mutex> lock(pose_mutex_);
-    pose_publisher_->publish(robot_pose_);
-  }
-
-  RCLCPP_DEBUG(get_logger(), "里程计位置: [%.3f, %.3f, %.3f], 姿态: %.3f rad",
-               robot_position.x, robot_position.y, robot_position.z, robot_yaw);
-}
 
 void LocalizationNode::reflectorPositionCallback(
     const geometry_msgs::msg::PointStamped::SharedPtr msg)
 {
   // 更新数据接收时间戳
   last_reflector_time_ = this->now();
+
+  // 过滤无效数据(0,0)
+  if (msg->point.x == 0.0 || msg->point.y == 0.0) {
+    return;
+  }
 
   {
     std::scoped_lock<std::mutex> lock(reflector_mutex_);
@@ -531,20 +448,10 @@ void LocalizationNode::watchdogCallback()
 {
   rclcpp::Time current_time = this->now();
 
-  // 检查是否两个数据源都超时
-  bool odom_timeout = false;
+  // 检查数据源都超时
   bool reflector_timeout = false;
-  double odom_elapsed = 0.0;
   double reflector_elapsed = 0.0;
 
-  // 检查里程计超时（时间戳为0表示从未接收）
-  if (last_odom_time_.nanoseconds() == 0) {
-    odom_timeout = true;
-    odom_elapsed = -1.0;  // 标记为未初始化
-  } else {
-    odom_elapsed = (current_time - last_odom_time_).seconds();
-    odom_timeout = (odom_elapsed > data_timeout_threshold_);
-  }
 
   // 检查反射器超时
   if (last_reflector_time_.nanoseconds() == 0) {
@@ -555,17 +462,16 @@ void LocalizationNode::watchdogCallback()
     reflector_timeout = (reflector_elapsed > data_timeout_threshold_);
   }
 
-  if (odom_timeout && reflector_timeout) {
+  if (reflector_timeout) {
     // 两个数据源都超时，发布零位姿
     publishZeroPose();
 
     // 构建日志信息
-    std::string odom_status = (odom_elapsed < 0) ? "未初始化" : std::to_string(odom_elapsed) + "s";
     std::string reflector_status = (reflector_elapsed < 0) ? "未初始化" : std::to_string(reflector_elapsed) + "s";
 
     RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
-                         "数据源超时 - 里程计: %s, 反射器: %s - 发布零位姿",
-                         odom_status.c_str(), reflector_status.c_str());
+                         "反射器: %s - 发布零位姿",
+                          reflector_status.c_str());
   }
 }
 
