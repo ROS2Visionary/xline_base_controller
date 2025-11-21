@@ -127,7 +127,7 @@ private:
 
   // 路径延长参数
   static constexpr double PATH_EXTENSION_LENGTH = 0.5;  // 路径延长距离（米）
-  static constexpr double PATH_POINT_INTERVAL = 0.001;   // 路径点间隔（米）
+  static constexpr double PATH_POINT_INTERVAL = 0.003;   // 路径点间隔（米）
 
   // ================================
   // 速度控制参数
@@ -149,37 +149,6 @@ private:
   double rotation_angular_factor_;         // 角速度调节因子
   double rotation_angle_threshold_;        // 角度阈值
   double rotation_angle_smooth_factor_;          // 平滑因子
-
-  // IMU基于颠簸检测的动态控制参数
-
-  // 三场景地形检测阈值参数（基于航空级IMU精度）
-
-
-  // 地形类型枚举（按优先级排序）
-
-  
-  // 地形控制配置结构（立即切换模式）
-
-    
-  // 地形状态记录结构（简化版）
-
-  
-
-  // 地形特征数据结构（基于航空级IMU精度优化）
-
-
-  // 地形分析数据结构（三场景版本）
-
-  
-  // 地形控制成员变量
-
-  
-  // 水泥地面模式相关变量
-
-
-  // IMU历史数据存储（增强版 - 存储翻滚角和俯仰角用于突变检测）
-
-
 
 
   // 动态调整的控制参数
@@ -220,9 +189,14 @@ private:
   double waypoint_tolerance_;     // 路径点容差
   double yaw_tolerance_;          // 角度容差
   double lookahead_distance_;     // 前瞻距离
-  double deceleration_distance_;  // 减速距离
+  double deceleration_distance_;  // 减速距离（工作模式）
   double m_alignment_distance_;   // 对齐距离
   double m_acce_distance_;        // 加速距离
+  
+  // 非工作模式的减速参数
+  double non_work_deceleration_distance_;  // 非工作模式减速距离（应更长）
+  double non_work_low_speed_distance_;     // 非工作模式低速持续距离
+  double non_work_low_speed_;              // 非工作模式低速值（应更低）
 
   // 速度调节参数
   double m_acce_factor_;                  // 加速因子
@@ -273,28 +247,11 @@ private:
   double current_smoother_frequency_;      // 当前地形使用的二阶平滑器频率
   double current_smoother_damping_;        // 当前地形使用的二阶平滑器阻尼
 
-  // ================================
-  // 虚拟位置跟踪器
-  // ================================
-
-
-  // ================================
-  // 时间管理
-  // ================================
 
   std::chrono::steady_clock::time_point last_time_;        // 上次计算时间
   std::chrono::steady_clock::time_point wait_start_time_;  // 等待开始时间
   double wait_duration_;                                   // 等待持续时间
   bool waiting_;                                           // 是否在等待
-
-  // ================================
-  // 调试和数据记录
-  // ================================
-
-
-  // IMU地形数据记录结构（扩展版 - 支持三种场景）
-
-
 
 
   std::vector<std::vector<double>> original_path_;         // 原始路径点
@@ -323,22 +280,6 @@ private:
   // 二阶平滑器实例
   SecondOrderSmoother angular_smoother_;
 
-  // 控制计算的中间结果（用于数据记录）
-
-
-  // ================================
-  // IMU相关
-  // ================================
-
-
-  
-  // 运动状态检测相关
-
-
-  // ================================
-  // ROS2实时日志系统
-  // ================================
-  
 
   // ================================
   // 私有方法
@@ -381,38 +322,6 @@ private:
   double distanceToSegment(double x, double y, double x1, double y1, double x2, double y2);
   void exportDebugData(const std::string& file_path, const std::vector<std::vector<double>>& data);
 
-  // IMU相关方法
-
-
-  // 三场景地形分析算法
-
-  
-  // === 地形状态机核心方法 ===
-
-  
-  
-  // 线程安全的地形数据访问方法
-
-  
-
-  // 特征提取算法
-
-
-  // 参数读取辅助方法
-
-  // 地形类型转换和辅助方法
-
-
-  // 数据记录方法
-
-
-  // 控制效果评估方法
-
-
-  // IMU统计计算方法
-
-
-  // ROS2实时日志系统方法
 
 };
 

@@ -60,24 +60,12 @@ LineFollowController::LineFollowController()
   // 初始化IMU订阅（使用内部节点,不依赖外部节点）
 
 
-  // 初始化地形日志发布器
-
-
   // LOG_INFO("LineFollowController 初始化完成");
 }
 
 LineFollowController::~LineFollowController()
 {
-  // 停止IMU线程
 
-
-  // 清理IMU订阅和节点
-
-
-  // 清理运动状态检测订阅和节点
-
-
-  // 清理地形日志发布器
 
 }
 
@@ -101,9 +89,14 @@ void LineFollowController::initializeDefaultParameters()
   waypoint_tolerance_ = 0.005;
   yaw_tolerance_ = 0.05;
   lookahead_distance_ = 0.25;
-  deceleration_distance_ = 0.2;
+  deceleration_distance_ = 0.2;  // 工作模式减速距离
   m_alignment_distance_ = 0.25;
   m_acce_distance_ = 0.3;
+  
+  // 非工作模式减速参数默认值
+  non_work_deceleration_distance_ = 0.35;  // 非工作模式：更长的减速距离
+  non_work_low_speed_distance_ = 0.15;     // 非工作模式：低速持续距离
+  non_work_low_speed_ = 0.04;              // 非工作模式：更低的低速值
 
   // 控制参数默认值
   m_acce_factor_ = 0.0003;
@@ -134,35 +127,6 @@ void LineFollowController::initializeDefaultParameters()
   current_smoother_damping_ = 0.95;
   alpha_ = current_alpha_;
 
-  // IMU地形自适应控制参数 - 将在updateParameters中从配置文件读取
-  // 这里只设置基本的初始状态,具体参数值从line.yaml统一读取
-
-  // 初始化地形分析数据
-
-
-  // 初始化IMU处理线程
-
-
-  // 初始化地形状态记忆数据（状态机核心数据结构）
-  // auto init_time = std::chrono::steady_clock::now();
-
-  // === 地形状态记忆初始化（立即切换模式简化版）===
-
-
-  // 初始化迟滞控制
-  // 立即切换模式：无需初始化迟滞控制参数
-
-  // 初始化水泥地面模式
-
-  // 翻滚角数据初始化
-
-
-  // 数据记录参数初始化
-  // data_log_base_path_ = "/home/daosn_robotics/zyq_ws/terrain_data/";  // 默认路径
-  // enable_detailed_logging_ = true;                                    // 默认启用详细日志
-  // enable_imu_terrain_logging_ = true;                                 // 默认启用IMU地形日志
-  // logging_frequency_ = 20.0;                                          // 默认20Hz记录频率
-  // last_log_time_ = std::chrono::steady_clock::now();
 }
 
 void LineFollowController::updateParameters()
@@ -207,6 +171,20 @@ void LineFollowController::updateParameters()
     lookahead_distance_ = parser.getParameter<double>("motion.velocity.distances.lookahead");
     waypoint_tolerance_ = parser.getParameter<double>("motion.velocity.distances.waypoint_tolerance");
     mini_path_distance_ = parser.getParameter<double>("motion.velocity.distances.mini_path");
+    
+    // 非工作模式减速参数（如果配置文件中存在）
+    if (parser.hasParameter("motion.velocity.distances.non_work_deceleration"))
+    {
+      non_work_deceleration_distance_ = parser.getParameter<double>("motion.velocity.distances.non_work_deceleration");
+    }
+    if (parser.hasParameter("motion.velocity.distances.non_work_low_speed_distance"))
+    {
+      non_work_low_speed_distance_ = parser.getParameter<double>("motion.velocity.distances.non_work_low_speed_distance");
+    }
+    if (parser.hasParameter("motion.velocity.limits.non_work_low_speed"))
+    {
+      non_work_low_speed_ = parser.getParameter<double>("motion.velocity.limits.non_work_low_speed");
+    }
 
     // --- 调速参数 ---
     m_acce_factor_ = parser.getParameter<double>("motion.velocity.tuning.acce_factor");
@@ -242,8 +220,6 @@ void LineFollowController::updateParameters()
     m_hampel_window_ = parser.getParameter<int>("sensors.position.filtering.hampel.window_size");
     m_hampel_k_ = parser.getParameter<double>("sensors.position.filtering.hampel.k_threshold");
 
-    // --- IMU 地形自适应 ---
-
 
     // --- 地形控制参数 ---
     auto loadSingleTerrain = [&parser](const std::string& terrain_type) -> TerrainControlParams {
@@ -274,18 +250,6 @@ void LineFollowController::updateParameters()
     
     // 更新二阶平滑器参数
     angular_smoother_.setParameters(current_smoother_frequency_, current_smoother_damping_);
-
-    // --- 地形控制配置（立即切换模式） ---
-
-
-    // --- 数据记录参数 ---
-
-
-    // --- 虚拟位置跟踪参数 ---
-
-
-    // 应用虚拟跟踪器参数
-
 
   }
   catch (const std::exception& e)
@@ -344,7 +308,23 @@ bool LineFollowController::setPlan(const nav_msgs::msg::Path& orig_global_plan)
     return false;
   }
 
-  // 启动IMU处理线程（如果尚未启动）
+  // 先计算原始路径总长度并输出
+  double raw_path_length = 0.0;
+  for (size_t i = 0; i + 1 < orig_global_plan.poses.size(); ++i)
+  {
+    const auto& p1 = orig_global_plan.poses[i].pose.position;
+    const auto& p2 = orig_global_plan.poses[i + 1].pose.position;
+
+    if (!std::isfinite(p1.x) || !std::isfinite(p1.y) || !std::isfinite(p2.x) || !std::isfinite(p2.y))
+    {
+      continue;
+    }
+
+    const double dx = p2.x - p1.x;
+    const double dy = p2.y - p1.y;
+    raw_path_length += std::hypot(dx, dy);
+  }
+  LOG_INFO("接收到路径: 点数=%zu, 总长度=%.3fm", orig_global_plan.poses.size(), raw_path_length);
 
 
   // 存储路径信息
@@ -499,17 +479,10 @@ bool LineFollowController::setPlan(const nav_msgs::msg::Path& orig_global_plan)
   // 重置控制器状态
   resetControllerState();
   
-  // ================================
-  // 重置虚拟位置跟踪器（新路径开始）
-  // 清空上一次跟随流程的数据
-  // ================================
 
   
   received_plan_ = true;
   current_state_ = ControlState::ALIGNING_START;
-
-  // 初始化任务ID和开始时间
-
 
   return true;
 }
@@ -692,8 +665,11 @@ double LineFollowController::computeLinearSpeed(double distance_to_target, doubl
   static double prev_speed = 0.0;
   double target_speed = 0.0;
 
+  // 根据工作状态选择减速距离阈值
+  double effective_decel_distance = m_work_state_ ? deceleration_distance_ : non_work_deceleration_distance_;
+
   // 基于距离计算目标速度
-  if (distance_to_target < deceleration_distance_)
+  if (distance_to_target < effective_decel_distance)
   {
     // 减速阶段
     // 只在首次进入减速阶段时设置最大速度
@@ -704,30 +680,53 @@ double LineFollowController::computeLinearSpeed(double distance_to_target, doubl
       prev_speed = 0.0;
     }
 
-    const double precise_stop_distance = m_work_state_ ? 0.05 : 0.08;  // 精确停止距离
+    // 根据工作状态选择不同的减速参数
+    double precise_stop_distance = m_work_state_ ? 0.05 : 0.08;  // 精确停止距离
+    double low_speed_distance = m_work_state_ ? 0.0 : non_work_low_speed_distance_;  // 低速持续距离
+    double low_speed_value = m_work_state_ ? min_linear_speed_ : non_work_low_speed_;  // 低速值
 
-    if (distance_to_target <= precise_stop_distance)
+    // 非工作模式：在更长的距离开始减速
+    if (!m_work_state_)
     {
-      target_speed = min_linear_speed_;
+      if (distance_to_target <= precise_stop_distance)
+      {
+        // 在精确停止距离内使用低速
+        target_speed = low_speed_value;
+      }
+      else if (distance_to_target <= (precise_stop_distance + low_speed_distance))
+      {
+        // 低速持续区间：保持低速一段时间
+        target_speed = low_speed_value;
+      }
+      else
+      {
+        // 平滑减速区间：从最大速度减到低速
+        double normalized_distance =
+            (distance_to_target - precise_stop_distance - low_speed_distance) / 
+            (effective_decel_distance - precise_stop_distance - low_speed_distance);
+        normalized_distance = std::max(0.0, std::min(1.0, normalized_distance));
+        double sigmoid_value =
+            1.0 / (1.0 + std::exp(-m_deceleration_factor_ * (normalized_distance - m_deceleration_sigmoid_center_)));
+        target_speed = low_speed_value + (max_linear_speed_ - low_speed_value) * sigmoid_value;
+      }
     }
+    // 工作模式：保持原有逻辑
     else
     {
-      // 使用二次曲线实现平滑减速
-      // double normalized_distance =
-      //     (distance_to_target - precise_stop_distance) / (deceleration_distance_ - precise_stop_distance);
-      // normalized_distance = std::max(0.0, std::min(1.0, normalized_distance));
-      // double speed_factor = normalized_distance * normalized_distance;
-      // target_speed = min_linear_speed_ + (max_linear_speed_ - min_linear_speed_) * speed_factor;
-
-
-      // 使用 Sigmoid 函数实现平滑减速
-      double normalized_distance =
-          (distance_to_target - precise_stop_distance) / (deceleration_distance_ - precise_stop_distance);
-      normalized_distance = std::max(0.0, std::min(1.0, normalized_distance));
-      double sigmoid_value =
-          1.0 / (1.0 + std::exp(-m_deceleration_factor_ * (normalized_distance - m_deceleration_sigmoid_center_)));
-      target_speed = min_linear_speed_ + (max_linear_speed_ - min_linear_speed_) * sigmoid_value;
-
+      if (distance_to_target <= precise_stop_distance)
+      {
+        target_speed = min_linear_speed_;
+      }
+      else
+      {
+        // 使用 Sigmoid 函数实现平滑减速
+        double normalized_distance =
+            (distance_to_target - precise_stop_distance) / (deceleration_distance_ - precise_stop_distance);
+        normalized_distance = std::max(0.0, std::min(1.0, normalized_distance));
+        double sigmoid_value =
+            1.0 / (1.0 + std::exp(-m_deceleration_factor_ * (normalized_distance - m_deceleration_sigmoid_center_)));
+        target_speed = min_linear_speed_ + (max_linear_speed_ - min_linear_speed_) * sigmoid_value;
+      }
     }
   }
   else
@@ -788,11 +787,15 @@ double LineFollowController::computeLinearSpeed(double distance_to_target, doubl
     target_speed = std::min(target_speed, max_linear_speed_);
   }
 
-  // 应用地形动态因子（减速阶段不应用地形加速因子）
 
-
-  // 限制最小速度
-  target_speed = std::max(target_speed, min_linear_speed_);
+  // 限制最小速度（根据工作状态和减速阶段动态调整）
+  double effective_min_speed = min_linear_speed_;
+  if (!m_work_state_ && decel_phase_entered_)
+  {
+    // 非工作模式且在减速阶段，允许使用更低的速度
+    effective_min_speed = non_work_low_speed_;
+  }
+  target_speed = std::max(target_speed, effective_min_speed);
 
   // 速度变化率限制（防止急减速）
   static std::chrono::steady_clock::time_point prev_time = std::chrono::steady_clock::now();
@@ -852,25 +855,6 @@ double LineFollowController::computeAngularVelocity(double yaw_error, double dt,
 
   // 使用当前最大角速度设置PID输出限制
   pid_heading_controller_->setOutputLimits(-current_max_angular_vel, current_max_angular_vel);
-
-  // 计算横向偏差（无论use_precision_control是否为true都需要计算死区）
-  // double cross_track_error = computeCrossTrackError(current_pose_.pose.position.x, current_pose_.pose.position.y);
-
-  // 使用软死区（渐进式衰减）而非硬死区,避免控制不连续
-  // 计算死区衰减因子：误差越小,衰减越强
-
-
-  // 使用两个因子中的较大值,确保任一误差大时都有响应
-
-
-  // 如果完全在死区内,应用额外的衰减
-
-
-  // PID增益调整
-
-
-  // 保存控制数据用于记录
-
 
   // 使用PID计算原始角速度
   double raw_angular_velocity = pid_heading_controller_->compute(yaw_error, dt);
@@ -945,7 +929,7 @@ double LineFollowController::computeAngularVelocity(double yaw_error, double dt,
   smoothed_angular_vel = angular_smoother_.filter(smoothed_angular_vel, dt);
   if (debug_)
   {
-    LOG_INFO("angular_smoother_: %.5f", smoothed_angular_vel);
+    // LOG_INFO("angular_smoother_: %.5f", smoothed_angular_vel);
   }
   // 应用抑制因子和死区因子
   double current_suppression_factor;
@@ -1226,21 +1210,12 @@ void LineFollowController::handlePathFollowing(double robot_x, double robot_y,
   // 计算横向偏差用于监控
   double cross_track_error = computeCrossTrackError(robot_x, robot_y);
 
- 
-  // 调试输出：检查当前状态
-
-  
-  // 临时修改：无论什么状态都判断死区（用于调试）
-
-
-  // 发布控制日志数据 - 根据IMU地形自适应状态选择参数
-
 
   if (debug_)
   {
     LOG_INFO("路径跟随 - 航向误差: %.4f, 横向误差: %.4f, 速度: [%.3f, %.3f], 后退: %d", yaw_error,
              cross_track_error, cmd_vel.twist.linear.x, cmd_vel.twist.angular.z, back_follow_);
-    // LOG_INFO(" ");
+    LOG_INFO(" ");
   }
 }
 
@@ -1495,10 +1470,6 @@ bool LineFollowController::computeVelocityCommands(const geometry_msgs::msg::Pos
     }
   }
 
-  // ================================
-  // 更新虚拟位置跟踪器（仅在FOLLOWING_PATH阶段）
-  // ================================
-
 
   return true;
 }
@@ -1625,136 +1596,6 @@ void LineFollowController::extendPath()
 }
 
 
-
-
-/**
- * @brief 初始化IMU订阅,使用独立线程处理IMU节点
- *
- * 设计理念：
- * - 职责分离：创建专门的IMU内部节点,只负责IMU数据订阅
- * - 独立线程：使用200Hz频率的独立线程处理IMU数据,确保实时性
- * - 模块化：IMU功能与主控制逻辑解耦
- */
-
-
-/**
- * @brief 启动IMU处理线程
- *
- * 在对象完全构造后安全启动IMU处理线程
- */
-
-
-
-/**
- * @brief 处理IMU专用节点的消息 (已弃用)
- *
- * 注意：此方法已被独立线程取代，保留仅为兼容性
- */
-
-
-/**
- * @brief IMU独立线程循环函数
- *
- * 在200Hz频率下处理IMU节点的消息，确保实时性
- */
-
-
-
-
-
-/**
- * @brief 新算法：提取地形特征（基于航空级IMU精度）
- * @return 提取的地形特征数据
- */
-
-/**
- * @brief 阶段1实现：突变检测算法（增强版：同时使用翻滚角和俯仰角）
- * @return 最大梯度值（rad/sample）
- */
-
-
-/**
- * @brief 阶段2实现：过零率计算（频繁颠簸检测）- 改进版，增加噪声阈值
- * @return 过零率（次数/秒）
- */
-
-
-/**
- * @brief 阶段3实现：低频能量占比计算（平缓凹凸检测）
- * @return 低频能量占总能量的比例 (0-1)
- */
-
-
-/**
- * @brief 核心算法：基于优先级的地形分类（突变 → 平缓凹凸 → 频繁颠簸）
- * @param features 提取的地形特征
- * @return 分类后的地形类型
- */
-
-
-/**
- * @brief 高级控制参数自适应算法
- * @param terrain_type 识别的地形类型
- * @param confidence 分类置信度（0-1）
- */
-
-
-/**
- * @brief 选择对应地形类型的控制参数
- * @param terrain_type 地形类型
- * @return 对应的控制参数
- */
-
-
-/**
- * @brief 地形类型转换为字符串（用于日志）
- * @param type 地形类型
- * @return 地形类型的字符串表示
- */
-
-
-// ================================
-// 详细数据记录方法实现
-// ================================
-
-
-
-/**
- * @brief 立即地形管理（无过渡控制）
- * @param features 地形特征数据
- * @return 检测到的地形类型
- */
-
-
-/**
- * @brief 更新状态记忆（立即切换模式简化版）
- */
-
-
-
-/**
- * @brief 初始化地形日志发布器
- */
-
-
-/**
- * @brief 发布地形日志数据
- */
-
-
-/**
- * @brief 发布控制日志数据
- */
-
-
-/**
- * @brief 创建地形分类JSON消息
- */
-
-
-/**
- * @brief 创建控制日志JSON消息
- */
 
 
 }  // namespace follow_controller

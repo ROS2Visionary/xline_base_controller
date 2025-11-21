@@ -89,7 +89,7 @@ private:
 
   // 数据源监控
   rclcpp::Time last_reflector_time_;
-  double data_timeout_threshold_{1.0};  
+  double data_timeout_threshold_{2.0};  
 
   // 位置数据收集相关
   std::vector<std::vector<double>> position_samples_;  // 收集的位置点

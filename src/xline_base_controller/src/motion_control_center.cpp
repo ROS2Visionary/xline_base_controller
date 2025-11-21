@@ -80,7 +80,7 @@ namespace xline
       // 清理喷墨控制器
       if (inkjet_controller_)
       {
-        inkjet_controller_->cleanup();
+        // inkjet_controller_->cleanup();
         inkjet_controller_.reset();
         RCLCPP_DEBUG(get_logger(), "喷墨控制器已清理");
       }
@@ -213,14 +213,14 @@ namespace xline
       // 重置喷墨控制器状态（清理上次执行的残留状态）
       if (inkjet_controller_)
       {
-        inkjet_controller_->reset();
+        // inkjet_controller_->reset();
       }
 
       // 初始化喷墨（配置文字等）- 使用全局的 inkjet_controller_
-      if (inkjet_controller_ && !inkjet_controller_->initialize(ink_config))
-      {
-        RCLCPP_WARN(get_logger(), "喷墨初始化失败，继续执行路径");
-      }
+      // if (inkjet_controller_ && !inkjet_controller_->initialize(ink_config))
+      // {
+      //   RCLCPP_WARN(get_logger(), "喷墨初始化失败，继续执行路径");
+      // }
 
       // 支持取消：收到取消则返回 canceled
       if (goal_handle->is_canceling())
@@ -232,7 +232,7 @@ namespace xline
         // 清理喷墨状态（停止打印）
         if (inkjet_controller_)
         {
-          inkjet_controller_->cleanup();
+          // inkjet_controller_->cleanup();
         }
 
         // 清理暂停标志（防止在暂停状态下取消时标志残留）
@@ -264,7 +264,7 @@ namespace xline
         // 清理喷墨状态（停止打印）
         if (inkjet_controller_)
         {
-          inkjet_controller_->cleanup();
+          // inkjet_controller_->cleanup();
         }
         
         is_paused_.store(false);
@@ -282,10 +282,13 @@ namespace xline
         LineData line_data = extractLineData(line);
         RCLCPP_INFO(get_logger(), "[line, id=%u]: 起点(%.2f, %.2f) -> 终点(%.2f, %.2f)", path_id, line_data.start_x,
                     line_data.start_y, line_data.end_x, line_data.end_y);
+        geometry_msgs::msg::PoseStamped robot_pose;
+        getLatestPose(robot_pose);
+        line_follow_controller_->setPose(robot_pose);
         if(is_start_from_robot){ // 是否使用机器人位置作为路径的起点
-          geometry_msgs::msg::PoseStamped robot_pose;
-          getLatestPose(robot_pose);
+          
           line_follow_controller_->setPlan(robot_pose.pose.position.x, robot_pose.pose.position.y, line_data.end_x / 1000, line_data.end_y / 1000);
+          line_follow_controller_->setWorkState(false);
         }else{
           line_follow_controller_->setPlan(line_data.start_x / 1000, line_data.start_y / 1000, line_data.end_x / 1000, line_data.end_y / 1000);
         }
@@ -331,7 +334,7 @@ namespace xline
         // 清理喷墨状态（停止打印）
         if (inkjet_controller_)
         {
-          inkjet_controller_->cleanup();
+          // inkjet_controller_->cleanup();
         }
 
         is_paused_.store(false);
@@ -346,7 +349,7 @@ namespace xline
       // 开始喷墨
       if (inkjet_controller_)
       {
-        inkjet_controller_->startPrint();
+        // inkjet_controller_->startPrint();
       }
 
       // 重置行驶距离追踪
@@ -358,8 +361,8 @@ namespace xline
       // 停止喷墨并清理状态（为下次执行做准备）
       if (inkjet_controller_)
       {
-        inkjet_controller_->stopPrint();
-        inkjet_controller_->cleanup();
+        // inkjet_controller_->stopPrint();
+        // inkjet_controller_->cleanup();
       }
 
       // 根据结果和取消状态决定如何结束Action
@@ -478,7 +481,7 @@ namespace xline
           // 更新喷墨状态（虚线模式会在这里切换）
           if (inkjet_controller_)
           {
-            inkjet_controller_->update(traveled_distance_mm_);
+            // inkjet_controller_->update(traveled_distance_mm_);
           }
         }
 
@@ -969,7 +972,7 @@ namespace xline
 
       // 将喷码机状态恢复为画线（在新线程中执行）
       std::thread([this]() {
-        inkjet_controller_->resetForSolid();
+        // inkjet_controller_->resetForSolid();
       }).detach();
 
       // 设置响应
