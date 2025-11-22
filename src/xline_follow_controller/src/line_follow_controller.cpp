@@ -73,7 +73,7 @@ void LineFollowController::initializeDefaultParameters()
 {
   // 速度参数默认值
   max_linear_speed_ = 0.5;
-  min_linear_speed_ = 0.15;
+  acceleration_min_linear_speed_ = 0.15;
   m_walk_max_vel_ = 0.26;
   m_work_max_vel_ = 0.26;
   m_alignment_vel_ = 0.12;
@@ -95,8 +95,7 @@ void LineFollowController::initializeDefaultParameters()
   
   // 非工作模式减速参数默认值
   non_work_deceleration_distance_ = 0.35;  // 非工作模式：更长的减速距离
-  non_work_low_speed_distance_ = 0.15;     // 非工作模式：低速持续距离
-  non_work_low_speed_ = 0.04;              // 非工作模式：更低的低速值
+  deceleration_min_linear_speed_ = 0.04;              // 非工作模式：更低的低速值
 
   // 控制参数默认值
   m_acce_factor_ = 0.0003;
@@ -159,7 +158,8 @@ void LineFollowController::updateParameters()
     debug_ = parser.getParameter<bool>("debug");
 
     // --- 线速度相关 ---
-    min_linear_speed_ = parser.getParameter<double>("motion.velocity.limits.min");
+    acceleration_min_linear_speed_ = parser.getParameter<double>("motion.velocity.limits.acceleration_min");
+    deceleration_min_linear_speed_ = parser.getParameter<double>("motion.velocity.limits.deceleration_min");
     m_walk_max_vel_ = parser.getParameter<double>("motion.velocity.limits.walk_max");
     m_work_max_vel_ = parser.getParameter<double>("motion.velocity.limits.work_max");
     m_alignment_vel_ = parser.getParameter<double>("motion.velocity.limits.alignment");
@@ -172,19 +172,8 @@ void LineFollowController::updateParameters()
     waypoint_tolerance_ = parser.getParameter<double>("motion.velocity.distances.waypoint_tolerance");
     mini_path_distance_ = parser.getParameter<double>("motion.velocity.distances.mini_path");
     
-    // 非工作模式减速参数（如果配置文件中存在）
-    if (parser.hasParameter("motion.velocity.distances.non_work_deceleration"))
-    {
-      non_work_deceleration_distance_ = parser.getParameter<double>("motion.velocity.distances.non_work_deceleration");
-    }
-    if (parser.hasParameter("motion.velocity.distances.non_work_low_speed_distance"))
-    {
-      non_work_low_speed_distance_ = parser.getParameter<double>("motion.velocity.distances.non_work_low_speed_distance");
-    }
-    if (parser.hasParameter("motion.velocity.limits.non_work_low_speed"))
-    {
-      non_work_low_speed_ = parser.getParameter<double>("motion.velocity.limits.non_work_low_speed");
-    }
+    non_work_deceleration_distance_ = parser.getParameter<double>("motion.velocity.distances.non_work_deceleration");
+    
 
     // --- 调速参数 ---
     m_acce_factor_ = parser.getParameter<double>("motion.velocity.tuning.acce_factor");
@@ -665,11 +654,8 @@ double LineFollowController::computeLinearSpeed(double distance_to_target, doubl
   static double prev_speed = 0.0;
   double target_speed = 0.0;
 
-  // 根据工作状态选择减速距离阈值
-  double effective_decel_distance = m_work_state_ ? deceleration_distance_ : non_work_deceleration_distance_;
-
   // 基于距离计算目标速度
-  if (distance_to_target < effective_decel_distance)
+  if (distance_to_target < deceleration_distance_)
   {
     // 减速阶段
     // 只在首次进入减速阶段时设置最大速度
@@ -680,53 +666,30 @@ double LineFollowController::computeLinearSpeed(double distance_to_target, doubl
       prev_speed = 0.0;
     }
 
-    // 根据工作状态选择不同的减速参数
-    double precise_stop_distance = m_work_state_ ? 0.05 : 0.08;  // 精确停止距离
-    double low_speed_distance = m_work_state_ ? 0.0 : non_work_low_speed_distance_;  // 低速持续距离
-    double low_speed_value = m_work_state_ ? min_linear_speed_ : non_work_low_speed_;  // 低速值
+    const double precise_stop_distance = m_work_state_ ? 0.05 : 0.1;  // 精确停止距离
 
-    // 非工作模式：在更长的距离开始减速
-    if (!m_work_state_)
+    if (distance_to_target <= precise_stop_distance)
     {
-      if (distance_to_target <= precise_stop_distance)
-      {
-        // 在精确停止距离内使用低速
-        target_speed = low_speed_value;
-      }
-      else if (distance_to_target <= (precise_stop_distance + low_speed_distance))
-      {
-        // 低速持续区间：保持低速一段时间
-        target_speed = low_speed_value;
-      }
-      else
-      {
-        // 平滑减速区间：从最大速度减到低速
-        double normalized_distance =
-            (distance_to_target - precise_stop_distance - low_speed_distance) / 
-            (effective_decel_distance - precise_stop_distance - low_speed_distance);
-        normalized_distance = std::max(0.0, std::min(1.0, normalized_distance));
-        double sigmoid_value =
-            1.0 / (1.0 + std::exp(-m_deceleration_factor_ * (normalized_distance - m_deceleration_sigmoid_center_)));
-        target_speed = low_speed_value + (max_linear_speed_ - low_speed_value) * sigmoid_value;
-      }
+      target_speed = deceleration_min_linear_speed_;
     }
-    // 工作模式：保持原有逻辑
     else
     {
-      if (distance_to_target <= precise_stop_distance)
-      {
-        target_speed = min_linear_speed_;
-      }
-      else
-      {
-        // 使用 Sigmoid 函数实现平滑减速
-        double normalized_distance =
-            (distance_to_target - precise_stop_distance) / (deceleration_distance_ - precise_stop_distance);
-        normalized_distance = std::max(0.0, std::min(1.0, normalized_distance));
-        double sigmoid_value =
-            1.0 / (1.0 + std::exp(-m_deceleration_factor_ * (normalized_distance - m_deceleration_sigmoid_center_)));
-        target_speed = min_linear_speed_ + (max_linear_speed_ - min_linear_speed_) * sigmoid_value;
-      }
+      // 使用二次曲线实现平滑减速
+      // double normalized_distance =
+      //     (distance_to_target - precise_stop_distance) / (deceleration_distance_ - precise_stop_distance);
+      // normalized_distance = std::max(0.0, std::min(1.0, normalized_distance));
+      // double speed_factor = normalized_distance * normalized_distance;
+      // target_speed = min_linear_speed_ + (max_linear_speed_ - min_linear_speed_) * speed_factor;
+
+
+      // 使用 Sigmoid 函数实现平滑减速
+      double normalized_distance =
+          (distance_to_target - precise_stop_distance) / (deceleration_distance_ - precise_stop_distance);
+      normalized_distance = std::max(0.0, std::min(1.0, normalized_distance));
+      double sigmoid_value =
+          1.0 / (1.0 + std::exp(-m_deceleration_factor_ * (normalized_distance - m_deceleration_sigmoid_center_)));
+      target_speed = deceleration_min_linear_speed_ + (max_linear_speed_ - deceleration_min_linear_speed_) * sigmoid_value;
+
     }
   }
   else
@@ -750,12 +713,12 @@ double LineFollowController::computeLinearSpeed(double distance_to_target, doubl
         if (path_length_ < 0.1)
         {
           // 极短路径：使用最小速度
-          max_linear_speed_ = min_linear_speed_;
+          max_linear_speed_ = acceleration_min_linear_speed_;
         }
         else if (path_length_ < 0.2)
         {
           // 很短路径：稍高于最小速度
-          max_linear_speed_ = min_linear_speed_ * 1.5;
+          max_linear_speed_ = acceleration_min_linear_speed_ * 1.5;
         }
         else if (path_length_ < 0.4)
         {
@@ -785,17 +748,10 @@ double LineFollowController::computeLinearSpeed(double distance_to_target, doubl
 
     // 限制最大速度
     target_speed = std::min(target_speed, max_linear_speed_);
-  }
 
-
-  // 限制最小速度（根据工作状态和减速阶段动态调整）
-  double effective_min_speed = min_linear_speed_;
-  if (!m_work_state_ && decel_phase_entered_)
-  {
-    // 非工作模式且在减速阶段，允许使用更低的速度
-    effective_min_speed = non_work_low_speed_;
+    // 限制最小速度
+    target_speed = std::max(target_speed, acceleration_min_linear_speed_);
   }
-  target_speed = std::max(target_speed, effective_min_speed);
 
   // 速度变化率限制（防止急减速）
   static std::chrono::steady_clock::time_point prev_time = std::chrono::steady_clock::now();
@@ -828,7 +784,7 @@ double LineFollowController::computeLinearSpeed(double distance_to_target, doubl
 
   if (path_length_ < mini_path_distance_)
   {
-    current_linear_speed_ = min_linear_speed_;
+    current_linear_speed_ = acceleration_min_linear_speed_;
   }
   return current_linear_speed_;
 }

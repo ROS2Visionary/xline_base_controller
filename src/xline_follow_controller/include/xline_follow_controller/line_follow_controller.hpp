@@ -135,7 +135,8 @@ private:
 
   // 线速度参数
   double max_linear_speed_;      // 最大线速度
-  double min_linear_speed_;      // 最小线速度
+  double acceleration_min_linear_speed_;      // 加速时最小线速度
+  double deceleration_min_linear_speed_;      // 减速时最小线速度
   double current_linear_speed_;  // 当前线速度
   double m_walk_max_vel_;        // 步行最大速度
   double m_work_max_vel_;        // 工作最大速度
@@ -195,8 +196,7 @@ private:
   
   // 非工作模式的减速参数
   double non_work_deceleration_distance_;  // 非工作模式减速距离（应更长）
-  double non_work_low_speed_distance_;     // 非工作模式低速持续距离
-  double non_work_low_speed_;              // 非工作模式低速值（应更低）
+
 
   // 速度调节参数
   double m_acce_factor_;                  // 加速因子

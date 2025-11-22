@@ -17,7 +17,6 @@
 #include <xline_follow_controller/line_follow_controller.hpp>
 #include <xline_follow_controller/rpp_follow_controller.hpp>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
-#include <xline_base_controller/inkjet_controller.hpp>
 
 /**
  * MotionControlCenter 运动控制中心
@@ -94,8 +93,6 @@ namespace xline
       std::mutex pause_mutex_;
       std::mutex service_mutex_;  // 保护暂停/恢复服务调用
 
-      // 喷墨控制器
-      std::shared_ptr<InkjetController> inkjet_controller_;
 
       // 行驶距离追踪（用于虚线模式）
       double traveled_distance_mm_ = 0.0;
@@ -196,10 +193,6 @@ namespace xline
        */
       ArcData extractArcData(const Json::Value &arc_obj);
 
-      /**
-       * 解析喷墨配置
-       */
-      InkConfig parseInkConfig(const Json::Value &ink_obj);
 
       /**
        * 线程安全地获取最新机器人位姿
