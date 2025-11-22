@@ -264,6 +264,7 @@ namespace xline
         getLatestPose(current_pose);
         rpp_follow_controller_->setAngleRange(2 * M_PI, 0.0);
         rpp_follow_controller_->setPlanForCircle(circle_data.center_x / 1000, circle_data.center_y / 1000, circle_data.radius / 1000, current_pose);
+        rpp_follow_controller_->setBackFollow(true);
         base_follow_controller_ = rpp_follow_controller_;
       }
       else if (type == "arc")
@@ -411,28 +412,6 @@ namespace xline
           has_warned_no_pose = false;
         }
 
-        // 计算行驶距离（用于虚线模式）
-        // if (has_last_pose_)
-        // {
-        //   double dx = robot_pose.pose.position.x - last_pose_.pose.position.x;
-        //   double dy = robot_pose.pose.position.y - last_pose_.pose.position.y;
-        //   double distance_m = std::sqrt(dx * dx + dy * dy);
-        //   traveled_distance_mm_ += distance_m * 1000.0; // 转换为毫米
-
-        //   // 异步更新喷墨状态（虚线模式切换，不阻塞控制循环）
-        //   if (inkjet_controller_)
-        //   {
-        //     // 使用静态计数器降低更新频率（每秒更新一次而不是18次）
-        //     static int update_counter = 0;
-        //     if (++update_counter % 18 == 0) {
-        //       double current_distance = traveled_distance_mm_;
-        //       std::async(std::launch::async, [this, current_distance]() {
-        //         inkjet_controller_->update(current_distance);
-        //       });
-        //       update_counter = 0;
-        //     }
-        //   }
-        // }
 
         last_pose_ = robot_pose;
         has_last_pose_ = true;
@@ -468,7 +447,11 @@ namespace xline
         }
         if(base_follow_controller_->start_print && !is_inkjet_printing && current_layer_id != 1000000){
             is_inkjet_printing = true;
-            inkjet_client_->start_print_center();
+            auto inkjet_client = inkjet_client_;
+            std::thread([inkjet_client]() {
+              std::this_thread::sleep_for(std::chrono::seconds(1));
+              inkjet_client->start_print_center();
+            }).detach();
         }
 
         if(base_follow_controller_->stop_print && is_inkjet_printing && current_layer_id != 1000000){

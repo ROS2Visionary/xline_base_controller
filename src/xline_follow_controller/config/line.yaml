@@ -16,7 +16,7 @@ motion:
     # 速度限制
     limits:
       acceleration_min: 0.05      # 加速时最小线速度
-      deceleration_min: 0.02     # 减速时最小线速度
+      deceleration_min: 0.03     # 减速时最小线速度
       walk_max: 0.4               # 步行模式最大速度
       work_max: 0.4               # 工作模式最大速度
       work_short: 0.2             # 短路径工作速度
@@ -39,7 +39,7 @@ motion:
       acce_factor: 0.0005              # 加速因子
       speed_increment: 0.02            # 速度增量
       acceleration_factor: 6         # 加速sigmoid函数系数
-      deceleration_factor: 8         # 减速sigmoid函数系数
+      deceleration_factor: 10         # 减速sigmoid函数系数
       acceleration_sigmoid_center: 0.9 # 加速sigmoid函数中心点
       deceleration_sigmoid_center: 0.3 # 减速sigmoid函数中心点
 

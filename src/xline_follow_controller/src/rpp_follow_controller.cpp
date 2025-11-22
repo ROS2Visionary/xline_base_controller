@@ -27,7 +27,7 @@ RPPController::RPPController()
   , grid_resolution_(0.01)   // 1厘米/像素
   , grid_width_(10.0)        // 默认10x10米的地图
   , grid_height_(10.0)
-  , grid_map_path_("/home/daosn_robotics/zyq_ws/rpp_grid_map")  // 默认保存路径
+  , grid_map_path_("/home/xline/xline_ws")  // 默认保存路径
   , previous_angular_vel_(0.0)
   , predicted_angular_vel_(0.0)
   , lowpass_angular_vel_filter_gain_(0.7)  // 滤波增益默认值
@@ -40,15 +40,6 @@ RPPController::RPPController()
   , target_yaw_(0.0)                      // 圆形路径的目标航向
   , circle_entry_x_(0.0)                  // 圆形路径切入点x坐标
   , circle_entry_y_(0.0)                  // 圆形路径切入点y坐标
-  , collect_positions_for_circle_(false)  // 是否收集位置用于半径计算
-  , target_radius_(0.0)                   // 目标半径
-  , target_center_x_(0.0)                 // 目标圆心x坐标
-  , target_center_y_(0.0)                 // 目标圆心y坐标
-  , position_collect_interval_(0.1)       // 位置收集间隔(秒)
-  , robot_center_fitted_x_(0.0)           // 机器人中心拟合圆心x坐标
-  , robot_center_fitted_y_(0.0)           // 机器人中心拟合圆心y坐标
-  , robot_center_fitted_radius_(0.0)      // 机器人中心拟合半径
-  , robot_center_fit_success_(false)      // 机器人中心拟合是否成功
   , back_follow_(false)                   // 后退模式默认关闭
 {
   RCLCPP_INFO(get_logger(), "RPPController实例已创建，正在初始化...");
@@ -137,16 +128,8 @@ void RPPController::updateParameters(std::string file_path)
 
   enable_grid_map_ = parser.getParameter<bool>("enable_grid_map");
 
-  radius_log_file_path_ = parser.getParameter<std::string>("radius_log_file_path");
-
-  x_offset_ = parser.getParameter<double>("x_offset");
-  y_offset_ = parser.getParameter<double>("y_offset");
-
-  collect_positions_for_circle_ = parser.getParameter<bool>("collect_positions_for_circle");
-
   low_speed_mode_ = parser.getParameter<bool>("low_speed_mode");
 
-  addOffsetPoint(x_offset_, y_offset_, "record");
 
   // 读取二阶平滑器参数
   angular_smoother_freq_ = parser.getParameter<double>("smoother_freq");
@@ -244,27 +227,6 @@ bool RPPController::setPlanForCircle(double circle_center_x, double circle_cente
   circle_radius = circle_radius + radius_offset_;
   is_circle_path = true;
 
-  // 保存目标圆信息
-  target_center_x_ = circle_center_x;
-  target_center_y_ = circle_center_y;
-  target_radius_ = circle_radius;
-
-  // 重置拟合结果
-  robot_center_fitted_x_ = 0.0;
-  robot_center_fitted_y_ = 0.0;
-  robot_center_fitted_radius_ = 0.0;
-  robot_center_fit_success_ = false;
-
-  // 重置喷墨口拟合结果
-  for (auto& offset_point : offset_points_)
-  {
-    offset_point.fitted_center_x = 0.0;
-    offset_point.fitted_center_y = 0.0;
-    offset_point.fitted_radius = 0.0;
-    offset_point.fit_success = false;
-    offset_point.positions.clear();
-  }
-
   // 用于圆形路径的角度累计
   last_yaw_initialized_ = false;
   last_yaw_ = 0.0;
@@ -276,27 +238,7 @@ bool RPPController::setPlanForCircle(double circle_center_x, double circle_cente
   circle_radius_ = circle_radius;
   baseline_angular_velocity_for_circle_ = min_v_ / circle_radius;
 
-  // 初始化位置收集
-  collected_positions_.clear();
-  last_position_collect_time_ = this->now();
-
-  // 初始化喷墨口偏置点收集
-  if (!offset_points_.empty())
-  {
-    for (auto& offset_point : offset_points_)
-    {
-      offset_point.positions.clear();
-    }
-    RCLCPP_INFO(get_logger(), "开始收集机器人中心和%zu个喷墨口的位置数据", offset_points_.size());
-    RCLCPP_INFO(get_logger(), "目标圆心: (%.3f, %.3f), 目标半径: %.3f m", target_center_x_, target_center_y_,
-                target_radius_);
-  }
-  else
-  {
-    RCLCPP_INFO(get_logger(), "开始收集机器人中心位置用于半径计算");
-    RCLCPP_INFO(get_logger(), "目标圆心: (%.3f, %.3f), 目标半径: %.3f m", target_center_x_, target_center_y_,
-                target_radius_);
-  }
+  
 
   try
   {
@@ -984,17 +926,6 @@ bool RPPController::computeVelocityCommands(const geometry_msgs::msg::PoseStampe
 
     if (is_circle_path)
     {
-      // 收集机器人中心位置用于半径计算
-      if (collect_positions_for_circle_)
-      {
-        collectPositionForRadiusCalculation(current_pose);
-
-        // 同时收集喷墨口位置（与机器人中心使用相同的收集条件）
-        if (!offset_points_.empty())
-        {
-          collectOffsetPointsPositions(current_pose);
-        }
-      }
 
       // 圆形路径，机器人旋转角度累加到指定值则判断为到达
       // 1. 获取当前航向角
@@ -1045,46 +976,6 @@ bool RPPController::computeVelocityCommands(const geometry_msgs::msg::PoseStampe
         // 判断是否达到目标
         if (accumulated_angle_ >= (circle_total_angle - 0.5 * M_PI))
         {
-          // 先计算并保存机器人中心的半径
-          if (collect_positions_for_circle_ && collected_positions_.size() >= 10)
-          {
-            if (fitCircleToPositions(collected_positions_, robot_center_fitted_x_, robot_center_fitted_y_,
-                                     robot_center_fitted_radius_))
-            {
-              robot_center_fit_success_ = true;
-
-              double radius_error = std::abs(robot_center_fitted_radius_ - target_radius_);
-              double center_error = std::sqrt(std::pow(robot_center_fitted_x_ - target_center_x_, 2) +
-                                              std::pow(robot_center_fitted_y_ - target_center_y_, 2));
-
-              RCLCPP_INFO(get_logger(), "机器人中心圆形拟合完成:");
-              RCLCPP_INFO(get_logger(), "  目标圆心: (%.4f, %.4f), 目标半径: %.4f m", target_center_x_,
-                          target_center_y_, target_radius_);
-              RCLCPP_INFO(get_logger(), "  拟合圆心: (%.4f, %.4f), 拟合半径: %.4f m", robot_center_fitted_x_,
-                          robot_center_fitted_y_, robot_center_fitted_radius_);
-              RCLCPP_INFO(get_logger(), "  半径误差: %.4f m, 圆心误差: %.4f m", radius_error, center_error);
-              RCLCPP_INFO(get_logger(), "  收集点数: %zu", collected_positions_.size());
-            }
-            else
-            {
-              robot_center_fit_success_ = false;
-              RCLCPP_ERROR(get_logger(), "机器人中心圆形拟合失败");
-            }
-          }
-          else
-          {
-            robot_center_fit_success_ = false;
-          }
-
-          // 接着计算并保存喷墨口的半径
-          if (!offset_points_.empty())
-          {
-            calculateAndSaveOffsetPointsRadius();
-          }
-
-          // 重置收集标志
-          collect_positions_for_circle_ = false;
-          collected_positions_.clear();
 
           // 目标已达到，设置标志并停止机器人
           goal_reached_ = true;
@@ -1732,54 +1623,6 @@ void RPPController::robotToGlobalCoordinate(const geometry_msgs::msg::PoseStampe
                global_y);
 }
 
-void RPPController::collectPositionForRadiusCalculation(const geometry_msgs::msg::PoseStamped& pose)
-{
-  auto current_time = this->now();
-
-  // 按时间间隔收集位置，避免过于密集
-  if ((current_time - last_position_collect_time_).seconds() >= position_collect_interval_)
-  {
-    collected_positions_.emplace_back(pose.pose.position.x, pose.pose.position.y);
-    last_position_collect_time_ = current_time;
-
-    // 限制收集的点数，避免内存过度使用
-    if (collected_positions_.size() > 5000)
-    {
-      // 保留最新的2500个点
-      collected_positions_.erase(collected_positions_.begin(), collected_positions_.begin() + 2500);
-    }
-
-    RCLCPP_DEBUG(get_logger(), "收集机器人中心位置: (%.4f, %.4f), 总数: %zu", pose.pose.position.x,
-                 pose.pose.position.y, collected_positions_.size());
-  }
-}
-
-void RPPController::collectOffsetPointsPositions(const geometry_msgs::msg::PoseStamped& robot_pose)
-{
-  // 与机器人中心使用相同的收集条件
-  // 这个函数在collectPositionForRadiusCalculation之后立即调用
-
-  for (auto& offset_point : offset_points_)
-  {
-    double global_x, global_y;
-
-    // 将机器人坐标系偏置转换为全局坐标
-    robotToGlobalCoordinate(robot_pose, offset_point.x_offset, offset_point.y_offset, global_x, global_y);
-
-    // 收集全局坐标位置
-    offset_point.positions.emplace_back(global_x, global_y);
-
-    // 限制收集的点数，避免内存过度使用
-    if (offset_point.positions.size() > 5000)
-    {
-      // 保留最新的2500个点
-      offset_point.positions.erase(offset_point.positions.begin(), offset_point.positions.begin() + 2500);
-    }
-
-    RCLCPP_DEBUG(get_logger(), "收集喷墨口 %s 位置: (%.4f, %.4f), 总数: %zu", offset_point.name.c_str(), global_x,
-                 global_y, offset_point.positions.size());
-  }
-}
 
 bool RPPController::fitCircleToPositions(const std::vector<std::pair<double, double>>& positions, double& center_x,
                                          double& center_y, double& radius)
@@ -1944,188 +1787,6 @@ bool RPPController::fitCircleToPositions(const std::vector<std::pair<double, dou
   }
 }
 
-void RPPController::calculateAndSaveOffsetPointsRadius()
-{
-  RCLCPP_INFO(get_logger(), "开始计算机器人中心和%zu个喷墨口的圆形拟合", offset_points_.size());
-
-  // 首先计算机器人中心的圆形拟合
-  if (collected_positions_.size() >= 10)
-  {
-    if (fitCircleToPositions(collected_positions_, robot_center_fitted_x_, robot_center_fitted_y_,
-                             robot_center_fitted_radius_))
-    {
-      robot_center_fit_success_ = true;
-
-      double radius_error = std::abs(robot_center_fitted_radius_ - target_radius_);
-      double center_error = std::sqrt(std::pow(robot_center_fitted_x_ - target_center_x_, 2) +
-                                      std::pow(robot_center_fitted_y_ - target_center_y_, 2));
-      double radius_error_percentage = (radius_error / target_radius_) * 100.0;
-
-      RCLCPP_INFO(get_logger(), "机器人中心圆形拟合完成:");
-      RCLCPP_INFO(get_logger(), "  目标圆心: (%.4f, %.4f), 目标半径: %.4f m", target_center_x_, target_center_y_,
-                  target_radius_);
-      RCLCPP_INFO(get_logger(), "  拟合圆心: (%.4f, %.4f), 拟合半径: %.4f m", robot_center_fitted_x_,
-                  robot_center_fitted_y_, robot_center_fitted_radius_);
-      RCLCPP_INFO(get_logger(), "  半径误差: %.4f m (%.2f%%), 圆心误差: %.4f m", radius_error, radius_error_percentage,
-                  center_error);
-      RCLCPP_INFO(get_logger(), "  收集点数: %zu", collected_positions_.size());
-    }
-    else
-    {
-      robot_center_fit_success_ = false;
-      RCLCPP_ERROR(get_logger(), "机器人中心圆形拟合失败");
-    }
-  }
-  else
-  {
-    robot_center_fit_success_ = false;
-    RCLCPP_WARN(get_logger(), "机器人中心收集的位置点不足，无法进行圆形拟合 (需要至少10个点，当前: %zu)",
-                collected_positions_.size());
-  }
-
-  // 然后计算各个喷墨口的圆形拟合
-  for (auto& offset_point : offset_points_)
-  {
-    if (offset_point.positions.size() < 10)
-    {
-      RCLCPP_WARN(get_logger(), "喷墨口 %s 收集的位置点不足，无法进行圆形拟合 (需要至少10个点，当前: %zu)",
-                  offset_point.name.c_str(), offset_point.positions.size());
-      offset_point.fit_success = false;
-      continue;
-    }
-
-    if (fitCircleToPositions(offset_point.positions, offset_point.fitted_center_x, offset_point.fitted_center_y,
-                             offset_point.fitted_radius))
-    {
-      offset_point.fit_success = true;
-
-      double radius_error = std::abs(offset_point.fitted_radius - target_radius_);
-      double center_error = std::sqrt(std::pow(offset_point.fitted_center_x - target_center_x_, 2) +
-                                      std::pow(offset_point.fitted_center_y - target_center_y_, 2));
-      double radius_error_percentage = (radius_error / target_radius_) * 100.0;
-
-      RCLCPP_INFO(get_logger(), "喷墨口 %s 圆形拟合完成:", offset_point.name.c_str());
-      RCLCPP_INFO(get_logger(), "  偏置量: (%.3f, %.3f) m", offset_point.x_offset, offset_point.y_offset);
-      RCLCPP_INFO(get_logger(), "  目标圆心: (%.4f, %.4f), 目标半径: %.4f m", target_center_x_, target_center_y_,
-                  target_radius_);
-      RCLCPP_INFO(get_logger(), "  拟合圆心: (%.4f, %.4f), 拟合半径: %.4f m", offset_point.fitted_center_x,
-                  offset_point.fitted_center_y, offset_point.fitted_radius);
-      RCLCPP_INFO(get_logger(), "  半径误差: %.4f m (%.2f%%), 圆心误差: %.4f m", radius_error, radius_error_percentage,
-                  center_error);
-      RCLCPP_INFO(get_logger(), "  收集点数: %zu", offset_point.positions.size());
-
-      // 保存详细数据到CSV
-      saveDetailedCircleDataToCSV(offset_point);
-    }
-    else
-    {
-      offset_point.fit_success = false;
-      RCLCPP_ERROR(get_logger(), "喷墨口 %s 圆形拟合失败", offset_point.name.c_str());
-    }
-  }
-}
-
-void RPPController::saveDetailedCircleDataToCSV(const OffsetPoint& offset_point)
-{
-  if (radius_log_file_path_.empty())
-  {
-    RCLCPP_WARN(get_logger(), "未设置半径日志文件路径，无法保存结果");
-    return;
-  }
-
-  try
-  {
-    // 确保目录存在
-    std::filesystem::path file_path(radius_log_file_path_);
-    std::filesystem::create_directories(file_path.parent_path());
-
-    // 检查文件是否存在，如果不存在则创建并写入表头
-    bool file_exists = std::filesystem::exists(radius_log_file_path_);
-
-    std::ofstream file(radius_log_file_path_, std::ios::app);
-    if (!file.is_open())
-    {
-      RCLCPP_ERROR(get_logger(), "无法打开半径日志文件: %s", radius_log_file_path_.c_str());
-      return;
-    }
-
-    // 如果是新文件，写入CSV表头
-    if (!file_exists)
-    {
-      file << "timestamp,nozzle_name,x_offset_m,y_offset_m,"
-           << "target_center_x_m,target_center_y_m,target_radius_m,"
-           << "robot_center_fitted_x_m,robot_center_fitted_y_m,robot_center_fitted_radius_m,"
-           << "nozzle_fitted_center_x_m,nozzle_fitted_center_y_m,nozzle_fitted_radius_m,"
-           << "nozzle_radius_error_m,nozzle_radius_error_percent,nozzle_center_error_m,"
-           << "robot_center_point_count,nozzle_point_count,robot_center_fit_success,nozzle_fit_success,"
-           << "baseline_linear_speed_m_s,max_lookahead_distance_m\n";
-    }
-
-    // 计算喷墨口误差
-    double nozzle_radius_error = 0.0;
-    double nozzle_radius_error_percent = 0.0;
-    double nozzle_center_error = 0.0;
-
-    if (offset_point.fit_success)
-    {
-      nozzle_radius_error = std::abs(offset_point.fitted_radius - target_radius_);
-      nozzle_radius_error_percent = (nozzle_radius_error / target_radius_) * 100.0;
-      nozzle_center_error = std::sqrt(std::pow(offset_point.fitted_center_x - target_center_x_, 2) +
-                                      std::pow(offset_point.fitted_center_y - target_center_y_, 2));
-    }
-
-    // 写入数据
-    auto now = this->now();
-    file << std::fixed << std::setprecision(6) << now.seconds() << "." << std::setfill('0') << std::setw(9)
-         << now.nanoseconds() << "," << offset_point.name << "," << offset_point.x_offset << ","
-         << offset_point.y_offset << "," << target_center_x_ << "," << target_center_y_ << "," << target_radius_ << ","
-         << (robot_center_fit_success_ ? robot_center_fitted_x_ : 0.0) << ","
-         << (robot_center_fit_success_ ? robot_center_fitted_y_ : 0.0) << ","
-         << (robot_center_fit_success_ ? robot_center_fitted_radius_ : 0.0) << ","
-         << (offset_point.fit_success ? offset_point.fitted_center_x : 0.0) << ","
-         << (offset_point.fit_success ? offset_point.fitted_center_y : 0.0) << ","
-         << (offset_point.fit_success ? offset_point.fitted_radius : 0.0) << "," << std::setprecision(6)
-         << nozzle_radius_error << "," << std::setprecision(3) << nozzle_radius_error_percent << ","
-         << std::setprecision(6) << nozzle_center_error << "," << collected_positions_.size() << ","
-         << offset_point.positions.size() << "," << (robot_center_fit_success_ ? "true" : "false") << ","
-         << (offset_point.fit_success ? "true" : "false") << "," << std::setprecision(4) << linear_speed_ << ","
-         << max_lookahead_dist_ << "\n";
-
-    file.close();
-
-    RCLCPP_INFO(get_logger(), "喷墨口 %s 详细圆形数据已保存到: %s (基准线速度: %.3f m/s, 最大前瞻距离: %.3f m)",
-                offset_point.name.c_str(), radius_log_file_path_.c_str(), linear_speed_, max_lookahead_dist_);
-  }
-  catch (const std::exception& e)
-  {
-    RCLCPP_ERROR(get_logger(), "保存详细圆形数据时发生异常: %s", e.what());
-  }
-}
-
-void RPPController::addOffsetPoint(double x_offset, double y_offset, const std::string& name)
-{
-  OffsetPoint offset_point;
-  offset_point.x_offset = x_offset;
-  offset_point.y_offset = y_offset;
-  offset_point.name = name;
-  offset_point.positions.clear();
-  offset_points_.clear();
-  offset_points_.push_back(offset_point);
-
-  RCLCPP_INFO(get_logger(), "添加喷墨口: %s, 偏置量: (%.3f, %.3f)", name.c_str(), x_offset, y_offset);
-}
-
-void RPPController::setRadiusLogFilePath(const std::string& file_path)
-{
-  radius_log_file_path_ = file_path;
-  RCLCPP_INFO(get_logger(), "设置半径日志文件路径为: %s", radius_log_file_path_.c_str());
-}
-
-void RPPController::clearOffsetPoints()
-{
-  offset_points_.clear();
-  RCLCPP_INFO(get_logger(), "已清空所有喷墨口偏置点配置");
-}
 
 // 栅格图相关辅助函数
 void RPPController::initializeGridMap(const nav_msgs::msg::Path& path)

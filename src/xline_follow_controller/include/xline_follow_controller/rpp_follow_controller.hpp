@@ -201,17 +201,6 @@ public:
 
   double calculateRotationVelocity(const double& angle_diff);
 
-  /**
-   * @brief 收集机器人位置用于半径计算
-   * @param pose 当前机器人位姿
-   */
-  void collectPositionForRadiusCalculation(const geometry_msgs::msg::PoseStamped& pose);
-
-  /**
-   * @brief 收集所有喷墨口的位置
-   * @param robot_pose 当前机器人位姿
-   */
-  void collectOffsetPointsPositions(const geometry_msgs::msg::PoseStamped& robot_pose);
 
   /**
    * @brief 将机器人坐标系偏置转换为全局坐标（使用TF变换）
@@ -235,29 +224,6 @@ public:
   bool fitCircleToPositions(const std::vector<std::pair<double, double>>& positions, double& center_x, double& center_y,
                             double& radius);
 
-  /**
-   * @brief 计算并保存所有喷墨口的半径
-   */
-  void calculateAndSaveOffsetPointsRadius();
-
-  /**
-   * @brief 添加喷墨口偏置点配置
-   * @param x_offset 基于机器人坐标系的x偏置（米）
-   * @param y_offset 基于机器人坐标系的y偏置（米）
-   * @param name 喷墨口名称
-   */
-  void addOffsetPoint(double x_offset, double y_offset, const std::string& name);
-
-  /**
-   * @brief 设置半径日志文件路径
-   * @param file_path CSV文件路径
-   */
-  void setRadiusLogFilePath(const std::string& file_path);
-
-  /**
-   * @brief 清空所有喷墨口偏置点配置
-   */
-  void clearOffsetPoints();
 
 private:
   bool initialized_;   // 标记控制器是否已初始化
@@ -353,41 +319,6 @@ private:
   bool need_yaw_prealign_;        // 是否需要预先对准航向
   bool yaw_prealign_done_;        // 是否已完成航向对准
 
-  // 圆形路径半径计算相关
-  bool collect_positions_for_circle_;                           // 是否收集位置用于半径计算
-  std::vector<std::pair<double, double>> collected_positions_;  // 收集的机器人位置
-  std::string radius_log_file_path_;                            // 半径日志文件路径
-  double target_radius_;                                        // 目标半径
-  double target_center_x_;                                      // 目标圆心x坐标
-  double target_center_y_;                                      // 目标圆心y坐标
-  rclcpp::Time last_position_collect_time_;                     // 上次收集位置的时间
-  double position_collect_interval_;                            // 位置收集间隔(秒)
-
-  // 机器人中心拟合结果
-  double robot_center_fitted_x_ = 0.0;
-  double robot_center_fitted_y_ = 0.0;
-  double robot_center_fitted_radius_ = 0.0;
-  bool robot_center_fit_success_ = false;
-
-  double x_offset_;
-  double y_offset_;
-
-  // 喷墨口记录相关
-  struct OffsetPoint
-  {
-    double x_offset;                                   // 基于机器人坐标系的x偏置
-    double y_offset;                                   // 基于机器人坐标系的y偏置
-    std::string name;                                  // 喷墨口名称
-    std::vector<std::pair<double, double>> positions;  // 收集的全局坐标位置
-
-    // 拟合结果
-    double fitted_center_x = 0.0;  // 拟合圆心x坐标
-    double fitted_center_y = 0.0;  // 拟合圆心y坐标
-    double fitted_radius = 0.0;    // 拟合半径
-    bool fit_success = false;      // 拟合是否成功
-  };
-
-  std::vector<OffsetPoint> offset_points_;  // 多个喷墨口配置
 
   // 用于圆形路径的角度累计
   bool last_yaw_initialized_;
@@ -505,11 +436,6 @@ private:
   double smoothAngularVelocity(double current_angular_vel, double desired_angular_vel, double lookahead_dist,
                                double angle_to_path, double dt, bool is_reset);
 
-  /**
-   * @brief 将详细圆形数据保存到CSV文件
-   * @param offset_point 喷墨口信息（包含拟合结果）
-   */
-  void saveDetailedCircleDataToCSV(const OffsetPoint& offset_point);
 };
 
 }  // namespace follow_controller
