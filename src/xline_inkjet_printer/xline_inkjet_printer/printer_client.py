@@ -271,6 +271,8 @@ class PrinterClient:
         request.printer_name = self.printer_name
         request.action = action
         request.param = param
+        request.param2 = 0
+        request.param3 = 0
 
         try:
             future = self._quick_command_client.call_async(request)

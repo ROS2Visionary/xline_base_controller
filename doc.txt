@@ -5,7 +5,9 @@ colcon build
 source install/setup.sh
 ros2 run xline_inkjet_printer inkjet_printer_node
 
- colcon build --packages-select xline_msgs
+colcon build --packages-select xline_msgs
+colcon build --parallel-workers 1
+
 
 ros2 service call /motion_control/execute_calibration std_srvs/srv/Trigger
 

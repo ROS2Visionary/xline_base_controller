@@ -1,7 +1,8 @@
 # Request
 string printer_name    # 目标打印机: "left", "center", "right", "all"（all表示所有打印机）
-string action          # 动作类型: "beep", "start_print", "stop_print", "clean_nozzle"
-int32 param            # 可选参数（如蜂鸣次数、清洗强度），默认使用标准值
+string action          # 动作类型: "beep", "start_print", "stop_print", "clean_nozzle", "test_print", "ink_level", "set_print_mode"
+int32 param            # 主参数（如蜂鸣次数、清洗强度、打印间隔ms）
+PrintModeConfig print_mode  # 打印模式参数（仅当 action 为 set_print_mode 时使用，其它动作可忽略）
 
 ---
 

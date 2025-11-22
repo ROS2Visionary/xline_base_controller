@@ -5,6 +5,7 @@ find_package(ament_cmake REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/PrintModeConfig.msg"
   "action/ExecutePlan.action"
   "srv/LnCommand.srv"
   "srv/PrinterCommand.srv"

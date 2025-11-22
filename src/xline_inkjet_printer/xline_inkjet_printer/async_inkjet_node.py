@@ -453,7 +453,7 @@ class AsyncInkjetPrinterNode(Node):
         """
         处理快速命令请求
 
-        支持的动作: beep, start_print, stop_print, clean_nozzle, test_print, ink_level
+        支持的动作: beep, start_print, stop_print, clean_nozzle, test_print, ink_level, set_print_mode
         支持的打印机: left, center, right, all
         """
         action = request.action.lower().strip()
@@ -467,6 +467,16 @@ class AsyncInkjetPrinterNode(Node):
         # 测试打印特殊处理（执行完整流程）
         if action in ['test_print', 'test']:
             return self._handle_test_print_sequence(printer_name_raw, response)
+
+        # 打印模式设置特殊处理（直接调用内部便捷方法）
+        if action in ['set_print_mode', 'print_mode', 'mode']:
+            # interval 优先使用嵌套结构中的值，其次使用 param，最后使用默认 75
+            interval = request.print_mode.interval if request.print_mode.interval > 0 else (
+                param if param is not None else 75
+            )
+            is_full_end = request.print_mode.is_full_end
+            mode = request.print_mode.mode
+            return self._handle_set_print_mode_quick(printer_name_raw, interval, is_full_end, mode, response)
 
         # 解析动作
         action_map = {
@@ -692,28 +702,108 @@ class AsyncInkjetPrinterNode(Node):
             self._service_delay(1)
             return response
 
+    def _handle_set_print_mode_quick(self, printer_name_raw: str, interval: int, is_full_end: int, mode: int, response):
+        """
+        处理快速指令中的打印模式设置
+
+        Args:
+            printer_name_raw: 打印机名称（left/center/right/all）
+            interval: 打印间隔（毫秒），来自 QuickCommand.print_mode.interval 或 param（<=0 时使用默认75）
+            is_full_end: 是否整段结束标志（来自 QuickCommand.print_mode.is_full_end，<0 时使用默认0）
+            mode: 打印模式（来自 QuickCommand.print_mode.mode，<=0 时使用默认1）
+
+        Returns:
+            填充后的响应对象
+        """
+        # 归一化 interval
+        if interval is None or interval <= 0:
+            interval = 75
+
+        # 归一化 is_full_end 和 mode
+        if is_full_end is None or is_full_end < 0:
+            is_full_end = 0
+        if mode is None or mode <= 0:
+            mode = 1
+
+        # all: 对所有打印机执行
+        if printer_name_raw == 'all':
+            results = []
+            for printer_name in ['printer_left', 'printer_center', 'printer_right']:
+                try:
+                    success = self.set_print_mode(printer_name, interval, is_full_end, mode)
+                    if success:
+                        msg = (
+                            f'[{printer_name}] 设置打印模式成功: '
+                            f'interval={interval}ms, isFullEnd={is_full_end}, mode={mode}'
+                        )
+                    else:
+                        msg = f'[{printer_name}] 设置打印模式失败'
+                    results.append(msg)
+                except Exception as e:
+                    results.append(f'[{printer_name}] 设置打印模式异常: {str(e)}')
+
+            response.success = True
+            response.message = '\n'.join(results)
+            self._service_delay(1)
+            return response
+
+        # 单个打印机
+        if printer_name_raw in ['left', 'printer_left']:
+            printer_name = 'printer_left'
+        elif printer_name_raw in ['center', 'printer_center']:
+            printer_name = 'printer_center'
+        elif printer_name_raw in ['right', 'printer_right']:
+            printer_name = 'printer_right'
+        else:
+            response.success = False
+            response.message = f'未知的打印机: {printer_name_raw}，支持: left/center/right/all'
+            self._service_delay(1)
+            return response
+
+        try:
+            success = self.set_print_mode(printer_name, interval, is_full_end, mode)
+            if success:
+                response.success = True
+                response.message = (
+                    f'[{printer_name}] 设置打印模式成功: '
+                    f'interval={interval}ms, isFullEnd={is_full_end}, mode={mode}'
+                )
+            else:
+                response.success = False
+                response.message = f'[{printer_name}] 设置打印模式失败'
+        except Exception as e:
+            response.success = False
+            response.message = f'[{printer_name}] 设置打印模式异常: {str(e)}'
+
+        self._service_delay(1)
+        return response
+
     # ========== 内部便捷方法 - 设置打印模式 ==========
 
     async def set_print_mode_internal(
         self,
         printer_name: str,
-        interval: int = 75
+        interval: int = 75,
+        is_full_end: int = 0,
+        mode: int = 1,
     ) -> bool:
         """
         内部便捷方法：设置打印模式
 
-        直接设置打印机的打印间隔参数，供节点内部代码调用。
+        直接设置打印机的打印模式参数，供节点内部代码调用。
 
         Args:
             printer_name: 打印机名称 (printer_left/printer_center/printer_right)
             interval: 打印间隔（毫秒），默认75ms
+            is_full_end: 是否整段结束标志（协议字段 isFullEnd），默认0
+            mode: 打印模式（协议字段 mode），默认1
 
         Returns:
             成功标志
 
         Examples:
             >>> # 在节点内部调用
-            >>> await self.set_print_mode_internal('printer_left', interval=100)
+            >>> await self.set_print_mode_internal('printer_left', interval=100, is_full_end=0, mode=1)
             True
         """
         client = self._tcp_clients.get(printer_name)
@@ -734,8 +824,8 @@ class AsyncInkjetPrinterNode(Node):
         json_data = {
             "PrintMode": {
                 "interval": interval,
-                "isFullEnd": 0,
-                "mode": 1
+                "isFullEnd": is_full_end,
+                "mode": mode,
             }
         }
 
@@ -743,7 +833,8 @@ class AsyncInkjetPrinterNode(Node):
             result = await client.send_command(command_code, json_data)
             if result:
                 self.get_logger().info(
-                    f'[{printer_name}] 设置打印模式成功: interval={interval}ms'
+                    f'[{printer_name}] 设置打印模式成功: interval={interval}ms, '
+                    f'isFullEnd={is_full_end}, mode={mode}'
                 )
             else:
                 self.get_logger().warning(
@@ -759,7 +850,9 @@ class AsyncInkjetPrinterNode(Node):
     def set_print_mode(
         self,
         printer_name: str,
-        interval: int = 75
+        interval: int = 75,
+        is_full_end: int = 0,
+        mode: int = 1,
     ) -> bool:
         """
         同步版本：设置打印模式
@@ -769,21 +862,23 @@ class AsyncInkjetPrinterNode(Node):
         Args:
             printer_name: 打印机名称 (printer_left/printer_center/printer_right)
             interval: 打印间隔（毫秒），默认75ms
+            is_full_end: 是否整段结束标志（协议字段 isFullEnd），默认0
+            mode: 打印模式（协议字段 mode），默认1
 
         Returns:
             成功标志
 
         Examples:
             >>> # 在节点内部同步代码调用
-            >>> success = self.set_print_mode('printer_left', interval=100)
+            >>> success = self.set_print_mode('printer_left', interval=100, is_full_end=0, mode=1)
         """
         if self._loop is None:
             self.get_logger().error('异步事件循环未初始化')
             return False
 
         future = asyncio.run_coroutine_threadsafe(
-            self.set_print_mode_internal(printer_name, interval),
-            self._loop
+            self.set_print_mode_internal(printer_name, interval, is_full_end, mode),
+            self._loop,
         )
 
         try:
@@ -989,9 +1084,9 @@ class AsyncInkjetPrinterNode(Node):
             return False
 
         try:
-            # 步骤1: 设置打印模式（interval=75ms）
-            self.get_logger().info(f'[{printer_name}] 步骤1: 设置打印模式 (interval=75ms)')
-            if not await self.set_print_mode_internal(printer_name, interval=75):
+            # 步骤1: 设置打印模式（interval=75ms, isFullEnd=0, mode=1）
+            self.get_logger().info(f'[{printer_name}] 步骤1: 设置打印模式 (interval=75ms, isFullEnd=0, mode=1)')
+            if not await self.set_print_mode_internal(printer_name, interval=75, is_full_end=0, mode=1):
                 self.get_logger().error(f'[{printer_name}] 设置打印模式失败')
                 return False
 

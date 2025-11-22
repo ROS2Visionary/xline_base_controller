@@ -17,6 +17,7 @@
 #include <xline_follow_controller/line_follow_controller.hpp>
 #include <xline_follow_controller/rpp_follow_controller.hpp>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+#include "xline_base_controller/inkjet_client.hpp"
 
 /**
  * MotionControlCenter 运动控制中心
@@ -63,6 +64,7 @@ namespace xline
       std::shared_ptr<xline::follow_controller::BaseFollowController> base_follow_controller_;
       std::shared_ptr<xline::follow_controller::LineFollowController> line_follow_controller_;
       std::shared_ptr<xline::follow_controller::RPPController> rpp_follow_controller_;
+      std::shared_ptr<InkjetClient> inkjet_client_;
 
       // 位姿订阅器(从状态估计器获取融合后的位姿)
       rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pose_subscriber_;
