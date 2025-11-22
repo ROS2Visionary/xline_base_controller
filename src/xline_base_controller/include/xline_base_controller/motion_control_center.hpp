@@ -93,7 +93,9 @@ namespace xline
       bool pause_notified_{false};  // 标记是否已通知暂停（避免重复日志）
       std::condition_variable pause_cv_;
       std::mutex pause_mutex_;
-      std::mutex service_mutex_;  // 保护暂停/恢复服务调用
+      std::mutex service_mutex_;  // 保护暂停/
+      
+      uint32_t current_layer_id; // 当前路径id
 
 
       // 行驶距离追踪（用于虚线模式）

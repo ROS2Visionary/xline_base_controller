@@ -468,7 +468,8 @@ bool LineFollowController::setPlan(const nav_msgs::msg::Path& orig_global_plan)
   // 重置控制器状态
   resetControllerState();
   
-
+  start_print = false;
+  stop_print = false;
   
   received_plan_ = true;
   current_state_ = ControlState::ALIGNING_START;
@@ -1363,6 +1364,8 @@ bool LineFollowController::computeVelocityCommands(const geometry_msgs::msg::Pos
       // 仅在路径跟随阶段使用虚拟位置跟踪（超高精度5mm）
       // ================================
 
+      start_print = true;
+      stop_print = false;
       
       // 检查是否到达终点（使用虚拟控制位置）
       if (isBeyondGoal(control_x, control_y))
@@ -1382,15 +1385,14 @@ bool LineFollowController::computeVelocityCommands(const geometry_msgs::msg::Pos
     }
 
     case ControlState::ALIGNING_END: {
+
+      start_print = false;
+      stop_print = true;
       // 对齐原始终点航向
       if (handleStateAlignment(robot_yaw_, original_target_pose_.pose.orientation, cmd_vel, false))
       {
         current_state_ = ControlState::GOAL_REACHED;
         goal_reached_ = true;
-
-
-        // 导出IMU地形数据
-
 
         // 导出调试数据
         if (debug_)

@@ -47,7 +47,9 @@ public:
 
   virtual void setSpeedLimit(const double& /*speed_limit*/){}
 
-protected:
+  // 供子类使用的打印控制标志
+  bool start_print = false;
+  bool stop_print = false;
 };
 }  // namespace follow_controller
 }  // namespace xline

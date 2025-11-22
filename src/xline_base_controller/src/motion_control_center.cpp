@@ -64,7 +64,6 @@ namespace xline
       rpp_follow_controller_ = std::make_shared<xline::follow_controller::RPPController>();
       base_follow_controller_ = nullptr;
       inkjet_client_ = std::make_shared<InkjetClient>();
-
       RCLCPP_INFO(get_logger(), "喷墨控制器已创建（服务客户端已就绪）");
     }
 
@@ -214,9 +213,9 @@ namespace xline
 
       std::string type = line["type"].asString();
       uint32_t path_id = line["id"].asUInt();
-      uint32_t layer_id = line["layer_id"].asUInt();
+      current_layer_id = line["layer_id"].asUInt();
 
-      bool is_start_from_robot = layer_id == 1000000 ? true : false;
+      bool is_start_from_robot = current_layer_id == 1000000 ? true : false;
 
       // 发布反馈 - 只发送current_id
       feedback->current_id = path_id;
@@ -359,6 +358,8 @@ namespace xline
 
       bool has_warned_no_pose = false;
 
+      bool is_inkjet_printing = false; // 标记喷码机是否在工作
+
       // 检查节点关闭标志，确保节点销毁时执行线程能及时退出
       while (rclcpp::ok() && !shutdown_.load())
       {
@@ -453,6 +454,8 @@ namespace xline
         bool ok = base_follow_controller_->computeVelocityCommands(robot_pose, current_velocity, cmd_vel);
         if (!ok)
         {
+          // 结束打印
+          inkjet_client_->stop_print_center();
           RCLCPP_WARN(get_logger(), "计算速度失败，停止当前目标");
           geometry_msgs::msg::Twist stop;
           cmd_vel_publisher_->publish(stop);
@@ -462,6 +465,15 @@ namespace xline
             result->error_message = "计算速度失败";
           }
           return false;
+        }
+        if(base_follow_controller_->start_print && !is_inkjet_printing && current_layer_id != 1000000){
+            is_inkjet_printing = true;
+            inkjet_client_->start_print_center();
+        }
+
+        if(base_follow_controller_->stop_print && is_inkjet_printing && current_layer_id != 1000000){
+            is_inkjet_printing = false;
+            inkjet_client_->stop_print_center();
         }
 
         // 发布线速度与角速度
