@@ -277,6 +277,105 @@ std::tuple<bool, std::string> InkjetClient::set_print_mode_all(
     return set_print_mode("all", interval, is_full_end, mode, timeout);
 }
 
+// ========== 单条线段测试（通过 QuickCommand:single_line） ==========
+
+std::tuple<bool, std::string> InkjetClient::send_single_line(
+    const std::string& printer_name,
+    int height,
+    int width,
+    int x,
+    int y,
+    std::chrono::seconds timeout
+) {
+    if (!quick_command_client_->wait_for_service(1s)) {
+        std::string msg = "printer/quick_command 服务不可用";
+        RCLCPP_ERROR(this->get_logger(), "%s", msg.c_str());
+        return {false, msg};
+    }
+
+    auto request = std::make_shared<xline_msgs::srv::QuickCommand::Request>();
+    request->printer_name = printer_name;
+    request->action = "single_line";
+
+    // param 在 single_line 模式下未使用，保持为 0
+    request->param = 0;
+
+    // 使用嵌套的 SingleLineConfig 传递线段参数
+    request->single_line.height = height;
+    request->single_line.width = width;
+    request->single_line.x = x;
+    request->single_line.y = y;
+
+    try {
+        RCLCPP_INFO(
+            this->get_logger(),
+            "快速命令-单条线段: printer=%s, height=%d, width=%d, x=%d, y=%d",
+            printer_name.c_str(), height, width, x, y
+        );
+
+        auto future = quick_command_client_->async_send_request(request);
+
+        if (rclcpp::spin_until_future_complete(this->get_node_base_interface(), future, timeout) ==
+            rclcpp::FutureReturnCode::SUCCESS) {
+            auto response = future.get();
+            if (response->success) {
+                RCLCPP_INFO(this->get_logger(), "单条线段测试命令成功: %s", response->message.c_str());
+            } else {
+                RCLCPP_WARN(this->get_logger(), "单条线段测试命令失败: %s", response->message.c_str());
+            }
+            return {response->success, response->message};
+        } else {
+            std::string msg = "服务调用超时";
+            RCLCPP_ERROR(this->get_logger(), "%s", msg.c_str());
+            return {false, msg};
+        }
+    } catch (const std::exception& e) {
+        std::string msg = std::string("单条线段测试命令异常: ") + e.what();
+        RCLCPP_ERROR(this->get_logger(), "%s", msg.c_str());
+        return {false, msg};
+    }
+}
+
+std::tuple<bool, std::string> InkjetClient::send_single_line_left(
+    int height,
+    int width,
+    int x,
+    int y,
+    std::chrono::seconds timeout
+) {
+    return send_single_line("left", height, width, x, y, timeout);
+}
+
+std::tuple<bool, std::string> InkjetClient::send_single_line_center(
+    int height,
+    int width,
+    int x,
+    int y,
+    std::chrono::seconds timeout
+) {
+    return send_single_line("center", height, width, x, y, timeout);
+}
+
+std::tuple<bool, std::string> InkjetClient::send_single_line_right(
+    int height,
+    int width,
+    int x,
+    int y,
+    std::chrono::seconds timeout
+) {
+    return send_single_line("right", height, width, x, y, timeout);
+}
+
+std::tuple<bool, std::string> InkjetClient::send_single_line_all(
+    int height,
+    int width,
+    int x,
+    int y,
+    std::chrono::seconds timeout
+) {
+    return send_single_line("all", height, width, x, y, timeout);
+}
+
 // ========== 便捷方法 - 蜂鸣 ==========
 
 std::tuple<bool, std::string> InkjetClient::beep(

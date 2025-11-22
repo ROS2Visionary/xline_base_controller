@@ -27,36 +27,21 @@ which python3
 1b 02 00 15 7b224555324c223a7b226e6f69736573223a317d7d  {"EU2L":{"noises":1}}
 1b 02 00 19 7b224555324c223a7b2273657475704576656e74223a307d7d  {"EU2L":{"setupEvent":0}}
 
-现在的需求是需要给tcp发送指令
-
-
-1、不需要“连接统计模块”
-
-2、对于协议层,实际数据示例如下：
 这是第一条示例：1b 02 00 15 7b224555324c223a7b226e6f69736573223a317d7d -> (1b 02)是固定开头，（00）是可变喷码机编号，（15）是该条信息对应的指令，（7b224555324c223a7b226e6f69736573223a317d7d）是JSON格式的命令{"EU2L":{"noises":1}}转码后的数据
 这是第二条示例：1b 02 00 19 7b224555324c223a7b2273657475704576656e74223a307d7d ->  (1b 02)是固定开头，（00）是可变喷码机编号，（19）是该条信息对应的指令，（7b224555324c223a7b226e6f69736573223a317d7d）是JSON格式的命令{"EU2L":{"setupEvent":0}}转码后的数据
 
-3、详细分析实际示例，帮我重新设计协议层
-4、如果我没有明确说明,都不需要主动编译代码，除非我显式说明
 
-  分解：
-  ┌─────────┬──────────┬──────────┬────────────────────────────────────────┐
-    1B 02      00        15     7b224555324c223a7b226e6f69736573...  
-   帧头     设备号    指令码    JSON数据（ASCII编码）                  
-   2字节    1字节     1字节     变长                                   
-  └─────────┴──────────┴──────────┴────────────────────────────────────────┘
-
-
-    发送命令示例
 
   1. 使用指令名称
   source install/setup.sh
   ros2 service call /printer/send_command xline_msgs/srv/PrinterCommand \
     "{printer_name: 'printer_center', command: 'NOISES', json_data: '{\"EU2L\":{\"noises\":1}}'}"
 
+  source install/setup.sh
   ros2 service call /printer/send_command xline_msgs/srv/PrinterCommand \
     "{printer_name: 'printer_center', command: 'SETUP_EVENT', json_data: '{\"EU2L\":{\"setupEvent\":1}}'}"
 
+  source install/setup.sh
   ros2 service call /printer/send_command xline_msgs/srv/PrinterCommand \
     "{printer_name: 'printer_center', command: 'SETUP_EVENT', json_data: '{\"EU2L\":{\"setupEvent\":0}}'}"
 

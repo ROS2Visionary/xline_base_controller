@@ -468,6 +468,10 @@ class AsyncInkjetPrinterNode(Node):
         if action in ['test_print', 'test']:
             return self._handle_test_print_sequence(printer_name_raw, response)
 
+        # 单条线段测试消息
+        if action in ['single_line', 'line', 'line_test']:
+            return self._handle_single_line_quick(printer_name_raw, request.single_line, response)
+
         # 打印模式设置特殊处理（直接调用内部便捷方法）
         if action in ['set_print_mode', 'print_mode', 'mode']:
             # interval 优先使用嵌套结构中的值，其次使用 param，最后使用默认 75
@@ -1152,6 +1156,181 @@ class AsyncInkjetPrinterNode(Node):
 
         except Exception as e:
             self.get_logger().error(f'[{printer_name}] 测试打印流程异常: {str(e)}')
+            return False
+
+    def _handle_single_line_quick(self, printer_name_raw: str, cfg, response):
+        """
+        处理快速指令中的单条线段测试消息
+
+        Args:
+            printer_name_raw: 打印机名称（left/center/right/all）
+            cfg: SingleLineConfig 配置对象（height/width/x/y）
+            response: 响应对象
+
+        Returns:
+            填充后的响应对象
+        """
+        # 归一化参数（<=0 时使用默认值）
+        height = cfg.height if cfg.height > 0 else 5
+        width = cfg.width if cfg.width > 0 else 150
+        x = cfg.x if cfg.x != 0 else 0
+        y = cfg.y if cfg.y != 0 else 75
+
+        # all: 对所有打印机执行
+        if printer_name_raw == 'all':
+            results = []
+            for pname in ['printer_left', 'printer_center', 'printer_right']:
+                future = asyncio.run_coroutine_threadsafe(
+                    self.send_single_line_message(pname, height=height, width=width, x=x, y=y),
+                    self._loop
+                )
+                try:
+                    success = future.result(timeout=3.0)
+                    if success:
+                        results.append(f'{pname}: 单条线段测试消息发送成功')
+                    else:
+                        results.append(f'{pname}: 单条线段测试消息发送失败')
+                except Exception as e:
+                    results.append(f'{pname}: 单条线段测试消息异常 - {str(e)}')
+
+            response.success = True
+            response.message = '\n'.join(results)
+            self._service_delay(1)
+            return response
+
+        # 单个打印机
+        if printer_name_raw in ['left', 'printer_left']:
+            printer_name = 'printer_left'
+        elif printer_name_raw in ['center', 'printer_center']:
+            printer_name = 'printer_center'
+        elif printer_name_raw in ['right', 'printer_right']:
+            printer_name = 'printer_right'
+        else:
+            response.success = False
+            response.message = f'未知的打印机: {printer_name_raw}，支持: left/center/right/all'
+            self._service_delay(1)
+            return response
+
+        future = asyncio.run_coroutine_threadsafe(
+            self.send_single_line_message(printer_name, height=height, width=width, x=x, y=y),
+            self._loop
+        )
+
+        try:
+            success = future.result(timeout=3.0)
+            if success:
+                response.success = True
+                response.message = f'[{printer_name}] 单条线段测试消息发送成功'
+            else:
+                response.success = False
+                response.message = f'[{printer_name}] 单条线段测试消息发送失败'
+        except Exception as e:
+            response.success = False
+            response.message = f'[{printer_name}] 单条线段测试消息异常: {str(e)}'
+
+        self._service_delay(1)
+        return response
+
+    # ========== 单条线段测试消息发送 ==========
+
+    async def send_single_line_message(
+        self,
+        printer_name: str,
+        height: int = 5,
+        width: int = 150,
+        x: int = 0,
+        y: int = 75,
+    ) -> bool:
+        """
+        发送单条线段测试消息（异步版本）
+
+        {
+            "Mesg": {
+                "fileName": "line_1.msg",
+                "modules": [
+                    {
+                        "direc": 0,
+                        "fileName": " 1(1).bmp",
+                        "height": 5,
+                        "img": "Zlib64:AAAAPXicYyhkYPlPJvgAAIp3OS4=",
+                        "inverse": false,
+                        "mtype": 3,
+                        "sHeight": 5,
+                        "sWidth": 150,
+                        "scale": 1,
+                        "width": 150,
+                        "x": 0,
+                        "y": 75
+                    }
+                ]
+            }
+        }
+
+        仅发送该消息，不包含设置打印模式或开始打印等步骤。
+
+        Args:
+            printer_name: 打印机名称 (printer_left/printer_center/printer_right)
+            height: 线段高度（像素），默认5
+            width: 线段宽度（像素），默认150
+            x: X 坐标，默认0
+            y: Y 坐标，默认75
+
+        Returns:
+            成功标志
+        """
+        self.get_logger().info(
+            f'[{printer_name}] 准备发送单条线段测试消息 '
+            f'(height={height}, width={width}, x={x}, y={y})...'
+        )
+
+        # 检查打印机
+        client = self._tcp_clients.get(printer_name)
+        if not client:
+            self.get_logger().error(f'[{printer_name}] 打印机不存在')
+            return False
+
+        if not client.is_connected():
+            self.get_logger().error(f'[{printer_name}] 未连接')
+            return False
+
+        if not client.is_enabled():
+            self.get_logger().error(f'[{printer_name}] 已禁用')
+            return False
+
+        # 使用 TEST 指令码（0x54），仅发送一条包含单条线段模块的消息
+        command_code = 0x54  # TEST
+        json_data = {
+            "Mesg": {
+                "fileName": "line_1.msg",
+                "modules": [
+                    {
+                        "direc": 0,
+                        "fileName": " 1(1).bmp",
+                        "height": height,
+                        "img": "Zlib64:AAAAPXicYyhkYPlPJvgAAIp3OS4=",
+                        "inverse": False,
+                        "mtype": 3,
+                        "sHeight": height,
+                        "sWidth": width,
+                        "scale": 1,
+                        "width": width,
+                        "x": x,
+                        "y": y,
+                    }
+                ],
+            }
+        }
+
+        try:
+            self.get_logger().info(f'[{printer_name}] 发送单条线段测试消息...')
+            result = await client.send_command(command_code, json_data)
+            if result:
+                self.get_logger().info(f'[{printer_name}] 单条线段测试消息发送成功')
+            else:
+                self.get_logger().warning(f'[{printer_name}] 单条线段测试消息发送失败')
+            return result
+        except Exception as e:
+            self.get_logger().error(f'[{printer_name}] 单条线段测试消息发送异常: {str(e)}')
             return False
 
     def _execute_template_command(self, printer_name: str, command_code: int, json_data: dict, action_name: str, response):

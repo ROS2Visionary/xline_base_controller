@@ -64,7 +64,6 @@ namespace xline
       rpp_follow_controller_ = std::make_shared<xline::follow_controller::RPPController>();
       base_follow_controller_ = nullptr;
       inkjet_client_ = std::make_shared<InkjetClient>();
-      inkjet_client_->set_print_mode_center(12,1,1);
 
       RCLCPP_INFO(get_logger(), "喷墨控制器已创建（服务客户端已就绪）");
     }

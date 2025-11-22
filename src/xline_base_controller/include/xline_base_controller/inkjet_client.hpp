@@ -180,6 +180,64 @@ public:
         std::chrono::seconds timeout = std::chrono::seconds(3)
     );
 
+    // ========== 便捷方法 - 单条线段测试（通过 QuickCommand:single_line） ==========
+
+    /**
+     * @brief 发送单条线段测试消息
+     *
+     * 通过快速命令服务调用 async_inkjet_node 中的 single_line 流程，
+     * 在打印机端发送一条 TEST 指令，内容为单条线段。
+     *
+     * @param printer_name 打印机名称 (left/center/right/all)
+     * @param height 线段高度（像素），默认5
+     * @param width  线段宽度（像素），默认150
+     * @param x      起始 X 坐标，默认0
+     * @param y      起始 Y 坐标，默认75
+     * @param timeout 超时时间
+     * @return (成功标志, 消息) 元组
+     */
+    std::tuple<bool, std::string> send_single_line(
+        const std::string& printer_name,
+        int height = 5,
+        int width = 150,
+        int x = 0,
+        int y = 75,
+        std::chrono::seconds timeout = std::chrono::seconds(3)
+    );
+
+    // 便捷方法 - 各打印机单条线段测试
+    std::tuple<bool, std::string> send_single_line_left(
+        int height = 5,
+        int width = 150,
+        int x = 0,
+        int y = 75,
+        std::chrono::seconds timeout = std::chrono::seconds(3)
+    );
+
+    std::tuple<bool, std::string> send_single_line_center(
+        int height = 5,
+        int width = 150,
+        int x = 0,
+        int y = 75,
+        std::chrono::seconds timeout = std::chrono::seconds(3)
+    );
+
+    std::tuple<bool, std::string> send_single_line_right(
+        int height = 5,
+        int width = 150,
+        int x = 0,
+        int y = 75,
+        std::chrono::seconds timeout = std::chrono::seconds(3)
+    );
+
+    std::tuple<bool, std::string> send_single_line_all(
+        int height = 5,
+        int width = 150,
+        int x = 0,
+        int y = 75,
+        std::chrono::seconds timeout = std::chrono::seconds(3)
+    );
+
     // ========== 便捷方法 - 蜂鸣 ==========
 
     std::tuple<bool, std::string> beep(

@@ -6,6 +6,7 @@ find_package(rosidl_default_generators REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/PrintModeConfig.msg"
+  "msg/SingleLineConfig.msg"
   "action/ExecutePlan.action"
   "srv/LnCommand.srv"
   "srv/PrinterCommand.srv"
