@@ -452,7 +452,7 @@ private:
    */
   nav_msgs::msg::Path generateCirclePath(double circle_center_x, double circle_center_y,
                                           double circle_radius,
-                                          const geometry_msgs::msg::PoseStamped& robot_pose);
+                                          const geometry_msgs::msg::PoseStamped& start_pose);
 
   /**
    * @brief 对原始路径进行插值和平滑

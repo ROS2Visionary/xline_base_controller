@@ -171,6 +171,8 @@ namespace xline
         double center_x;
         double center_y;
         double radius;
+        double start_x;
+        double start_y;
       };
 
       struct ArcData

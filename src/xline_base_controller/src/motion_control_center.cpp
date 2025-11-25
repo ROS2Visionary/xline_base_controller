@@ -247,10 +247,10 @@ namespace xline
         line_follow_controller_->setPose(robot_pose);
         if(is_start_from_robot){ // 是否使用机器人位置作为路径的起点
           
-          line_follow_controller_->setPlan(robot_pose.pose.position.x, robot_pose.pose.position.y, line_data.end_x / 1000, line_data.end_y / 1000);
+          line_follow_controller_->setPlan(robot_pose.pose.position.x, robot_pose.pose.position.y, line_data.end_x, line_data.end_y);
           line_follow_controller_->setBackFollow(true);
         }else{
-          line_follow_controller_->setPlan(line_data.start_x / 1000, line_data.start_y / 1000, line_data.end_x / 1000, line_data.end_y / 1000);
+          line_follow_controller_->setPlan(line_data.start_x, line_data.start_y, line_data.end_x, line_data.end_y);
         }
         base_follow_controller_ = line_follow_controller_;
       }
@@ -260,10 +260,11 @@ namespace xline
         RCLCPP_INFO(get_logger(), "[circle, id=%u]: 圆心(%.2f, %.2f), 半径%.2f", path_id, circle_data.center_x,
                     circle_data.center_y, circle_data.radius);
 
-        geometry_msgs::msg::PoseStamped current_pose;
-        getLatestPose(current_pose);
+        geometry_msgs::msg::PoseStamped start_pose;
+        start_pose.pose.position.x = circle_data.start_x;
+        start_pose.pose.position.y = circle_data.start_y;
         rpp_follow_controller_->setAngleRange(2 * M_PI, 0.0);
-        rpp_follow_controller_->setPlanForCircle(circle_data.center_x / 1000, circle_data.center_y / 1000, circle_data.radius / 1000, current_pose);
+        rpp_follow_controller_->setPlanForCircle(circle_data.center_x, circle_data.center_y, circle_data.radius, start_pose);
         rpp_follow_controller_->setBackFollow(false);
         base_follow_controller_ = rpp_follow_controller_;
       }
@@ -378,6 +379,9 @@ namespace xline
           geometry_msgs::msg::Twist stop;
           cmd_vel_publisher_->publish(stop);
 
+          // 结束打印
+          inkjet_client_->stop_print_center();
+
           // 清理暂停标志
           is_paused_.store(false);
 
@@ -488,10 +492,10 @@ namespace xline
     MotionControlCenter::LineData MotionControlCenter::extractLineData(const Json::Value &line_obj)
     {
       LineData data;
-      data.start_x = line_obj["start"]["x"].asDouble();
-      data.start_y = line_obj["start"]["y"].asDouble();
-      data.end_x = line_obj["end"]["x"].asDouble();
-      data.end_y = line_obj["end"]["y"].asDouble();
+      data.start_x = line_obj["start"]["x"].asDouble() / 1000;
+      data.start_y = line_obj["start"]["y"].asDouble() / 1000;
+      data.end_x = line_obj["end"]["x"].asDouble() / 1000;
+      data.end_y = line_obj["end"]["y"].asDouble() / 1000;
 
       RCLCPP_DEBUG(get_logger(), "提取Line数据: 起点(%.2f, %.2f) -> 终点(%.2f, %.2f)", data.start_x, data.start_y,
                    data.end_x, data.end_y);
@@ -505,9 +509,11 @@ namespace xline
     MotionControlCenter::CircleData MotionControlCenter::extractCircleData(const Json::Value &circle_obj)
     {
       CircleData data;
-      data.center_x = circle_obj["center"]["x"].asDouble();
-      data.center_y = circle_obj["center"]["y"].asDouble();
-      data.radius = circle_obj["radius"].asDouble();
+      data.center_x = circle_obj["center"]["x"].asDouble() / 1000;
+      data.center_y = circle_obj["center"]["y"].asDouble() / 1000;
+      data.radius = circle_obj["radius"].asDouble() / 1000;
+      data.start_x = circle_obj["start"]["x"].asDouble() / 1000;
+      data.start_y = circle_obj["start"]["y"].asDouble() / 1000;
 
       RCLCPP_DEBUG(get_logger(), "提取Circle数据: 圆心(%.2f, %.2f), 半径%.2f", data.center_x, data.center_y, data.radius);
       return data;
@@ -736,6 +742,9 @@ namespace xline
             RCLCPP_INFO(get_logger(), "任务已暂停，机器人已停止，等待恢复...");
           }
           pause_notified_ = true;
+
+          // 结束打印
+          inkjet_client_->stop_print_center();
         }
 
         // 等待恢复、取消或节点关闭（三者任一发生都会解除阻塞）
@@ -759,6 +768,8 @@ namespace xline
           is_paused_.store(false); // 清理暂停标志
           return;
         }
+        // 恢复打印
+        inkjet_client_->start_print_center();
 
         // 记录恢复位置（只有正常恢复才会执行到这里）
         geometry_msgs::msg::PoseStamped resume_pose;

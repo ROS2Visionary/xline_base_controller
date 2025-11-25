@@ -236,7 +236,7 @@ void RPPController::setAngleRange(double start_angle, double end_angle)
 {
   circle_start_angle = start_angle;
   circle_end_angle = end_angle;
-  circle_total_angle = std::abs(circle_end_angle - circle_start_angle) + 0.6 * M_PI;
+  circle_total_angle = std::abs(circle_end_angle - circle_start_angle) + 0.8 * M_PI;
 }
 
 /**
@@ -1319,6 +1319,9 @@ void RPPController::resetControllerState()
   waiting_ = true;
   goal_reached_ = false;
 
+  start_print = false;
+  stop_print = false;
+
   // 重置误差统计
   max_error_ = 0.0;
   avg_error_ = 0.0;
@@ -1415,67 +1418,36 @@ void RPPController::adjustSpeedForRadius(double radius)
 }
 
 /**
- * @brief 生成圆形路径（含直线切入段）
+ * @brief 生成圆形路径（以当前机器人位姿为切入点）
  *
- * 根据机器人与圆心之间的几何关系，自动计算切入点：
- * - 若机器人在圆内，则反向延长到圆周得到切入点
- * - 若在圆外，则采用几何方法计算切线点作为切入点
- * 然后从机器人当前位置到切入点生成直线段，再按设定角度
- * 在圆周上生成大量均匀分布的轨迹点。
+ * 传入的 robot_pose 被视为已经在圆周上的“切入点”，不再根据
+ * 机器人与圆心的几何关系重新计算切入点坐标，仅基于该点生成
+ * 圆周轨迹，并计算对应的切线方向用于航向预对准。
  *
  * @param circle_center_x 圆心 x 坐标
  * @param circle_center_y 圆心 y 坐标
  * @param circle_radius 圆半径
- * @param robot_pose 当前机器人位姿
- * @return 包含直线切入段和圆周段的路径
+ * @param robot_pose 当前机器人位姿（即圆周切入点）
+ * @return 包含切入点和圆周段的路径
  */
 nav_msgs::msg::Path RPPController::generateCirclePath(double circle_center_x, double circle_center_y,
                                                        double circle_radius,
-                                                       const geometry_msgs::msg::PoseStamped& robot_pose)
+                                                       const geometry_msgs::msg::PoseStamped& start_pose)
 {
   nav_msgs::msg::Path circle_path;
   circle_path.header.frame_id = "world";
   circle_path.header.stamp = this->now();
 
-  // 计算机器人到圆心的距离
-  double dx = circle_center_x - robot_pose.pose.position.x;
-  double dy = circle_center_y - robot_pose.pose.position.y;
-  double distance_to_center = std::hypot(dx, dy);
+  // 直接使用传入的机器人位姿作为圆周切入点
+  geometry_msgs::msg::PoseStamped entry_pose = start_pose;
 
-  bool robot_inside_circle = (distance_to_center < circle_radius);
+  // 缓存切入点坐标，便于后续调试或扩展使用
+  circle_entry_x_ = entry_pose.pose.position.x;
+  circle_entry_y_ = entry_pose.pose.position.y;
 
-  // 计算切入点
-  double entry_x, entry_y;
-
-  if (robot_inside_circle)
-  {
-    double angle_to_center = atan2(dy, dx);
-    entry_x = circle_center_x - circle_radius * cos(angle_to_center);
-    entry_y = circle_center_y - circle_radius * sin(angle_to_center);
-  }
-  else
-  {
-    double angle_to_center = atan2(dy, dx);
-    double distance_ratio = std::min(circle_radius / distance_to_center, 0.99);
-    double tangent_angle = angle_to_center + asin(distance_ratio);
-    double distance_to_tangent = distance_to_center * cos(asin(distance_ratio));
-
-    entry_x = robot_pose.pose.position.x + distance_to_tangent * cos(tangent_angle);
-    entry_y = robot_pose.pose.position.y + distance_to_tangent * sin(tangent_angle);
-  }
-
-  // 添加起始路径段
-  circle_path.poses.push_back(robot_pose);
-
-  // 添加切入点
-  geometry_msgs::msg::PoseStamped entry_pose;
-  entry_pose.header = robot_pose.header;
-  entry_pose.pose.position.x = entry_x;
-  entry_pose.pose.position.y = entry_y;
-  entry_pose.pose.position.z = robot_pose.pose.position.z;
-
-  double tangent_x = -(entry_y - circle_center_y);
-  double tangent_y = (entry_x - circle_center_x);
+  // 计算切入点处圆周切线方向，用于设置目标航向角
+  double tangent_x = -(entry_pose.pose.position.y - circle_center_y);
+  double tangent_y = (entry_pose.pose.position.x - circle_center_x);
   double tangent_length = std::hypot(tangent_x, tangent_y);
   if (tangent_length > 1e-6)
   {
@@ -1489,22 +1461,23 @@ nav_msgs::msg::Path RPPController::generateCirclePath(double circle_center_x, do
   entry_q.setRPY(0, 0, entry_yaw);
   entry_pose.pose.orientation = tf2::toMsg(entry_q);
 
+  // 添加切入点
   circle_path.poses.push_back(entry_pose);
 
   // 生成圆周路径
   int num_circle_points = 1500;
-  double start_angle = atan2(entry_y - circle_center_y, entry_x - circle_center_x);
+  double start_angle = atan2(entry_pose.pose.position.y - circle_center_y,
+                             entry_pose.pose.position.x - circle_center_x);
   double total_angle = circle_total_angle;
 
-  for (int i = 1; i <= num_circle_points; i++)
+  for (int i = 20; i <= num_circle_points; i++)
   {
     double angle = start_angle + i * (total_angle / num_circle_points);
 
     geometry_msgs::msg::PoseStamped circle_pose;
-    circle_pose.header = robot_pose.header;
     circle_pose.pose.position.x = circle_center_x + circle_radius * cos(angle);
     circle_pose.pose.position.y = circle_center_y + circle_radius * sin(angle);
-    circle_pose.pose.position.z = robot_pose.pose.position.z;
+    circle_pose.pose.position.z = start_pose.pose.position.z;
 
     double tangent_direction = angle + M_PI / 2;
     tf2::Quaternion circle_q;
@@ -1812,8 +1785,20 @@ bool RPPController::checkCirclePathGoalReached(const geometry_msgs::msg::PoseSta
 
     last_yaw_ = yaw;
 
-    if (accumulated_angle_ >= (circle_total_angle - 0.5 * M_PI))
+    if (accumulated_angle_ > 0.2 * M_PI)
     {
+      // 标记开始打印
+      start_print = true;
+      stop_print = false;
+    }
+    
+    if (accumulated_angle_ >= (circle_total_angle - 0.4 * M_PI))
+    {
+
+      // 标记结束打印
+      start_print = false;
+      stop_print = true;
+
       setGoalReachedState(cmd_vel);
       RCLCPP_INFO(get_logger(), "圆形路径完成 - 累计角度: %.4f rad (%.2f°)",
                   accumulated_angle_, accumulated_angle_ * 180.0 / M_PI);
