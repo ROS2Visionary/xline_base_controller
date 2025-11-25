@@ -5,7 +5,7 @@ debug: true
 control:
   # PID控制器参数
   pid:
-    kp: 1.1         # 比例系数
+    kp: 1.2         # 比例系数
     ki: 0.0        # 积分系数
     kd: 0.5       # 微分系数
 
@@ -83,8 +83,8 @@ terrain_control:
   alignment:
     cross_track_deadzone: 0       # 横向误差死区
     yaw_deadzone: 0                 # 航向误差死区
-    max_angular_vel: 0.1                 # 最大角速度
-    max_angular_accel: 0.12               # 最大角加速度
+    max_angular_vel: 0.15                 # 最大角速度
+    max_angular_accel: 0.5               # 最大角加速度
     suppression_factor: 1              # 抑制因子
     # 航向混合控制参数
     heading:
@@ -103,7 +103,7 @@ terrain_control:
     cross_track_deadzone: 0         # 横向误差死区
     yaw_deadzone: 0.0                  # 航向误差死区
     max_angular_vel: 0.08                 # 最大角速度
-    max_angular_accel: 0.1               # 最大角加速度
+    max_angular_accel: 0.3               # 最大角加速度
     suppression_factor: 1              # 抑制因子
     # 航向混合控制参数（平稳地形保持高精度）
     heading:

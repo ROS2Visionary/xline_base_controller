@@ -248,7 +248,7 @@ namespace xline
         if(is_start_from_robot){ // 是否使用机器人位置作为路径的起点
           
           line_follow_controller_->setPlan(robot_pose.pose.position.x, robot_pose.pose.position.y, line_data.end_x / 1000, line_data.end_y / 1000);
-          line_follow_controller_->setWorkState(false);
+          line_follow_controller_->setBackFollow(true);
         }else{
           line_follow_controller_->setPlan(line_data.start_x / 1000, line_data.start_y / 1000, line_data.end_x / 1000, line_data.end_y / 1000);
         }
@@ -264,7 +264,7 @@ namespace xline
         getLatestPose(current_pose);
         rpp_follow_controller_->setAngleRange(2 * M_PI, 0.0);
         rpp_follow_controller_->setPlanForCircle(circle_data.center_x / 1000, circle_data.center_y / 1000, circle_data.radius / 1000, current_pose);
-        rpp_follow_controller_->setBackFollow(true);
+        rpp_follow_controller_->setBackFollow(false);
         base_follow_controller_ = rpp_follow_controller_;
       }
       else if (type == "arc")
@@ -361,6 +361,8 @@ namespace xline
 
       bool is_inkjet_printing = false; // 标记喷码机是否在工作
 
+      int stop_count = 0;
+
       // 检查节点关闭标志，确保节点销毁时执行线程能及时退出
       while (rclcpp::ok() && !shutdown_.load())
       {
@@ -400,10 +402,10 @@ namespace xline
           continue; // 跳过本次循环，等待位姿数据
         }
 
-        if(robot_pose.pose.position.x == 0.0 || robot_pose.pose.position.x == 0.0){
-          RCLCPP_WARN(get_logger(), "收到无效定位数据，跳过本次循环");
-          continue; 
-        }
+        // if(robot_pose.pose.position.x == 0.0 || robot_pose.pose.position.x == 0.0){
+        //   RCLCPP_WARN(get_logger(), "收到无效定位数据，跳过本次循环");
+        //   continue; 
+        // }
 
         // 收到位姿后重置警告标志
         if (has_warned_no_pose)
@@ -421,12 +423,14 @@ namespace xline
         {
           geometry_msgs::msg::Twist stop;
           cmd_vel_publisher_->publish(stop);
-          if (result)
-          {
-            result->success = true;
-            result->error_message.clear();
+          if(stop_count++ > 5){
+            if (result)
+            {
+              result->success = true;
+              result->error_message.clear();
+            }
+            return true;
           }
-          return true;
         }
 
         // 计算控制指令
@@ -501,8 +505,8 @@ namespace xline
     MotionControlCenter::CircleData MotionControlCenter::extractCircleData(const Json::Value &circle_obj)
     {
       CircleData data;
-      data.center_x = circle_obj["start"]["x"].asDouble();
-      data.center_y = circle_obj["start"]["y"].asDouble();
+      data.center_x = circle_obj["center"]["x"].asDouble();
+      data.center_y = circle_obj["center"]["y"].asDouble();
       data.radius = circle_obj["radius"].asDouble();
 
       RCLCPP_DEBUG(get_logger(), "提取Circle数据: 圆心(%.2f, %.2f), 半径%.2f", data.center_x, data.center_y, data.radius);

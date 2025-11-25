@@ -57,6 +57,7 @@ angle_sample_rate: 18.0             # 采样率
 angle_output_limit_rate: 1.05            # 输出的最大速度比率
 angle_rate_limit: 0.03               # 变化率限制 
 
+
 start_deviation_factor: 0.5
 end_deviation_factor: 0.5
 deviation_rate: 0.1

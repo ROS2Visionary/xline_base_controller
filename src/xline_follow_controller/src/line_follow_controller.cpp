@@ -523,6 +523,8 @@ void LineFollowController::setWorkState(bool state)
     if (should_back && distance < 1.5)
     {
       setBackFollow(true);
+    }else{
+      setBackFollow(false);
     }
   }
 }
@@ -530,7 +532,7 @@ void LineFollowController::setWorkState(bool state)
 void LineFollowController::setBackFollow(bool back)
 {
   back_follow_ = back;
-  // LOG_INFO("设置后退模式: %d", back);
+  LOG_INFO("设置后退模式: %d", back);
 }
 
 void LineFollowController::setPose(const geometry_msgs::msg::PoseStamped& pose)
@@ -1388,30 +1390,39 @@ bool LineFollowController::computeVelocityCommands(const geometry_msgs::msg::Pos
 
       start_print = false;
       stop_print = true;
-      // 对齐原始终点航向
-      if (handleStateAlignment(robot_yaw_, original_target_pose_.pose.orientation, cmd_vel, false))
-      {
-        current_state_ = ControlState::GOAL_REACHED;
-        goal_reached_ = true;
 
-        // 导出调试数据
-        if (debug_)
-        {
-          // 移除起始和终点的重复数据
-          if (original_path_.size() > 2)
-          {
-            original_path_.erase(original_path_.begin() + 2, original_path_.begin() + 4);
-            filtered_path_.erase(filtered_path_.begin() + 2, filtered_path_.begin() + 4);
-          }
+      current_state_ = ControlState::GOAL_REACHED;
+      goal_reached_ = true;
 
-          std::string timestamp = std::to_string(
+      std::string timestamp = std::to_string(
               std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now().time_since_epoch())
                   .count());
+      exportDebugData("/home/xline/zyq_ws/other/path_sg/_" + timestamp + "_line.csv", filtered_path_);
 
-          // exportDebugData("/home/daosn_robotics/zyq_ws/path_l/_" + timestamp + "_line.csv", original_path_);
-          exportDebugData("/home/xline/xline_ws/other/path_sg/_" + timestamp + "_line.csv", filtered_path_);
-        }
-      }
+      // // 对齐原始终点航向
+      // if (handleStateAlignment(robot_yaw_, original_target_pose_.pose.orientation, cmd_vel, false))
+      // {
+      //   current_state_ = ControlState::GOAL_REACHED;
+      //   goal_reached_ = true;
+
+      //   // 导出调试数据
+      //   if (debug_)
+      //   {
+      //     // 移除起始和终点的重复数据
+      //     if (original_path_.size() > 2)
+      //     {
+      //       original_path_.erase(original_path_.begin() + 2, original_path_.begin() + 4);
+      //       filtered_path_.erase(filtered_path_.begin() + 2, filtered_path_.begin() + 4);
+      //     }
+
+      //     std::string timestamp = std::to_string(
+      //         std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now().time_since_epoch())
+      //             .count());
+
+      //     // exportDebugData("/home/daosn_robotics/zyq_ws/path_l/_" + timestamp + "_line.csv", original_path_);
+      //     exportDebugData("/home/xline/xline_ws/other/path_sg/_" + timestamp + "_line.csv", filtered_path_);
+      //   }
+      // }
       break;
     }
 
