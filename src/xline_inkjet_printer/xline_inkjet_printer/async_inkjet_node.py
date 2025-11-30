@@ -235,7 +235,7 @@ class AsyncInkjetPrinterNode(Node):
             return False
 
         # 使用 msg_encoder 构造 JSON
-        json_data = encode_printmode_text_json()
+        json_data = encode_printmode_text_json(interval=400,couCount=3)
 
         try:
             result = await client.send_command(json_data)
@@ -414,6 +414,15 @@ class AsyncInkjetPrinterNode(Node):
             return False
 
         try:
+            # 特殊处理：中间墨盒只需开始打印，不执行完整测试流程
+            if printer_name == 'printer_center':
+                self.get_logger().info(f'[{printer_name}] 中间墨盒，直接开始打印（跳过测试流程）')
+                if not await self.start_print_internal(printer_name):
+                    self.get_logger().error(f'[{printer_name}] 开始打印失败')
+                    return False
+                self.get_logger().info(f'[{printer_name}] ✓ 已直接开始打印')
+                return True
+
             # 步骤1: 设置打印模式
             self.get_logger().info(f'[{printer_name}] 步骤1: 设置文字打印模式')
             if not await self.set_print_mode_text(printer_name):

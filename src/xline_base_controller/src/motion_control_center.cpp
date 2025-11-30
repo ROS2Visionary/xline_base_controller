@@ -236,12 +236,86 @@ namespace xline
         return;
       }
 
-      // 根据类型提取数据
-      if (type == "line")
+      // 解析 ink 信息
+      std::string ink_mode = "solid";  // 默认实线模式
+      std::string ink_printer = "center";  // 默认中心打印机
+      std::string ink_content = "";  // 文字内容（仅 text 模式）
+      bool ink_enabled = true;  // 默认启用喷墨
+      
+      if (line.isMember("ink") && line["ink"].isObject())
       {
+        const Json::Value& ink = line["ink"];
+        if (ink.isMember("enabled"))
+        {
+          ink_enabled = ink["enabled"].asBool();
+        }
+        if (ink.isMember("mode"))
+        {
+          ink_mode = ink["mode"].asString();
+        }
+        if (ink.isMember("printer"))
+        {
+          ink_printer = ink["printer"].asString();
+        }
+        if (ink.isMember("content"))
+        {
+          ink_content = ink["content"].asString();
+        }
+        
+        RCLCPP_INFO(get_logger(), "[id=%u] ink信息: enabled=%s, mode=%s, printer=%s%s", 
+                    path_id,
+                    ink_enabled ? "true" : "false",
+                    ink_mode.c_str(),
+                    ink_printer.c_str(),
+                    ink_mode == "text" ? (", content=" + ink_content).c_str() : "");
+      }
+
+      // 获取 layer 信息，判断是否为 TRANSITION 路径
+      std::string layer_name = "";
+      if (line.isMember("layer"))
+      {
+        layer_name = line["layer"].asString();
+      }
+      bool is_transition = (layer_name == "TRANSITION");
+      
+      // 存储 ink 信息到成员变量，供后续使用
+      current_ink_mode_ = ink_mode;
+      current_ink_printer_ = ink_printer;
+      current_ink_content_ = ink_content;
+      current_ink_enabled_ = ink_enabled;
+      is_transition_path_ = is_transition;
+      
+      if (is_transition)
+      {
+        RCLCPP_INFO(get_logger(), "[id=%u] TRANSITION路径: ink.mode=%s, ink.printer=%s%s", 
+                    path_id, ink_mode.c_str(), ink_printer.c_str(),
+                    ink_mode == "text" ? (", ink.content=" + ink_content).c_str() : "");
+      }
+
+      // 根据类型提取数据
+      if (type == "line" || type == "text")
+      {
+        // text 类型与 line 类型使用相同的数据结构（都有 start/end）
         LineData line_data = extractLineData(line);
-        RCLCPP_INFO(get_logger(), "[line, id=%u]: 起点(%.2f, %.2f) -> 终点(%.2f, %.2f)", path_id, line_data.start_x,
-                    line_data.start_y, line_data.end_x, line_data.end_y);
+        
+        if (type == "text")
+        {
+          // 获取文字内容
+          std::string text_content = "";
+          if (line.isMember("content"))
+          {
+            text_content = line["content"].asString();
+          }
+          RCLCPP_INFO(get_logger(), "[text, id=%u]: 起点(%.2f, %.2f) -> 终点(%.2f, %.2f), 内容=\"%s\"", 
+                      path_id, line_data.start_x, line_data.start_y, line_data.end_x, line_data.end_y,
+                      text_content.c_str());
+        }
+        else
+        {
+          RCLCPP_INFO(get_logger(), "[line, id=%u]: 起点(%.2f, %.2f) -> 终点(%.2f, %.2f)", 
+                      path_id, line_data.start_x, line_data.start_y, line_data.end_x, line_data.end_y);
+        }
+        
         geometry_msgs::msg::PoseStamped robot_pose;
         getLatestPose(robot_pose);
         line_follow_controller_->setPose(robot_pose);

@@ -97,6 +97,13 @@ namespace xline
       
       uint32_t current_layer_id; // 当前路径id
 
+      // 当前路径的 ink 信息
+      std::string current_ink_mode_;      // 喷墨模式: "solid", "dashed", "text"
+      std::string current_ink_printer_;   // 打印机: "left", "center", "right"
+      std::string current_ink_content_;   // 文字内容（仅 text 模式）
+      bool current_ink_enabled_{true};    // 是否启用喷墨
+      bool is_transition_path_{false};    // 是否为转场路径
+
 
       // 行驶距离追踪（用于虚线模式）
       double traveled_distance_mm_ = 0.0;

@@ -151,7 +151,7 @@ def encode_print_mode_json(
 
 
 
-def encode_printmode_text_json(interval: float = 1809) -> str:
+def encode_printmode_text_json(interval: float = 1809,couCount: int = 1) -> str:
     """
     计数模式（打字）
 
@@ -163,7 +163,7 @@ def encode_printmode_text_json(interval: float = 1809) -> str:
     """
     data = {
         "PrintMode": {
-            "couCount": 1,
+            "couCount": couCount,
             "interval": interval,
             "mode": 2
         }
