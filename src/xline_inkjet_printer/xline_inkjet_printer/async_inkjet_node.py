@@ -384,13 +384,22 @@ class AsyncInkjetPrinterNode(Node):
             return False
 
         try:
-            # 特殊处理：中间墨盒只需开始打印，不执行完整测试流程
+            # 特殊处理：中间墨盒只需开始打印，然后在 10 秒后停止打印
             if printer_name == 'printer_center':
                 self.get_logger().info(f'[{printer_name}] 中间墨盒，直接开始打印（跳过测试流程）')
                 if not await self.start_print_internal(printer_name):
                     self.get_logger().error(f'[{printer_name}] 开始打印失败')
                     return False
-                self.get_logger().info(f'[{printer_name}] ✓ 已直接开始打印')
+
+                self.get_logger().info(f'[{printer_name}] 已开始打印，等待10秒后停止打印')
+                await asyncio.sleep(10.0)
+
+                self.get_logger().info(f'[{printer_name}] 停止打印')
+                if not await self.stop_print_internal(printer_name):
+                    self.get_logger().error(f'[{printer_name}] 停止打印失败')
+                    return False
+
+                self.get_logger().info(f'[{printer_name}] ✓ 测试打印流程执行成功')
                 return True
 
             # 步骤1: 设置打印模式
@@ -419,6 +428,15 @@ class AsyncInkjetPrinterNode(Node):
             self.get_logger().info(f'[{printer_name}] 步骤5: 开始打印')
             if not await self.start_print_internal(printer_name):
                 self.get_logger().error(f'[{printer_name}] 开始打印失败')
+                return False
+
+            # 步骤6: 等待10秒后停止打印
+            self.get_logger().info(f'[{printer_name}] 步骤6: 等待10秒')
+            await asyncio.sleep(10.0)
+
+            self.get_logger().info(f'[{printer_name}] 步骤7: 停止打印')
+            if not await self.stop_print_internal(printer_name):
+                self.get_logger().error(f'[{printer_name}] 停止打印失败')
                 return False
 
             self.get_logger().info(f'[{printer_name}] ✓ 测试打印流程执行成功')
