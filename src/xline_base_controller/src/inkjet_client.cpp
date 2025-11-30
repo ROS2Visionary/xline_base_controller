@@ -29,6 +29,11 @@ InkjetClient::InkjetClient() : Node("inkjet_client_node") {
         "printer/set_text"
     );
 
+    // 创建线段设置服务客户端
+    set_line_client_ = this->create_client<xline_msgs::srv::SetLine>(
+        "printer/set_line"
+    );
+
     RCLCPP_INFO(this->get_logger(), "所有服务客户端已创建");
     RCLCPP_INFO(this->get_logger(), "============================================================");
     RCLCPP_INFO(this->get_logger(), "喷墨打印机客户端节点已启动");
@@ -49,7 +54,8 @@ bool InkjetClient::wait_for_all_services(std::chrono::seconds timeout) {
     std::vector<ServiceInfo> services = {
         {send_command_client_, "printer/send_command"},
         {quick_command_client_, "printer/quick_command"},
-        {set_text_client_, "printer/set_text"}
+        {set_text_client_, "printer/set_text"},
+        {set_line_client_, "printer/set_line"}
     };
 
     bool all_ready = true;
@@ -194,6 +200,57 @@ std::tuple<bool, std::string> InkjetClient::set_text(
         }
     } catch (const std::exception& e) {
         std::string msg = std::string("设置文本异常: ") + e.what();
+        RCLCPP_ERROR(this->get_logger(), "%s", msg.c_str());
+        return {false, msg};
+    }
+}
+
+// ========== 线段设置服务方法 ==========
+
+std::tuple<bool, std::string> InkjetClient::set_line(
+    const std::string& printer_name,
+    int height,
+    int width,
+    int x,
+    int y,
+    std::chrono::seconds timeout
+) {
+    if (!set_line_client_->wait_for_service(1s)) {
+        std::string msg = "printer/set_line 服务不可用";
+        RCLCPP_ERROR(this->get_logger(), "%s", msg.c_str());
+        return {false, msg};
+    }
+
+    auto request = std::make_shared<xline_msgs::srv::SetLine::Request>();
+    request->printer_name = printer_name;
+    request->height = height;
+    request->width = width;
+    request->x = x;
+    request->y = y;
+
+    try {
+        RCLCPP_INFO(this->get_logger(),
+                    "设置线段: printer=%s, height=%d, width=%d, x=%d, y=%d",
+                    printer_name.c_str(), height, width, x, y);
+
+        auto future = set_line_client_->async_send_request(request);
+
+        if (rclcpp::spin_until_future_complete(this->get_node_base_interface(), future, timeout) ==
+            rclcpp::FutureReturnCode::SUCCESS) {
+            auto response = future.get();
+            if (response->success) {
+                RCLCPP_INFO(this->get_logger(), "设置线段成功: %s", response->message.c_str());
+            } else {
+                RCLCPP_WARN(this->get_logger(), "设置线段失败: %s", response->message.c_str());
+            }
+            return {response->success, response->message};
+        } else {
+            std::string msg = "服务调用超时";
+            RCLCPP_ERROR(this->get_logger(), "%s", msg.c_str());
+            return {false, msg};
+        }
+    } catch (const std::exception& e) {
+        std::string msg = std::string("设置线段异常: ") + e.what();
         RCLCPP_ERROR(this->get_logger(), "%s", msg.c_str());
         return {false, msg};
     }

@@ -10,6 +10,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/PrinterCommand.srv"
   "srv/QuickCommand.srv"
   "srv/SetText.srv"
+  "srv/SetLine.srv"
   "srv/SetPrinterEnabled.srv"
   "srv/SetPrinterActive.srv"
   "srv/ConfigurePrint.srv"

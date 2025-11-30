@@ -1,0 +1,13 @@
+# Request
+string printer_name    # 目标打印机: "left", "center", "right", "all"（all 表示所有打印机）
+int32 height           # 线段高度（点阵像素）
+int32 width            # 线段宽度（点阵像素）
+int32 x                # X 坐标
+int32 y                # Y 坐标
+
+---
+
+# Response
+bool success           # 是否执行成功
+string message         # 执行结果消息
+

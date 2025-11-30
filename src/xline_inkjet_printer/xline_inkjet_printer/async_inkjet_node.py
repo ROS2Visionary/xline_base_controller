@@ -19,6 +19,7 @@ from xline_msgs.srv import (
     SetPrinterEnabled,
     SetPrinterActive,
     SetText,
+    SetLine,
 )
 
 from .async_tcp_client import AsyncTcpClient
@@ -37,6 +38,7 @@ from .msg_encoder import (
     # 打印模式
     encode_printmode_text_json,
     encode_text_message_json_big,
+    encode_line_message_json,
 )
 
 
@@ -159,6 +161,10 @@ class AsyncInkjetPrinterNode(Node):
 
         self._set_text_srv = self.create_service(
             SetText, 'printer/set_text', self._handle_set_text
+        )
+
+        self._set_line_srv = self.create_service(
+            SetLine, 'printer/set_line', self._handle_set_line
         )
 
         # ROS 2 定时器
@@ -528,6 +534,60 @@ class AsyncInkjetPrinterNode(Node):
             for pname in self.ALL_PRINTERS:
                 try:
                     temp_response = SetText.Response()
+                    self._execute_template_command(pname, json_data, action_name, temp_response)
+                    results.append(f'{pname}: {temp_response.message}')
+                except Exception as e:
+                    results.append(f'{pname}: 错误 - {str(e)}')
+
+            response.success = True
+            response.message = '\n'.join(results)
+            self._service_delay(1)
+            return response
+
+        # 单个打印机
+        printer_name, error = self._normalize_printer_name(printer_name_raw)
+        if error:
+            response.success = False
+            response.message = error
+            self._service_delay(1)
+            return response
+
+        try:
+            return self._execute_template_command(printer_name, json_data, action_name, response)
+        except Exception as e:
+            response.success = False
+            response.message = f'执行失败: {str(e)}'
+            self._service_delay(1)
+            return response
+
+    def _handle_set_line(self, request, response):
+        """
+        处理单条线段设置请求
+
+        服务名: printer/set_line
+        Request:
+          - printer_name: 打印机名称 (left/center/right/all)
+          - height: 线段高度（像素）
+          - width:  线段宽度（像素）
+          - x:      起始 X 坐标
+          - y:      起始 Y 坐标
+        """
+        # 归一化参数，提供合理默认值
+        height = request.height if request.height > 0 else 5
+        width = request.width if request.width > 0 else 500
+        x = request.x
+        y = request.y
+
+        printer_name_raw = request.printer_name.lower().strip()
+        json_data = encode_line_message_json(height=height, width=width, x=x, y=y)
+        action_name = '设置线段'
+
+        # 处理 all
+        if self._is_all_printers(printer_name_raw):
+            results = []
+            for pname in self.ALL_PRINTERS:
+                try:
+                    temp_response = SetLine.Response()
                     self._execute_template_command(pname, json_data, action_name, temp_response)
                     results.append(f'{pname}: {temp_response.message}')
                 except Exception as e:

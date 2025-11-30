@@ -41,6 +41,7 @@
 #include <xline_msgs/srv/printer_command.hpp>
 #include <xline_msgs/srv/quick_command.hpp>
 #include <xline_msgs/srv/set_text.hpp>
+#include <xline_msgs/srv/set_line.hpp>
 
 #include <string>
 #include <tuple>
@@ -138,6 +139,27 @@ public:
         std::chrono::seconds timeout = std::chrono::seconds(3)
     );
 
+    // ========== 线段设置服务方法 ==========
+
+    /**
+     * @brief 通过 printer/set_line 服务设置单条线段消息
+     * @param printer_name 打印机名称 (left/center/right/all)
+     * @param height 线段高度（像素）
+     * @param width  线段宽度（像素）
+     * @param x      起始 X 坐标
+     * @param y      起始 Y 坐标
+     * @param timeout 超时时间
+     * @return (成功标志, 消息) 元组
+     */
+    std::tuple<bool, std::string> set_line(
+        const std::string& printer_name,
+        int height,
+        int width,
+        int x,
+        int y,
+        std::chrono::seconds timeout = std::chrono::seconds(3)
+    );
+
     // ========== 便捷方法 - 蜂鸣 ==========
 
     std::tuple<bool, std::string> beep(
@@ -164,6 +186,7 @@ private:
     rclcpp::Client<xline_msgs::srv::PrinterCommand>::SharedPtr send_command_client_;
     rclcpp::Client<xline_msgs::srv::QuickCommand>::SharedPtr quick_command_client_;
     rclcpp::Client<xline_msgs::srv::SetText>::SharedPtr set_text_client_;
+    rclcpp::Client<xline_msgs::srv::SetLine>::SharedPtr set_line_client_;
 
 };
 

@@ -263,12 +263,23 @@ def encode_text_message_json_big(
 # =============================================================================
 # 消息指令 - 单条线段
 # =============================================================================
-def encode_line_message_json(height: int = 5) -> Dict[str, Any]:
+def encode_line_message_json(
+    height: int = 5,
+    width: int = 500,
+    x: int = 0,
+    y: int = 0,
+) -> Dict[str, Any]:
     """
-    生成 line.msg 的 JSON 字符串（画线），
-    所有参数固定，只保留 s_width 可配置。
-    big:设置line的打印模式时，interval小于width/20为实线，大于width/20为虚线
-    small:width为500时，interval最小为42.33，大于42.33是虚线
+    生成 line.msg 的 JSON 数据（画线）。
+
+    Args:
+        height: 线段高度（像素）
+        width:  线段宽度（像素）
+        x:      起始 X 坐标
+        y:      起始 Y 坐标
+
+    Returns:
+        JSON 数据字典
     """
     data = {
         "Mesg": {
@@ -282,11 +293,11 @@ def encode_line_message_json(height: int = 5) -> Dict[str, Any]:
                     "inverse": False,
                     "mtype": 3,
                     "sHeight": height,
-                    "sWidth": 500,
+                    "sWidth": width,
                     "scale": 1,
-                    "width": 500,
-                    "x": 0,
-                    "y": 0,
+                    "width": width,
+                    "x": x,
+                    "y": y,
                 }
             ],
         }
@@ -324,4 +335,3 @@ __all__ = [
     'encode_line_message_json',
     'encode_printmode_line_json_big',
 ]
-
