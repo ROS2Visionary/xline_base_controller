@@ -104,6 +104,9 @@ class AsyncInkjetPrinterNode(Node):
         # 墨盒查询器字典
         self._ink_queries: Dict[str, InkLevelQuery] = {}
 
+        # 文字打印模式是否已设置标记
+        self._text_mode_initialized: Dict[str, bool] = {}
+
         # 创建三路打印机客户端
         client_configs = {
             'printer_left': device_id_left,
@@ -128,6 +131,9 @@ class AsyncInkjetPrinterNode(Node):
             # 创建墨盒查询器
             ip = client._ip
             self._ink_queries[name] = InkLevelQuery(host=ip, port=8010, timeout=3.0)
+
+            # 初始化文字打印模式标记
+            self._text_mode_initialized[name] = False
 
         # ROS 2 发布者
         self._status_pub = self.create_publisher(String, 'printer_status', 10)
@@ -250,7 +256,7 @@ class AsyncInkjetPrinterNode(Node):
             return False
 
         # 使用 msg_encoder 构造 JSON
-        json_data = encode_printmode_text_json(interval=400,couCount=3)
+        json_data = encode_printmode_text_json()
 
         try:
             result = await client.send_command(json_data)
@@ -552,6 +558,34 @@ class AsyncInkjetPrinterNode(Node):
             self._service_delay(1)
             return response
 
+        # 如果该打印机尚未设置过文字打印模式，则先设置一次
+        need_set_mode = not self._text_mode_initialized.get(printer_name, False)
+        if need_set_mode:
+            self.get_logger().info(f'[{printer_name}] 设置文字打印模式')
+            try:
+                future_mode = asyncio.run_coroutine_threadsafe(
+                    self.set_print_mode_text(printer_name),
+                    self._loop
+                )
+                mode_ok = future_mode.result(timeout=3.0)
+            except Exception as e:
+                self.get_logger().error(f'[{printer_name}] 设置文字打印模式异常: {str(e)}')
+                mode_ok = False
+
+            if not mode_ok:
+                self.get_logger().error(f'[{printer_name}] 设置文字打印模式失败')
+                response.success = False
+                response.message = "设置文字打印模式失败"
+                self._service_delay(1)
+                return response
+
+            # 标记该打印机已设置文字打印模式，并等待 2 秒让设备生效
+            self._text_mode_initialized[printer_name] = True
+            self.get_logger().info(f'[{printer_name}] 等待2秒')
+            time.sleep(2.0)
+        else:
+            self.get_logger().info(f'[{printer_name}] 已为文字打印模式，跳过模式设置')
+
         try:
             return self._execute_template_command(printer_name, json_data, action_name, response)
         except Exception as e:
@@ -587,6 +621,8 @@ class AsyncInkjetPrinterNode(Node):
             results = []
             for pname in self.ALL_PRINTERS:
                 try:
+                    # 使用线段模式时，下次再设置文本时需要重新设置文字打印模式
+                    self._text_mode_initialized[pname] = False
                     temp_response = SetLine.Response()
                     self._execute_template_command(pname, json_data, action_name, temp_response)
                     results.append(f'{pname}: {temp_response.message}')
@@ -605,6 +641,9 @@ class AsyncInkjetPrinterNode(Node):
             response.message = error
             self._service_delay(1)
             return response
+
+        # 单个打印机切换为线段模式，下次 set_text 时需要重新设置文字打印模式
+        self._text_mode_initialized[printer_name] = False
 
         try:
             return self._execute_template_command(printer_name, json_data, action_name, response)
