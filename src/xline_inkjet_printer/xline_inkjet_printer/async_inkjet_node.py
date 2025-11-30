@@ -1,14 +1,3 @@
-"""
-异步喷墨打印机 ROS 2 节点（优化版）
-
-基于 asyncio 的高性能打印机控制节点。
-
-主要优化：
-1. 所有指令构造统一使用 msg_encoder 模块
-2. 抽取打印机名称解析为辅助方法
-3. 消除重复代码
-"""
-
 import asyncio
 import threading
 from typing import Dict, Optional, Tuple
@@ -30,21 +19,19 @@ from .async_tcp_client import AsyncTcpClient
 from .ink_level_query import InkLevelQuery
 
 # ============================================================================
-# 优化点 1：更新导入列表，包含所有需要的 msg_encoder 函数
+#  更新导入列表，包含所有需要的 msg_encoder 函数
 # ============================================================================
 from .msg_encoder import (
     # 控制指令
-    build_beep_json,
-    build_start_print_json,
-    build_stop_print_json,
+    encode_beep_json,
+    encode_start_print_json,
+    encode_stop_print_json,
     # 维护指令
-    build_clean_nozzle_json,
-    # 打印模式（新增）
-    build_print_mode_json,
-    # 单条线段（新增）
-    build_single_line_json,
-    # 测试打印（新增）
-    build_test_print_json,
+    encode_clean_nozzle_json,
+    # 打印模式
+    encode_print_mode_json,
+    encode_printmode_text_json,
+    encode_text_message_json,
 )
 
 
@@ -61,7 +48,7 @@ class AsyncInkjetPrinterNode(Node):
     """
 
     # ========================================================================
-    # 优化点 2：打印机名称映射常量
+    # 打印机名称映射常量
     # ========================================================================
     PRINTER_NAME_MAP = {
         'left': 'printer_left',
@@ -187,13 +174,13 @@ class AsyncInkjetPrinterNode(Node):
         self.add_on_set_parameters_callback(self._parameters_callback)
 
         self.get_logger().info('=' * 60)
-        self.get_logger().info('异步喷墨打印机节点已启动（优化版）')
+        self.get_logger().info('异步喷墨打印机节点已启动（版）')
         self.get_logger().info(f'配置文件: {config_file}')
         self.get_logger().info(f'管理的打印机: {", ".join(client_configs.keys())}')
         self.get_logger().info('=' * 60)
 
     # ========================================================================
-    # 优化点 3：打印机名称解析辅助方法
+    # 打印机名称解析辅助方法
     # ========================================================================
 
     def _normalize_printer_name(self, printer_name_raw: str) -> Tuple[Optional[str], Optional[str]]:
@@ -226,8 +213,42 @@ class AsyncInkjetPrinterNode(Node):
         return printer_name_raw.strip().lower() == 'all'
 
     # ========================================================================
-    # 优化点 4：使用 msg_encoder 的内部便捷方法
+    # 使用 msg_encoder 的内部便捷方法
     # ========================================================================
+
+    async def set_print_mode_text(
+        self,
+        printer_name: str
+    ) -> bool:
+
+        client = self._tcp_clients.get(printer_name)
+        if not client:
+            self.get_logger().error(f'打印机 {printer_name} 不存在')
+            return False
+
+        if not client.is_connected():
+            self.get_logger().warning(f'{printer_name} 未连接')
+            return False
+
+        if not client.is_enabled():
+            self.get_logger().warning(f'{printer_name} 已禁用')
+            return False
+
+        # 使用 msg_encoder 构造 JSON
+        json_data = encode_printmode_text_json()
+
+        try:
+            result = await client.send_command(json_data)
+            if result:
+                self.get_logger().info(
+                    f'[{printer_name}] 设置文字打印模式成功'
+                )
+            else:
+                self.get_logger().warning(f'[{printer_name}] 设置文字打印模式失败')
+            return result
+        except Exception as e:
+            self.get_logger().error(f'[{printer_name}] 设置文字打印模式异常: {str(e)}')
+            return False
 
     async def set_print_mode_internal(
         self,
@@ -263,8 +284,8 @@ class AsyncInkjetPrinterNode(Node):
             self.get_logger().warning(f'{printer_name} 已禁用')
             return False
 
-        # 优化：使用 msg_encoder 构造 JSON
-        json_data = build_print_mode_json(interval, is_full_end, mode)
+        # 使用 msg_encoder 构造 JSON
+        json_data = encode_print_mode_json(interval, is_full_end, mode)
 
         try:
             result = await client.send_command(json_data)
@@ -284,7 +305,7 @@ class AsyncInkjetPrinterNode(Node):
         """
         内部便捷方法：开始打印
 
-        使用 msg_encoder.build_start_print_json() 构造指令。
+        使用 msg_encoder.encode_start_print_json() 构造指令。
 
         Args:
             printer_name: 打印机名称
@@ -305,8 +326,8 @@ class AsyncInkjetPrinterNode(Node):
             self.get_logger().warning(f'{printer_name} 已禁用')
             return False
 
-        # 优化：使用 msg_encoder 构造 JSON
-        json_data = build_start_print_json()
+        # 使用 msg_encoder 构造 JSON
+        json_data = encode_start_print_json()
 
         try:
             result = await client.send_command(json_data)
@@ -323,7 +344,7 @@ class AsyncInkjetPrinterNode(Node):
         """
         内部便捷方法：停止打印
 
-        使用 msg_encoder.build_stop_print_json() 构造指令。
+        使用 msg_encoder.encode_stop_print_json() 构造指令。
 
         Args:
             printer_name: 打印机名称
@@ -344,8 +365,8 @@ class AsyncInkjetPrinterNode(Node):
             self.get_logger().warning(f'{printer_name} 已禁用')
             return False
 
-        # 优化：使用 msg_encoder 构造 JSON
-        json_data = build_stop_print_json()
+        # 使用 msg_encoder 构造 JSON
+        json_data = encode_stop_print_json()
 
         try:
             result = await client.send_command(json_data)
@@ -394,18 +415,18 @@ class AsyncInkjetPrinterNode(Node):
 
         try:
             # 步骤1: 设置打印模式
-            self.get_logger().info(f'[{printer_name}] 步骤1: 设置打印模式')
-            if not await self.set_print_mode_internal(printer_name, interval=75, is_full_end=0, mode=1):
-                self.get_logger().error(f'[{printer_name}] 设置打印模式失败')
+            self.get_logger().info(f'[{printer_name}] 步骤1: 设置文字打印模式')
+            if not await self.set_print_mode_text(printer_name):
+                self.get_logger().error(f'[{printer_name}] 设置文字打印模式失败')
                 return False
 
             # 步骤2: 等待
             self.get_logger().info(f'[{printer_name}] 步骤2: 等待2秒')
             await asyncio.sleep(2.0)
 
-            # 步骤3: 发送测试指令 - 优化：使用 msg_encoder 构造 JSON
+            # 步骤3: 发送测试指令 - 使用 msg_encoder 构造 JSON
             self.get_logger().info(f'[{printer_name}] 步骤3: 发送测试指令')
-            json_data = build_test_print_json()
+            json_data = encode_text_message_json("华南农业大学机器人实验室")
 
             if not await client.send_command(json_data):
                 self.get_logger().error(f'[{printer_name}] 发送测试指令失败')
@@ -469,7 +490,7 @@ class AsyncInkjetPrinterNode(Node):
             self.get_logger().error(f'[{printer_name}] 已禁用')
             return False
 
-        # 优化：使用 msg_encoder 构造 JSON
+        # 使用 msg_encoder 构造 JSON
         json_data = build_single_line_json(height, width, x, y)
 
         try:
@@ -485,7 +506,7 @@ class AsyncInkjetPrinterNode(Node):
             return False
 
     # ========================================================================
-    # 优化点 5：使用辅助方法简化服务处理函数
+    # 使用辅助方法简化服务处理函数
     # ========================================================================
 
     def _handle_send_command_generic(self, request, response):
@@ -531,13 +552,13 @@ class AsyncInkjetPrinterNode(Node):
 
         # 标准动作映射
         action_map = {
-            'beep': ('蜂鸣', lambda p: build_beep_json(p if p else 1)),
-            'start_print': ('开启打印', lambda p: build_start_print_json()),
-            'start': ('开启打印', lambda p: build_start_print_json()),
-            'stop_print': ('关闭打印', lambda p: build_stop_print_json()),
-            'stop': ('关闭打印', lambda p: build_stop_print_json()),
-            'clean_nozzle': ('清洗喷头', lambda p: build_clean_nozzle_json(p if p else 20)),
-            'clean': ('清洗喷头', lambda p: build_clean_nozzle_json(p if p else 20)),
+            'beep': ('蜂鸣', lambda p: encode_beep_json(p if p else 1)),
+            'start_print': ('开启打印', lambda p: encode_start_print_json()),
+            'start': ('开启打印', lambda p: encode_start_print_json()),
+            'stop_print': ('关闭打印', lambda p: encode_stop_print_json()),
+            'stop': ('关闭打印', lambda p: encode_stop_print_json()),
+            'clean_nozzle': ('清洗喷头', lambda p: encode_clean_nozzle_json(p if p else 20)),
+            'clean': ('清洗喷头', lambda p: encode_clean_nozzle_json(p if p else 20)),
         }
 
         if action not in action_map:
