@@ -40,8 +40,7 @@
 #include <std_srvs/srv/trigger.hpp>
 #include <xline_msgs/srv/printer_command.hpp>
 #include <xline_msgs/srv/quick_command.hpp>
-#include <xline_msgs/srv/set_printer_enabled.hpp>
-#include <xline_msgs/srv/set_printer_active.hpp>
+#include <xline_msgs/srv/set_text.hpp>
 
 #include <string>
 #include <tuple>
@@ -124,6 +123,21 @@ public:
         std::chrono::seconds timeout = std::chrono::seconds(3)
     );
 
+    // ========== 文本设置服务方法 ==========
+
+    /**
+     * @brief 通过 printer/set_text 服务设置要打印的文本
+     * @param printer_name 打印机名称 (left/center/right/all)
+     * @param text 要打印的文本内容
+     * @param timeout 超时时间
+     * @return (成功标志, 消息) 元组
+     */
+    std::tuple<bool, std::string> set_text(
+        const std::string& printer_name,
+        const std::string& text,
+        std::chrono::seconds timeout = std::chrono::seconds(3)
+    );
+
     // ========== 便捷方法 - 蜂鸣 ==========
 
     std::tuple<bool, std::string> beep(
@@ -149,6 +163,7 @@ private:
     // 服务客户端
     rclcpp::Client<xline_msgs::srv::PrinterCommand>::SharedPtr send_command_client_;
     rclcpp::Client<xline_msgs::srv::QuickCommand>::SharedPtr quick_command_client_;
+    rclcpp::Client<xline_msgs::srv::SetText>::SharedPtr set_text_client_;
 
 };
 

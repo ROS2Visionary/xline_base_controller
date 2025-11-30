@@ -1,0 +1,10 @@
+# Request
+string printer_name    # 目标打印机: "left", "center", "right", "all"（all 表示所有打印机）
+string text            # 要打印的文本内容
+
+---
+
+# Response
+bool success           # 是否执行成功
+string message         # 执行结果消息
+

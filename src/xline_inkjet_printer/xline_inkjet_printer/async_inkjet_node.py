@@ -13,7 +13,13 @@ from rclpy.parameter import Parameter
 from rcl_interfaces.msg import SetParametersResult
 from std_srvs.srv import Trigger
 from std_msgs.msg import String
-from xline_msgs.srv import PrinterCommand, QuickCommand, SetPrinterEnabled, SetPrinterActive
+from xline_msgs.srv import (
+    PrinterCommand,
+    QuickCommand,
+    SetPrinterEnabled,
+    SetPrinterActive,
+    SetText,
+)
 
 from .async_tcp_client import AsyncTcpClient
 from .ink_level_query import InkLevelQuery
@@ -149,6 +155,10 @@ class AsyncInkjetPrinterNode(Node):
 
         self._set_active_srv = self.create_service(
             SetPrinterActive, 'printer/set_active', self._handle_set_active
+        )
+
+        self._set_text_srv = self.create_service(
+            SetText, 'printer/set_text', self._handle_set_text
         )
 
         # ROS 2 定时器
@@ -491,6 +501,58 @@ class AsyncInkjetPrinterNode(Node):
                 response.message = f'执行失败: {str(e)}'
                 self._service_delay(1)
                 return response
+
+    def _handle_set_text(self, request, response):
+        """
+        处理文本设置请求
+
+        服务名: printer/set_text
+        Request:
+          - printer_name: 打印机名称 (left/center/right/all)
+          - text: 要打印的文本
+        """
+        text = request.text.strip()
+        if not text:
+            response.success = False
+            response.message = '文本不能为空'
+            self._service_delay(1)
+            return response
+
+        printer_name_raw = request.printer_name.lower().strip()
+        json_data = encode_text_message_json_big(text)
+        action_name = '设置文本'
+
+        # 处理 all
+        if self._is_all_printers(printer_name_raw):
+            results = []
+            for pname in self.ALL_PRINTERS:
+                try:
+                    temp_response = SetText.Response()
+                    self._execute_template_command(pname, json_data, action_name, temp_response)
+                    results.append(f'{pname}: {temp_response.message}')
+                except Exception as e:
+                    results.append(f'{pname}: 错误 - {str(e)}')
+
+            response.success = True
+            response.message = '\n'.join(results)
+            self._service_delay(1)
+            return response
+
+        # 单个打印机
+        printer_name, error = self._normalize_printer_name(printer_name_raw)
+        if error:
+            response.success = False
+            response.message = error
+            self._service_delay(1)
+            return response
+
+        try:
+            return self._execute_template_command(printer_name, json_data, action_name, response)
+        except Exception as e:
+            response.success = False
+            response.message = f'执行失败: {str(e)}'
+            self._service_delay(1)
+            return response
 
     # ========================================================================
     # 其他方法保持不变（省略以简化文件长度）
