@@ -45,6 +45,10 @@ build/
 install/
 log/
 */*/.claude/
+__pycache__/
+*/__pycache__/
+*/*/__pycache__/
+*/*/*/__pycache__/
 */.claude/
 .claude/
 .vscode/browse.vc.db

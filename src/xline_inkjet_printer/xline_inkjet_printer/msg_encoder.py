@@ -321,7 +321,7 @@ __all__ = [
 
     'encode_printmode_text_json',
     'encode_text_message_json_big',
-    'encode_line_message_json_big',
+    'encode_line_message_json',
     'encode_printmode_line_json_big',
 ]
 

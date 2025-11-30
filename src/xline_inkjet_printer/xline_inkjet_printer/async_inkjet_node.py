@@ -29,7 +29,6 @@ from .msg_encoder import (
     # 维护指令
     encode_clean_nozzle_json,
     # 打印模式
-    encode_print_mode_json,
     encode_printmode_text_json,
     encode_text_message_json_big,
 )
@@ -250,57 +249,6 @@ class AsyncInkjetPrinterNode(Node):
             self.get_logger().error(f'[{printer_name}] 设置文字打印模式异常: {str(e)}')
             return False
 
-    async def set_print_mode_internal(
-        self,
-        printer_name: str,
-        interval: int = 75,
-        is_full_end: int = 0,
-        mode: int = 1,
-    ) -> bool:
-        """
-        内部便捷方法：设置打印模式
-
-        使用 msg_encoder.build_print_mode_json() 构造指令。
-
-        Args:
-            printer_name: 打印机名称
-            interval: 打印间隔（毫秒）
-            is_full_end: 是否整段结束标志
-            mode: 打印模式
-
-        Returns:
-            成功标志
-        """
-        client = self._tcp_clients.get(printer_name)
-        if not client:
-            self.get_logger().error(f'打印机 {printer_name} 不存在')
-            return False
-
-        if not client.is_connected():
-            self.get_logger().warning(f'{printer_name} 未连接')
-            return False
-
-        if not client.is_enabled():
-            self.get_logger().warning(f'{printer_name} 已禁用')
-            return False
-
-        # 使用 msg_encoder 构造 JSON
-        json_data = encode_print_mode_json(interval, is_full_end, mode)
-
-        try:
-            result = await client.send_command(json_data)
-            if result:
-                self.get_logger().info(
-                    f'[{printer_name}] 设置打印模式成功: interval={interval}ms, '
-                    f'isFullEnd={is_full_end}, mode={mode}'
-                )
-            else:
-                self.get_logger().warning(f'[{printer_name}] 设置打印模式失败')
-            return result
-        except Exception as e:
-            self.get_logger().error(f'[{printer_name}] 设置打印模式异常: {str(e)}')
-            return False
-
     async def start_print_internal(self, printer_name: str) -> bool:
         """
         内部便捷方法：开始打印
@@ -458,62 +406,6 @@ class AsyncInkjetPrinterNode(Node):
             self.get_logger().error(f'[{printer_name}] 测试打印流程异常: {str(e)}')
             return False
 
-    async def send_single_line_message(
-        self,
-        printer_name: str,
-        height: int = 5,
-        width: int = 150,
-        x: int = 0,
-        y: int = 75,
-    ) -> bool:
-        """
-        发送单条线段测试消息
-
-        使用 msg_encoder.build_single_line_json() 构造指令。
-
-        Args:
-            printer_name: 打印机名称
-            height: 线段高度
-            width: 线段宽度
-            x: X 坐标
-            y: Y 坐标
-
-        Returns:
-            成功标志
-        """
-        self.get_logger().info(
-            f'[{printer_name}] 准备发送单条线段测试消息 '
-            f'(height={height}, width={width}, x={x}, y={y})...'
-        )
-
-        client = self._tcp_clients.get(printer_name)
-        if not client:
-            self.get_logger().error(f'[{printer_name}] 打印机不存在')
-            return False
-
-        if not client.is_connected():
-            self.get_logger().error(f'[{printer_name}] 未连接')
-            return False
-
-        if not client.is_enabled():
-            self.get_logger().error(f'[{printer_name}] 已禁用')
-            return False
-
-        # 使用 msg_encoder 构造 JSON
-        json_data = build_single_line_json(height, width, x, y)
-
-        try:
-            self.get_logger().info(f'[{printer_name}] 发送单条线段测试消息...')
-            result = await client.send_command(json_data)
-            if result:
-                self.get_logger().info(f'[{printer_name}] 单条线段测试消息发送成功')
-            else:
-                self.get_logger().warning(f'[{printer_name}] 单条线段测试消息发送失败')
-            return result
-        except Exception as e:
-            self.get_logger().error(f'[{printer_name}] 单条线段测试消息发送异常: {str(e)}')
-            return False
-
     # ========================================================================
     # 使用辅助方法简化服务处理函数
     # ========================================================================
@@ -534,7 +426,7 @@ class AsyncInkjetPrinterNode(Node):
         """
         处理快速命令请求
 
-        支持的动作: beep, start_print, stop_print, clean_nozzle, test_print, ink_level, set_print_mode
+        支持的动作: beep, start_print, stop_print, clean_nozzle, test_print, ink_level
         支持的打印机: left, center, right, all
         """
         action = request.action.lower().strip()
@@ -547,17 +439,6 @@ class AsyncInkjetPrinterNode(Node):
 
         if action in ['test_print', 'test']:
             return self._handle_test_print_sequence(printer_name_raw, response)
-
-        if action in ['single_line', 'line', 'line_test']:
-            return self._handle_single_line_quick(printer_name_raw, request.single_line, response)
-
-        if action in ['set_print_mode', 'print_mode', 'mode']:
-            interval = request.print_mode.interval if request.print_mode.interval > 0 else (
-                param if param is not None else 75
-            )
-            is_full_end = request.print_mode.is_full_end
-            mode = request.print_mode.mode
-            return self._handle_set_print_mode_quick(printer_name_raw, interval, is_full_end, mode, response)
 
         # 标准动作映射
         action_map = {
@@ -925,121 +806,6 @@ class AsyncInkjetPrinterNode(Node):
 
             self._service_delay(1)
             return response
-
-    def _handle_set_print_mode_quick(self, printer_name_raw: str, interval: int, is_full_end: int, mode: int, response):
-        """处理打印模式设置"""
-        # 归一化参数
-        if interval is None or interval <= 0:
-            interval = 75
-        if is_full_end is None or is_full_end < 0:
-            is_full_end = 0
-        if mode is None or mode <= 0:
-            mode = 1
-
-        if self._is_all_printers(printer_name_raw):
-            results = []
-            for printer_name in self.ALL_PRINTERS:
-                try:
-                    success = self.set_print_mode(printer_name, interval, is_full_end, mode)
-                    msg = (f'[{printer_name}] 设置打印模式成功: interval={interval}ms'
-                           if success else f'[{printer_name}] 设置打印模式失败')
-                    results.append(msg)
-                except Exception as e:
-                    results.append(f'[{printer_name}] 设置打印模式异常: {str(e)}')
-
-            response.success = True
-            response.message = '\n'.join(results)
-            self._service_delay(1)
-            return response
-
-        printer_name, error = self._normalize_printer_name(printer_name_raw)
-        if error:
-            response.success = False
-            response.message = error
-            self._service_delay(1)
-            return response
-
-        try:
-            success = self.set_print_mode(printer_name, interval, is_full_end, mode)
-            response.success = success
-            if success:
-                response.message = f'[{printer_name}] 设置打印模式成功: interval={interval}ms'
-            else:
-                response.message = f'[{printer_name}] 设置打印模式失败'
-        except Exception as e:
-            response.success = False
-            response.message = f'[{printer_name}] 设置打印模式异常: {str(e)}'
-
-        self._service_delay(1)
-        return response
-
-    def _handle_single_line_quick(self, printer_name_raw: str, cfg, response):
-        """处理单条线段测试"""
-        height = cfg.height if cfg.height > 0 else 5
-        width = cfg.width if cfg.width > 0 else 150
-        x = cfg.x if cfg.x != 0 else 0
-        y = cfg.y if cfg.y != 0 else 75
-
-        if self._is_all_printers(printer_name_raw):
-            results = []
-            for pname in self.ALL_PRINTERS:
-                future = asyncio.run_coroutine_threadsafe(
-                    self.send_single_line_message(pname, height=height, width=width, x=x, y=y),
-                    self._loop
-                )
-                try:
-                    success = future.result(timeout=3.0)
-                    if success:
-                        results.append(f'{pname}: 单条线段测试消息发送成功')
-                    else:
-                        results.append(f'{pname}: 单条线段测试消息发送失败')
-                except Exception as e:
-                    results.append(f'{pname}: 异常 - {str(e)}')
-
-            response.success = True
-            response.message = '\n'.join(results)
-            self._service_delay(1)
-            return response
-
-        printer_name, error = self._normalize_printer_name(printer_name_raw)
-        if error:
-            response.success = False
-            response.message = error
-            self._service_delay(1)
-            return response
-
-        future = asyncio.run_coroutine_threadsafe(
-            self.send_single_line_message(printer_name, height=height, width=width, x=x, y=y),
-            self._loop
-        )
-
-        try:
-            success = future.result(timeout=3.0)
-            response.success = success
-            if success:
-                response.message = f'[{printer_name}] 单条线段测试消息发送成功'
-            else:
-                response.message = f'[{printer_name}] 单条线段测试消息发送失败'
-        except Exception as e:
-            response.success = False
-            response.message = f'[{printer_name}] 异常: {str(e)}'
-
-        self._service_delay(1)
-        return response
-
-    # 同步包装方法
-    def set_print_mode(self, printer_name: str, interval: int = 75, is_full_end: int = 0, mode: int = 1) -> bool:
-        """同步版本：设置打印模式"""
-        if self._loop is None:
-            return False
-        future = asyncio.run_coroutine_threadsafe(
-            self.set_print_mode_internal(printer_name, interval, is_full_end, mode),
-            self._loop
-        )
-        try:
-            return future.result(timeout=3.0)
-        except Exception:
-            return False
 
     def start_print(self, printer_name: str) -> bool:
         """同步版本：开始打印"""

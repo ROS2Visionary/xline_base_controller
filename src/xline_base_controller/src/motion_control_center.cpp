@@ -454,7 +454,7 @@ namespace xline
           cmd_vel_publisher_->publish(stop);
 
           // 结束打印
-          inkjet_client_->stop_print_center();
+          inkjet_client_->stop_print("center");
 
           // 清理暂停标志
           is_paused_.store(false);
@@ -516,7 +516,7 @@ namespace xline
         if (!ok)
         {
           // 结束打印
-          inkjet_client_->stop_print_center();
+          inkjet_client_->stop_print("center");
           RCLCPP_WARN(get_logger(), "计算速度失败，停止当前目标");
           geometry_msgs::msg::Twist stop;
           cmd_vel_publisher_->publish(stop);
@@ -532,13 +532,13 @@ namespace xline
             auto inkjet_client = inkjet_client_;
             std::thread([inkjet_client]() {
               std::this_thread::sleep_for(std::chrono::seconds(1));
-              inkjet_client->start_print_center();
+              inkjet_client->start_print("center");
             }).detach();
         }
 
         if(base_follow_controller_->stop_print && is_inkjet_printing && current_layer_id != 1000000){
             is_inkjet_printing = false;
-            inkjet_client_->stop_print_center();
+            inkjet_client_->stop_print("center");
         }
 
         // 发布线速度与角速度
@@ -817,8 +817,10 @@ namespace xline
           }
           pause_notified_ = true;
 
-          // 结束打印
-          inkjet_client_->stop_print_center();
+          if(current_layer_id != 1000000){
+            // 结束打印
+            inkjet_client_->stop_print("center");
+          }
         }
 
         // 等待恢复、取消或节点关闭（三者任一发生都会解除阻塞）
@@ -842,8 +844,11 @@ namespace xline
           is_paused_.store(false); // 清理暂停标志
           return;
         }
-        // 恢复打印
-        inkjet_client_->start_print_center();
+
+        if(current_layer_id != 1000000){
+          // 恢复打印
+          inkjet_client_->start_print("center");
+        }
 
         // 记录恢复位置（只有正常恢复才会执行到这里）
         geometry_msgs::msg::PoseStamped resume_pose;
