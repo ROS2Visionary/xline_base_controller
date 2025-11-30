@@ -31,7 +31,7 @@ from .msg_encoder import (
     # 打印模式
     encode_print_mode_json,
     encode_printmode_text_json,
-    encode_text_message_json,
+    encode_text_message_json_big,
 )
 
 
@@ -386,7 +386,7 @@ class AsyncInkjetPrinterNode(Node):
         使用 msg_encoder.build_test_print_json() 构造测试指令。
 
         流程：
-        1. 设置打印模式（interval=75ms）
+        1. 设置打印模式
         2. 等待2秒
         3. 发送测试指令
         4. 等待2秒
@@ -426,7 +426,7 @@ class AsyncInkjetPrinterNode(Node):
 
             # 步骤3: 发送测试指令 - 使用 msg_encoder 构造 JSON
             self.get_logger().info(f'[{printer_name}] 步骤3: 发送测试指令')
-            json_data = encode_text_message_json("华南农业大学机器人实验室")
+            json_data = encode_text_message_json_big("华南农业大学机器人实验室")
 
             if not await client.send_command(json_data):
                 self.get_logger().error(f'[{printer_name}] 发送测试指令失败')

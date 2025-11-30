@@ -160,12 +160,6 @@ def encode_printmode_text_json(interval: float = 1809) -> str:
 
     Args:
         interval: 打印间隔
-
-    Returns:
-        JSON 部分的 hex 字符串（不带 1B 02 前缀）
-
-    Note:
-        建议使用 encode_print_mode() 的 bytes 版本
     """
     data = {
         "PrintMode": {
@@ -177,7 +171,7 @@ def encode_printmode_text_json(interval: float = 1809) -> str:
     return data
 
 
-def encode_printmode_line_json(interval: float = 12, is_full_end: int = 0) -> str:
+def encode_printmode_line_json_big(interval: float = 25, is_full_end: int = 0) -> str:
     """
     连续模式（画线）
 
@@ -187,12 +181,27 @@ def encode_printmode_line_json(interval: float = 12, is_full_end: int = 0) -> st
     Args:
         interval: 打印间隔
         is_full_end: 是否整段结束标志
+    """
+    data = {
+        "PrintMode": {
+            "interval": interval,
+            "isFullEnd": is_full_end,
+            "mode": 1
+        }
+    }
+    return data
 
-    Returns:
-        JSON 部分的 hex 字符串（不带 1B 02 前缀）
 
-    Note:
-        建议使用 encode_print_mode() 的 bytes 版本
+def encode_printmode_line_json_small(interval: float = 42.33, is_full_end: int = 0) -> str:
+    """
+    连续模式（画线）
+
+    对应 JSON:
+    {"PrintMode":{"interval":<interval>,"isFullEnd":<is_full_end>,"mode":1}}
+
+    Args:
+        interval: 打印间隔
+        is_full_end: 是否整段结束标志
     """
     data = {
         "PrintMode": {
@@ -208,7 +217,7 @@ def encode_printmode_line_json(interval: float = 12, is_full_end: int = 0) -> st
 # 消息指令 - 文本消息
 # =============================================================================
 
-def encode_text_message_json(
+def encode_text_message_json_big(
     text: str,
     file_name: str = "txt.msg",
     font_family: str = "Arial-MonoBold",
@@ -251,12 +260,39 @@ def encode_text_message_json(
     }
 
 
-
-
-
 # =============================================================================
 # 消息指令 - 单条线段
 # =============================================================================
+def encode_line_message_json(height: int = 5) -> Dict[str, Any]:
+    """
+    生成 line.msg 的 JSON 字符串（画线），
+    所有参数固定，只保留 s_width 可配置。
+    big:设置line的打印模式时，interval小于width/20为实线，大于width/20为虚线
+    small:width为500时，interval最小为42.33，大于42.33是虚线
+    """
+    data = {
+        "Mesg": {
+            "fileName": "line.msg",
+            "modules": [
+                {
+                    "direc": 0,
+                    "fileName": "矩形 1(1).bmp",
+                    "height": height,
+                    "img": "Zlib64:AAAAPXicYyhkYPlPJvgAAIp3OS4=",
+                    "inverse": False,
+                    "mtype": 3,
+                    "sHeight": height,
+                    "sWidth": 500,
+                    "scale": 1,
+                    "width": 500,
+                    "x": 0,
+                    "y": 0,
+                }
+            ],
+        }
+    }
+
+    return data
 
 
 
@@ -272,21 +308,20 @@ __all__ = [
 
     # 蜂鸣
     'encode_beep_json',
-
     # 开始/停止打印
     'encode_start_print_json',
     'encode_stop_print_json',
-
     # 清洗喷头
     'encode_clean_nozzle_json',
 
     # 打印模式
     'encode_print_mode_json',
 
+
+
     'encode_printmode_text_json',
-
-    'encode_text_message_json',
-
-    'encode_printmode_line_json',
+    'encode_text_message_json_big',
+    'encode_line_message_json_big',
+    'encode_printmode_line_json_big',
 ]
 
