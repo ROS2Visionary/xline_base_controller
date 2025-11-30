@@ -155,7 +155,6 @@ class InkjetClientNode(Node):
     def send_command(
         self,
         printer_name: str,
-        command: str,
         json_data: str,
         timeout_sec: float = 3.0
     ) -> Tuple[bool, str]:
@@ -164,8 +163,7 @@ class InkjetClientNode(Node):
 
         Args:
             printer_name: 打印机名称 (left/center/right)
-            command: 指令名称或指令码（如 "NOISES", "0x15"）
-            json_data: JSON格式的命令数据
+            json_data: JSON格式的命令数据（指令类型可由 JSON 内容推断）
             timeout_sec: 超时时间（秒）
 
         Returns:
@@ -178,11 +176,10 @@ class InkjetClientNode(Node):
 
         request = PrinterCommand.Request()
         request.printer_name = printer_name
-        request.command = command
         request.json_data = json_data
 
         try:
-            self.get_logger().info(f'发送命令: printer={printer_name}, cmd={command}')
+            self.get_logger().info(f'发送命令: printer={printer_name}, json={json_data}')
             future = self._send_command_client.call_async(request)
             rclpy.spin_until_future_complete(self, future, timeout_sec=timeout_sec)
 

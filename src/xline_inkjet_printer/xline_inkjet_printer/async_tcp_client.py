@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Optional, Callable, Dict, Any, Awaitable
 import yaml
 
-from .protocol import InkjetProtocol, InkjetCommand
+from .msg_encoder import encode_dict_to_bytes
 from .config_validator import ConfigValidator, ValidationError
 
 
@@ -76,8 +76,7 @@ class AsyncTcpClient:
         self._ping_interval: float = 2.0  # ping 检测间隔（秒）
 
         # 协议层
-        self._protocol = InkjetProtocol()
-        self._logger.info(f'[{self._name}] 协议已初始化，设备号={self._device_id}')
+        self._logger.info(f'[{self._name}] 协议已初始化（msg_encoder），设备号={self._device_id}')
 
         # 回调函数
         self._on_frame: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None
@@ -264,28 +263,31 @@ class AsyncTcpClient:
 
     async def send_command(
         self,
-        command_code: int,
         json_data: Dict[str, Any]
     ) -> bool:
         """
         发送协议命令
 
         Args:
-            command_code: 指令码（InkjetCommand枚举或整数）
             json_data: JSON数据字典
 
         Returns:
             是否发送成功
 
         Examples:
-            >>> await client.send_command(InkjetCommand.NOISES, {"EU2L": {"noises": 1}})
+            >>> await client.send_command({"EU2L": {"noises": 1}})
         """
         try:
-            data = self._protocol.encode_command(
-                self._device_id,
-                command_code,
-                json_data
-            )
+            # 1. 将 JSON 转为 UTF-8 字节流（不含前缀）
+            json_bytes = encode_dict_to_bytes(json_data)
+
+            # 2. 计算长度并添加协议前缀：1B 02 <len_high> <len_low>
+            length = len(json_bytes)
+            high = (length >> 8) & 0xFF
+            low = length & 0xFF
+            prefix = bytes([0x1B, 0x02, high, low])
+
+            data = prefix + json_bytes
             return await self.send_raw(data)
         except Exception as e:
             self._logger.error(f'[{self._name}] 编码命令失败: {e}')

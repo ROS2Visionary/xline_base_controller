@@ -96,7 +96,6 @@ bool InkjetClient::wait_for_all_services(std::chrono::seconds timeout) {
 
 std::tuple<bool, std::string> InkjetClient::send_command(
     const std::string& printer_name,
-    const std::string& command,
     const std::string& json_data,
     std::chrono::seconds timeout
 ) {
@@ -108,12 +107,11 @@ std::tuple<bool, std::string> InkjetClient::send_command(
 
     auto request = std::make_shared<xline_msgs::srv::PrinterCommand::Request>();
     request->printer_name = printer_name;
-    request->command = command;
     request->json_data = json_data;
 
     try {
-        RCLCPP_INFO(this->get_logger(), "发送命令: printer=%s, cmd=%s", 
-                    printer_name.c_str(), command.c_str());
+        RCLCPP_INFO(this->get_logger(), "发送命令: printer=%s, json=%s", 
+                    printer_name.c_str(), json_data.c_str());
         
         auto future = send_command_client_->async_send_request(request);
         

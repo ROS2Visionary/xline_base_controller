@@ -97,14 +97,12 @@ public:
     /**
      * @brief 发送通用命令到指定打印机
      * @param printer_name 打印机名称 (left/center/right)
-     * @param command 指令名称或指令码（如 "NOISES", "0x15"）
-     * @param json_data JSON格式的命令数据
+     * @param json_data JSON格式的命令数据（指令类型可由 JSON 内容推断）
      * @param timeout 超时时间
      * @return (成功标志, 消息) 元组
      */
     std::tuple<bool, std::string> send_command(
         const std::string& printer_name,
-        const std::string& command,
         const std::string& json_data,
         std::chrono::seconds timeout = std::chrono::seconds(3)
     );
