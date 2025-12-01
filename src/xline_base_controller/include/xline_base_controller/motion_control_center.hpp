@@ -93,7 +93,7 @@ namespace xline
       bool pause_notified_{false};  // 标记是否已通知暂停（避免重复日志）
       std::condition_variable pause_cv_;
       std::mutex pause_mutex_;
-      std::mutex service_mutex_;  // 保护暂停/
+      std::mutex service_mutex_;  // 保护暂停/恢复服务
       
       uint32_t current_layer_id; // 当前路径id
 
@@ -103,7 +103,6 @@ namespace xline
       std::string current_ink_content_;   // 文字内容（仅 text 模式）
       bool current_ink_enabled_{true};    // 是否启用喷墨
       bool is_transition_path_{false};    // 是否为转场路径
-
 
       // 行驶距离追踪（用于虚线模式）
       double traveled_distance_mm_ = 0.0;

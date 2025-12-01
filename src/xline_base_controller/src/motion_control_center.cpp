@@ -290,6 +290,35 @@ namespace xline
         RCLCPP_INFO(get_logger(), "[id=%u] TRANSITION路径: ink.mode=%s, ink.printer=%s%s", 
                     path_id, ink_mode.c_str(), ink_printer.c_str(),
                     ink_mode == "text" ? (", ink.content=" + ink_content).c_str() : "");
+        
+        // ========== 关键逻辑：在 transition 路径中预设文字 ==========
+        // 如果是 transition 路径且 ink_mode 为 "text"，需要先设置文字到打印机
+        // 这样在下一条工作路径开始时可以直接开始打印
+        if (ink_mode == "text" && !ink_content.empty())
+        {
+          RCLCPP_INFO(get_logger(), "[id=%u] TRANSITION路径检测到text模式，异步预设文字到打印机 %s", 
+                      path_id, ink_printer.c_str());
+          
+          // 异步调用打印机的 set_text 方法预设文字（不阻塞主线程）
+          auto inkjet_client = inkjet_client_;
+          std::string printer_name = ink_printer;
+          std::string text_content = ink_content;
+          uint32_t log_path_id = path_id;
+          auto logger = get_logger();
+          
+          std::thread([inkjet_client, printer_name, text_content, log_path_id, logger]() {
+            auto [success, message] = inkjet_client->set_text(printer_name, text_content);
+            if (success)
+            {
+              RCLCPP_INFO(logger, "[id=%u] 文字预设成功: printer=%s, text=\"%s\"", 
+                          log_path_id, printer_name.c_str(), text_content.c_str());
+            }
+            else
+            {
+              RCLCPP_ERROR(logger, "[id=%u] 文字预设失败: %s", log_path_id, message.c_str());
+            }
+          }).detach();
+        }
       }
 
       // 根据类型提取数据
@@ -453,8 +482,12 @@ namespace xline
           geometry_msgs::msg::Twist stop;
           cmd_vel_publisher_->publish(stop);
 
-          // 结束打印
-          inkjet_client_->stop_print("center");
+          // 结束打印 - 使用当前路径指定的打印机
+          if (is_inkjet_printing)
+          {
+            inkjet_client_->stop_print(current_ink_printer_);
+            RCLCPP_INFO(get_logger(), "取消时停止打印机: %s", current_ink_printer_.c_str());
+          }
 
           // 清理暂停标志
           is_paused_.store(false);
@@ -515,8 +548,12 @@ namespace xline
         bool ok = base_follow_controller_->computeVelocityCommands(robot_pose, current_velocity, cmd_vel);
         if (!ok)
         {
-          // 结束打印
-          inkjet_client_->stop_print("center");
+          // 结束打印 - 使用当前路径指定的打印机
+          if (is_inkjet_printing)
+          {
+            inkjet_client_->stop_print(current_ink_printer_);
+            RCLCPP_INFO(get_logger(), "计算失败时停止打印机: %s", current_ink_printer_.c_str());
+          }
           RCLCPP_WARN(get_logger(), "计算速度失败，停止当前目标");
           geometry_msgs::msg::Twist stop;
           cmd_vel_publisher_->publish(stop);
@@ -527,18 +564,43 @@ namespace xline
           }
           return false;
         }
-        if(base_follow_controller_->start_print && !is_inkjet_printing && current_layer_id != 1000000){
+        
+        // ========== 打印控制逻辑 ==========
+        // 开始打印条件：
+        // 1. 控制器标记需要开始打印 (base_follow_controller_->start_print)
+        // 2. 当前未在打印 (!is_inkjet_printing)
+        // 3. 不是 transition 路径 (current_layer_id != 1000000)
+        if(base_follow_controller_->start_print && !is_inkjet_printing && current_layer_id != 1000000)
+        {
             is_inkjet_printing = true;
+            
+            RCLCPP_INFO(get_logger(), "开始打印: printer=%s, mode=%s", 
+                        current_ink_printer_.c_str(), current_ink_mode_.c_str());
+            
+            // 异步启动打印
             auto inkjet_client = inkjet_client_;
-            std::thread([inkjet_client]() {
-              std::this_thread::sleep_for(std::chrono::seconds(1));
-              inkjet_client->start_print("center");
-            }).detach();
+            std::string printer_name = current_ink_printer_;
+            
+            if(current_ink_mode_ == "text"){
+              std::thread([inkjet_client, printer_name]() {
+                            inkjet_client->start_print(printer_name);
+                          }).detach();
+            }else{
+              std::thread([inkjet_client, printer_name]() {
+                            // 延迟1秒
+                            std::this_thread::sleep_for(std::chrono::seconds(1));
+                            inkjet_client->start_print(printer_name);
+                          }).detach();
+            }
+            
         }
 
-        if(base_follow_controller_->stop_print && is_inkjet_printing && current_layer_id != 1000000){
+        // 停止打印条件
+        if(base_follow_controller_->stop_print && is_inkjet_printing && current_layer_id != 1000000)
+        {
             is_inkjet_printing = false;
-            inkjet_client_->stop_print("center");
+            inkjet_client_->stop_print(current_ink_printer_);
+            RCLCPP_INFO(get_logger(), "停止打印: printer=%s", current_ink_printer_.c_str());
         }
 
         // 发布线速度与角速度
@@ -817,9 +879,11 @@ namespace xline
           }
           pause_notified_ = true;
 
-          if(current_layer_id != 1000000){
-            // 结束打印
-            inkjet_client_->stop_print("center");
+          // 暂停时停止打印 - 使用当前路径指定的打印机
+          if(current_layer_id != 1000000)
+          {
+            inkjet_client_->stop_print(current_ink_printer_);
+            RCLCPP_INFO(get_logger(), "暂停时停止打印机: %s", current_ink_printer_.c_str());
           }
         }
 
@@ -845,9 +909,11 @@ namespace xline
           return;
         }
 
-        if(current_layer_id != 1000000){
-          // 恢复打印
-          inkjet_client_->start_print("center");
+        // 恢复时重新启动打印 - 使用当前路径指定的打印机
+        if(current_layer_id != 1000000)
+        {
+          inkjet_client_->start_print(current_ink_printer_);
+          RCLCPP_INFO(get_logger(), "恢复时启动打印机: %s", current_ink_printer_.c_str());
         }
 
         // 记录恢复位置（只有正常恢复才会执行到这里）
