@@ -152,29 +152,6 @@ private:
   double rotation_angle_smooth_factor_;          // 平滑因子
 
 
-  // 动态调整的控制参数
-  struct AdaptiveControlParams
-  {
-    // 跟随阶段参数 (distance_to_start > alignment_distance)
-    double current_cross_track_deadzone = 0.006;  // 当前横向误差死区
-    double current_yaw_deadzone = 0.02;           // 当前航向误差死区
-    double current_max_angular_vel = 0.05;        // 当前最大角速度
-    double current_max_angular_accel = 0.1;       // 当前最大角加速度
-    double current_suppression_factor = 0.5;      // 当前抑制因子
-    // 航向混合控制参数
-    double current_heading_weight = 0.0;          // 当前机器人航向权重
-    double target_heading_weight = 1.0;           // 目标路径航向权重
-
-    bool high_precision_active = true;  // 高精度模式是否激活
-  };
-
-  AdaptiveControlParams adaptive_params_;  // 自适应控制参数
-
-
-
-
-  // 地形控制参数结构体已移至public部分
-
   // 三种场景地形控制参数
   TerrainControlParams smooth_terrain_params_;     // 平稳地形参数（基线）
   TerrainControlParams alignment_params_;          // 通用对齐阶段参数

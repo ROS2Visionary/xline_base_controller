@@ -51,6 +51,10 @@ namespace xline
       calibration_service_ = this->create_service<std_srvs::srv::Trigger>(
           "/motion_control/execute_calibration", std::bind(&MotionControlCenter::handleCalibrationService, this, _1, _2));
 
+      // 创建步进电机控制服务客户端（左右喷码机用）
+      stepper_motor_client_ = this->create_client<xline_msgs::srv::MotorCommand>("/stepper_motor_driver");
+      RCLCPP_INFO(get_logger(), "步进电机控制服务客户端已创建: '/stepper_motor_driver'");
+
       RCLCPP_INFO(get_logger(), "MotionControlCenter 动作服务器已就绪: 'execute_plan'");
       RCLCPP_INFO(get_logger(), "位姿订阅器已创建: '/robot_pose'");
       RCLCPP_INFO(get_logger(), "cmd_vel 发布器已创建: '/cmd_vel'");
@@ -284,6 +288,8 @@ namespace xline
       current_ink_content_ = ink_content;
       current_ink_enabled_ = ink_enabled;
       is_transition_path_ = is_transition;
+      use_stepper_for_current_path_ = false;
+      current_stepper_motor_id_ = 0;
       
       if (is_transition)
       {
@@ -319,6 +325,23 @@ namespace xline
             }
           }).detach();
         }
+      }
+
+      // ========== 步进电机控制：非转场路径 + 左/右喷码机 ==========
+      // 需求：在执行非转场路径时，如果是左右喷码机，
+      //      先使对应的喷码机电机 forward，在到达目标后再 reverse。
+      if (!is_transition && ink_enabled &&
+          (ink_printer == "left" || ink_printer == "right"))
+      {
+        current_stepper_motor_id_ = (ink_printer == "left") ? 1 : 2;
+        use_stepper_for_current_path_ = true;
+
+        RCLCPP_INFO(get_logger(),
+                    "[id=%u] 非转场路径，启动步进电机: printer=%s, motor_id=%d, command=forward",
+                    path_id, ink_printer.c_str(), current_stepper_motor_id_);
+
+        // 异步发送 forward 命令，不阻塞主执行线程
+        controlStepperMotor(current_stepper_motor_id_, "forward");
       }
 
       // 根据类型提取数据
@@ -386,6 +409,16 @@ namespace xline
       else
       {
         RCLCPP_WARN(get_logger(), "[id=%u]: 未知类型 %s，跳过", path_id, type.c_str());
+      }
+
+      // ========== 速度限制逻辑 ==========
+      // 当路径模式为 "text" 且不是转场路径时，限制速度为 0.2 m/s
+      if (ink_mode == "text" && !is_transition && base_follow_controller_)
+      {
+        const double text_mode_speed_limit = 0.2;  // 文字喷印模式的速度限制 (m/s)
+        base_follow_controller_->setSpeedLimit(text_mode_speed_limit);
+        RCLCPP_INFO(get_logger(), "[id=%u] text模式非转场路径: 速度限制为 %.2f m/s", 
+                    path_id, text_mode_speed_limit);
       }
 
       // 在开始执行控制循环前检查暂停/取消状态，提高响应速度
@@ -534,7 +567,16 @@ namespace xline
         {
           geometry_msgs::msg::Twist stop;
           cmd_vel_publisher_->publish(stop);
-          if(stop_count++ > 5){
+          if (stop_count++ > 5) {
+            // 路径执行完成：如果当前路径使用左右喷码机，对应步进电机执行 reverse
+            if (use_stepper_for_current_path_ && current_stepper_motor_id_ > 0)
+            {
+              RCLCPP_INFO(get_logger(),
+                          "路径到达目标，步进电机反转: motor_id=%d, command=reverse",
+                          current_stepper_motor_id_);
+              controlStepperMotor(current_stepper_motor_id_, "reverse");
+            }
+
             if (result)
             {
               result->success = true;
@@ -570,29 +612,73 @@ namespace xline
         // 1. 控制器标记需要开始打印 (base_follow_controller_->start_print)
         // 2. 当前未在打印 (!is_inkjet_printing)
         // 3. 不是 transition 路径 (current_layer_id != 1000000)
-        if(base_follow_controller_->start_print && !is_inkjet_printing && current_layer_id != 1000000)
+        if (base_follow_controller_->start_print && !is_inkjet_printing && current_layer_id != 1000000)
         {
-            is_inkjet_printing = true;
-            
-            RCLCPP_INFO(get_logger(), "开始打印: printer=%s, mode=%s", 
-                        current_ink_printer_.c_str(), current_ink_mode_.c_str());
-            
-            // 异步启动打印
-            auto inkjet_client = inkjet_client_;
-            std::string printer_name = current_ink_printer_;
-            
-            if(current_ink_mode_ == "text"){
-              std::thread([inkjet_client, printer_name]() {
-                            inkjet_client->start_print(printer_name);
-                          }).detach();
-            }else{
-              std::thread([inkjet_client, printer_name]() {
-                            // 延迟1秒
-                            std::this_thread::sleep_for(std::chrono::seconds(1));
-                            inkjet_client->start_print(printer_name);
-                          }).detach();
+          is_inkjet_printing = true;
+          
+          RCLCPP_INFO(get_logger(), "开始打印: printer=%s, mode=%s", 
+                      current_ink_printer_.c_str(), current_ink_mode_.c_str());
+          
+          // 异步启动打印
+          auto inkjet_client = inkjet_client_;
+          std::string printer_name = current_ink_printer_;
+          
+          if (current_ink_mode_ == "text")
+          {
+
+            std::thread([inkjet_client, printer_name]() {
+                          inkjet_client->start_print(printer_name);
+                        }).detach();
+
+            // 文本模式：开始打印后阻塞1秒，期间持续发送0速度指令
+            RCLCPP_INFO(get_logger(), "text模式开始打印后保持静止 1 秒");
+            geometry_msgs::msg::Twist zero_twist;
+            rclcpp::Rate wait_rate(18.0);
+            int wait_count = 0;
+            while (rclcpp::ok() && !shutdown_.load() && ++wait_count < 9)
+            {
+              // 支持暂停/恢复
+              checkPauseState(goal_handle);
+
+              // 检查取消
+              if (goal_handle->is_canceling())
+              {
+                RCLCPP_INFO(get_logger(), "text模式等待期间检测到取消请求，停止执行");
+                cmd_vel_publisher_->publish(zero_twist);
+
+                // 结束打印
+                if (is_inkjet_printing)
+                {
+                  inkjet_client_->stop_print(current_ink_printer_);
+                  RCLCPP_INFO(get_logger(), "取消时停止打印机: %s", current_ink_printer_.c_str());
+                }
+
+                is_paused_.store(false);
+
+                if (result)
+                {
+                  result->success = false;
+                  result->error_message = "任务已取消";
+                }
+                return false;
+              }
+
+              // 发布零速度，保持机器人静止
+              cmd_vel_publisher_->publish(zero_twist);
+              wait_rate.sleep();
             }
-            
+
+
+
+          }
+          else
+          {
+            std::thread([inkjet_client, printer_name]() {
+                          // 延迟1秒
+                          std::this_thread::sleep_for(std::chrono::seconds(1));
+                          inkjet_client->start_print(printer_name);
+                        }).detach();
+          }
         }
 
         // 停止打印条件
@@ -619,6 +705,57 @@ namespace xline
         result->error_message = "系统停止或节点关闭";
       }
       return false;
+    }
+
+    bool MotionControlCenter::controlStepperMotor(int motor_id, const std::string & command)
+    {
+      if (!stepper_motor_client_)
+      {
+        RCLCPP_ERROR(get_logger(), "步进电机服务客户端未初始化，无法发送命令");
+        return false;
+      }
+
+      // 快速检查服务是否可用，避免长时间阻塞主控制流程
+      using namespace std::chrono_literals;
+      if (!stepper_motor_client_->wait_for_service(1s))
+      {
+        RCLCPP_WARN(get_logger(), "步进电机服务 '/stepper_motor_driver' 当前不可用，跳过命令: motor_id=%d, command=%s",
+                    motor_id, command.c_str());
+        return false;
+      }
+
+      auto request = std::make_shared<xline_msgs::srv::MotorCommand::Request>();
+      request->motor_id = motor_id;
+      request->command = command;
+
+      try
+      {
+        auto future = stepper_motor_client_->async_send_request(
+            request,
+            [this, motor_id, command](rclcpp::Client<xline_msgs::srv::MotorCommand>::SharedFuture response_future)
+            {
+              auto response = response_future.get();
+              if (response->success)
+              {
+                RCLCPP_INFO(this->get_logger(),
+                            "步进电机命令成功: motor_id=%d, command=%s, message=%s",
+                            motor_id, command.c_str(), response->message.c_str());
+              }
+              else
+              {
+                RCLCPP_WARN(this->get_logger(),
+                            "步进电机命令失败: motor_id=%d, command=%s, message=%s",
+                            motor_id, command.c_str(), response->message.c_str());
+              }
+            });
+        (void)future;
+        return true;
+      }
+      catch (const std::exception &e)
+      {
+        RCLCPP_ERROR(get_logger(), "发送步进电机命令异常: %s", e.what());
+        return false;
+      }
     }
 
     /**

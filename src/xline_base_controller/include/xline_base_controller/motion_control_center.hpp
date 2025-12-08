@@ -18,6 +18,7 @@
 #include <xline_follow_controller/rpp_follow_controller.hpp>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include "xline_base_controller/inkjet_client.hpp"
+#include <xline_msgs/srv/motor_command.hpp>
 
 /**
  * MotionControlCenter 运动控制中心
@@ -86,6 +87,9 @@ namespace xline
       // 姿态校正服务
       rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr calibration_service_;
 
+      // 步进电机控制服务客户端（左右喷码机）
+      rclcpp::Client<xline_msgs::srv::MotorCommand>::SharedPtr stepper_motor_client_;
+
       // 执行状态标志及互斥锁
       std::atomic<bool> is_executing_{false};
       std::atomic<bool> is_paused_{false};
@@ -103,6 +107,10 @@ namespace xline
       std::string current_ink_content_;   // 文字内容（仅 text 模式）
       bool current_ink_enabled_{true};    // 是否启用喷墨
       bool is_transition_path_{false};    // 是否为转场路径
+
+      // 当前路径是否需要控制步进电机，以及对应 motor_id（1:左喷码机, 2:右喷码机）
+      bool use_stepper_for_current_path_{false};
+      int current_stepper_motor_id_{0};
 
       // 行驶距离追踪（用于虚线模式）
       double traveled_distance_mm_ = 0.0;
@@ -219,6 +227,15 @@ namespace xline
       // goal_handle: 用于检查取消状态
       bool compute_velocity(const std::shared_ptr<GoalHandleExecutePlan> goal_handle,
                            ExecutePlan::Result::SharedPtr result);
+
+      /**
+       * 控制步进电机
+       * 在非转场路径中，左右喷码机需要在路径开始时 forward，结束时 reverse
+       * @param motor_id  电机ID（左=1，右=2）
+       * @param command   命令字符串："forward" 或 "reverse"
+       * @return 请求是否成功发送（不代表硬件一定执行成功）
+       */
+      bool controlStepperMotor(int motor_id, const std::string & command);
     };
 
   } // namespace base_controller

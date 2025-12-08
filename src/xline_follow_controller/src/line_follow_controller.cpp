@@ -500,9 +500,30 @@ bool LineFollowController::setPlan(const std::shared_ptr<std::vector<geometry_ms
   return setPlan(new_global_plan);
 }
 
-void LineFollowController::setSpeedLimit(const double& /* speed_limit */)
+void LineFollowController::setSpeedLimit(const double& speed_limit)
 {
-  // updateParameters();
+  if (speed_limit > 0.0)
+  {
+    // ✓ 限制最大速度 - 正确
+    m_work_max_vel_ = std::min(m_work_max_vel_, speed_limit);
+    m_walk_max_vel_ = std::min(m_walk_max_vel_, speed_limit);
+    
+    // ✓ 起步速度可以设为目标速度（快速达到目标速度）
+    acceleration_min_linear_speed_ = speed_limit;
+    
+
+    deceleration_min_linear_speed_ =  speed_limit * 0.5;
+
+    alignment_params_.current_heading_weight = 0.8;   // 主要保持直线
+    alignment_params_.target_heading_weight = 0.2;    // 保留少量横向修正
+    smooth_terrain_params_.current_heading_weight = 0.8;
+    smooth_terrain_params_.target_heading_weight = 0.2;
+    
+    m_alignment_vel_ = std::min(m_alignment_vel_, std::max(speed_limit * 0.5, 0.08));
+    
+    LOG_INFO("速度限制已设置: limit=%.2f, work_max=%.2f, walk_max=%.2f, alignment=%.2f",
+             speed_limit, m_work_max_vel_, m_walk_max_vel_, m_alignment_vel_);
+  }
 }
 
 void LineFollowController::setWorkState(bool state)
@@ -1096,9 +1117,6 @@ void LineFollowController::handlePathFollowing(double robot_x, double robot_y,
   double path_direction_yaw = std::atan2(path_dy, path_dx);
   double final_target_yaw = path_direction_yaw;  // 默认使用路径方向
 
-  // 混合航向控制
-  if (distance_to_start > m_alignment_distance_)
-  {
     // 获取路径起始的理想航向
     double path_ideal_yaw = tf2::getYaw(start_pose_.pose.orientation);
     if (back_follow_)
@@ -1108,8 +1126,23 @@ void LineFollowController::handlePathFollowing(double robot_x, double robot_y,
     }
 
     // 使用地形自适应的航向权重进行混合控制
-    double current_heading_weight = adaptive_params_.current_heading_weight;  // 路径理想航向权重
-    double target_heading_weight = adaptive_params_.target_heading_weight;    // 指向目标点方向权重
+    double current_heading_weight = 0.0;
+    double target_heading_weight =0.0;
+
+    if(distance_to_start > m_alignment_distance_){
+      current_heading_weight = smooth_terrain_params_.current_heading_weight;  // 路径理想航向权重
+      target_heading_weight = smooth_terrain_params_.target_heading_weight;    // 指向目标点方向权重
+
+      // 重置PID控制器（仅在第一次进入此阶段时）
+      if (current_state_ == ControlState::ALIGNING_START)
+      {
+        pid_heading_controller_->reset();
+        current_state_ = ControlState::FOLLOWING_PATH;
+      }
+    }else{
+      current_heading_weight = alignment_params_.current_heading_weight;  // 路径理想航向权重
+      target_heading_weight = alignment_params_.target_heading_weight;    // 指向目标点方向权重
+    }
 
     // 混合航向控制：理想航向 + 指向目标点的方向
     // path_ideal_yaw: 路径理想航向，保持直线性
@@ -1121,18 +1154,6 @@ void LineFollowController::handlePathFollowing(double robot_x, double robot_y,
       final_target_yaw = path_ideal_yaw;
     }
 
-    // 重置PID控制器（仅在第一次进入此阶段时）
-    if (current_state_ == ControlState::ALIGNING_START)
-    {
-      pid_heading_controller_->reset();
-      current_state_ = ControlState::FOLLOWING_PATH;
-    }
-  }
-  else
-  {
-    // 在对齐阶段，直接使用路径方向作为目标航向
-    final_target_yaw = path_direction_yaw;
-  }
 
   // 计算线速度（使用到原始目标点的距离进行减速控制）
   double linear_speed = computeLinearSpeed(distance_to_original_target, distance_to_start);
