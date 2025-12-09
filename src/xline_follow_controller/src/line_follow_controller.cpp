@@ -213,9 +213,7 @@ void LineFollowController::updateParameters()
     // --- 地形控制参数 ---
     auto loadSingleTerrain = [&parser](const std::string& terrain_type) -> TerrainControlParams {
       TerrainControlParams params;
-      std::string base = "terrain_control." + terrain_type + ".";
-      params.cross_track_deadzone = parser.getParameter<double>(base + "cross_track_deadzone");
-      params.yaw_deadzone = parser.getParameter<double>(base + "yaw_deadzone");
+      std::string base = "phase_control." + terrain_type + ".";
       params.max_angular_vel = parser.getParameter<double>(base + "max_angular_vel");
       params.max_angular_accel = parser.getParameter<double>(base + "max_angular_accel");
       params.suppression_factor = parser.getParameter<double>(base + "suppression_factor");
@@ -228,13 +226,13 @@ void LineFollowController::updateParameters()
       return params;
     };
 
-    smooth_terrain_params_ = loadSingleTerrain("smooth_terrain");
+    following_params_ = loadSingleTerrain("following");
     alignment_params_ = loadSingleTerrain("alignment");
 
     // 初始化当前滤波参数（默认使用平稳地形参数） TODO
-    current_alpha_ = smooth_terrain_params_.alpha;
-    current_smoother_frequency_ = smooth_terrain_params_.smoother_frequency;
-    current_smoother_damping_ = smooth_terrain_params_.smoother_damping;
+    current_alpha_ = following_params_.alpha;
+    current_smoother_frequency_ = following_params_.smoother_frequency;
+    current_smoother_damping_ = following_params_.smoother_damping;
     alpha_ = current_alpha_; 
     
     // 更新二阶平滑器参数
@@ -516,8 +514,8 @@ void LineFollowController::setSpeedLimit(const double& speed_limit)
 
     alignment_params_.current_heading_weight = 0.8;   // 主要保持直线
     alignment_params_.target_heading_weight = 0.2;    // 保留少量横向修正
-    smooth_terrain_params_.current_heading_weight = 0.8;
-    smooth_terrain_params_.target_heading_weight = 0.2;
+    following_params_.current_heading_weight = 0.8;
+    following_params_.target_heading_weight = 0.2;
     
     m_alignment_vel_ = std::min(m_alignment_vel_, std::max(speed_limit * 0.5, 0.08));
     
@@ -824,7 +822,7 @@ double LineFollowController::computeAngularVelocity(double yaw_error, double dt,
 
   // 基于IMU地形自适应的精度控制
 
-  double current_max_angular_vel = smooth_terrain_params_.max_angular_vel;  // 当前最大角速度，默认使用平滑地形
+  double current_max_angular_vel = following_params_.max_angular_vel;  // 当前最大角速度，默认使用平滑地形
 
 
 
@@ -844,7 +842,7 @@ double LineFollowController::computeAngularVelocity(double yaw_error, double dt,
 
 
   // 当前前使用的角加速度限制,默认使用平滑地形
-  double current_max_angular_accel = smooth_terrain_params_.max_angular_accel;
+  double current_max_angular_accel = following_params_.max_angular_accel;
 
   if (is_alignment_phase)
   {
@@ -852,7 +850,7 @@ double LineFollowController::computeAngularVelocity(double yaw_error, double dt,
   }
   else
   {
-    current_max_angular_accel = smooth_terrain_params_.max_angular_accel;
+    current_max_angular_accel = following_params_.max_angular_accel;
   }
 
  
@@ -916,7 +914,7 @@ double LineFollowController::computeAngularVelocity(double yaw_error, double dt,
 
     // 非地形自适应模式：使用平稳地形参数
     current_suppression_factor =
-        is_alignment_phase ? alignment_params_.suppression_factor : smooth_terrain_params_.suppression_factor;
+        is_alignment_phase ? alignment_params_.suppression_factor : following_params_.suppression_factor;
 
     // 应用平稳地形的抑制因子和死区因子
     smoothed_angular_vel *= current_suppression_factor * deadzone_factor;
@@ -1130,8 +1128,8 @@ void LineFollowController::handlePathFollowing(double robot_x, double robot_y,
     double target_heading_weight =0.0;
 
     if(distance_to_start > m_alignment_distance_){
-      current_heading_weight = smooth_terrain_params_.current_heading_weight;  // 路径理想航向权重
-      target_heading_weight = smooth_terrain_params_.target_heading_weight;    // 指向目标点方向权重
+      current_heading_weight = following_params_.current_heading_weight;  // 路径理想航向权重
+      target_heading_weight = following_params_.target_heading_weight;    // 指向目标点方向权重
 
       // 重置PID控制器（仅在第一次进入此阶段时）
       if (current_state_ == ControlState::ALIGNING_START)

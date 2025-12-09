@@ -76,13 +76,11 @@ sensors:
         polynomial_order: 3          # 多项式阶数
     
 
-# 地形自适应控制参数
-terrain_control:
+# 自适应控制参数
+phase_control:
 
   # 初始对齐参数（共用）
   alignment:
-    cross_track_deadzone: 0       # 横向误差死区
-    yaw_deadzone: 0                 # 航向误差死区
     max_angular_vel: 0.1                 # 最大角速度
     max_angular_accel: 0.5               # 最大角加速度
     suppression_factor: 1              # 抑制因子
@@ -98,10 +96,8 @@ terrain_control:
       frequency: 15                   # 自然频率
       damping: 0.95                     # 阻尼比
 
-  # 平稳地形参数（基准）
-  smooth_terrain:
-    cross_track_deadzone: 0         # 横向误差死区
-    yaw_deadzone: 0.0                  # 航向误差死区
+  # 跟随参数
+  following:
     max_angular_vel: 0.08                 # 最大角速度
     max_angular_accel: 0.5               # 最大角加速度
     suppression_factor: 1              # 抑制因子

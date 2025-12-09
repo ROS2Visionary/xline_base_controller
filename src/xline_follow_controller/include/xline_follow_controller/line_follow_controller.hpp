@@ -66,8 +66,6 @@ public:
   // 地形控制参数结构体（公有访问，用于函数返回类型）
   struct TerrainControlParams
   {
-    double cross_track_deadzone;
-    double yaw_deadzone;
     double max_angular_vel;
     double max_angular_accel;
     double suppression_factor;
@@ -152,8 +150,8 @@ private:
   double rotation_angle_smooth_factor_;          // 平滑因子
 
 
-  // 三种场景地形控制参数
-  TerrainControlParams smooth_terrain_params_;     // 平稳地形参数（基线）
+  //三种场景地形控制参数
+  TerrainControlParams following_params_;     // 跟随参数
   TerrainControlParams alignment_params_;          // 通用对齐阶段参数
 
   // 翻滚角数据（用于调试和记录）
