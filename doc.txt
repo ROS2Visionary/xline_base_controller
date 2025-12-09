@@ -62,30 +62,11 @@ which python3
 
 
 
+ssh xline@192.168.0.123
 
+cd zyq_ws/
+bash kill.sh
 
-# 订阅话题
-        self.pose_sub = self.create_subscription(
-PoseStamped,
-'/robot_pose',
-self.pose_callback,
-10)
-self.imu_sub = self.create_subscription(
-Imu,
-'/imu',
-self.imu_callback,
-10)
-# 发布速度命令
-self.cmd_vel_pub = self.create_publisher(
-Twist,
-'/cmd_vel',
-10)
-# 订阅话题
-        self.pose_sub = self.create_subscription(
-PoseStamped,
-'/reflector_position',
-self.pose_callback,
-10)
-
-
-有以上几个话题，'/robot_pose'（机器人运动中心坐标，基于两轮差速）是由'/reflector_position'通过tf变换得到（变换不考虑z轴），但是我不知道具体的变换，开始设置变换关系均为0.0，要求你使用python设计一个算法，用于确定准确的变换
+colcon build
+source install/setup.sh
+ros2 run xline_path_planner planner_node   >/dev/null 2>&1 &

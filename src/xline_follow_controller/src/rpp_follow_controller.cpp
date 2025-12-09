@@ -2,11 +2,7 @@
  * @file rpp_follow_controller.cpp
  * @brief Regulated Pure Pursuit 路径跟随控制器实现
  *
- * 该控制器实现了改进的Pure Pursuit算法，支持：
- * - 曲线路径跟随
- * - 圆形路径跟随（带航向预对准）
- * - 后退模式
- * - 多种滤波和平滑处理
+ * 改进版 Pure Pursuit 跟随器，支持曲线/圆弧/后退等模式。
  */
 
 #include "xline_follow_controller/rpp_follow_controller.hpp"
@@ -25,13 +21,9 @@ namespace follow_controller
 // ============================================================================
 
 /**
- * @brief RPPController 构造函数
+ * @brief 构造函数，初始化状态和参数
  *
- * 完成以下工作：
- * - 调用基类构造函数，注册控制器名称
- * - 初始化各类状态标志、误差统计、路径与滤波参数等成员变量
- * - 调用 initialize() 完成运行期初始化
- * - 默认加载曲线路径参数配置文件（rpp_curve.yaml）
+ * 注册控制器名，初始化内部变量并加载默认 rpp_curve.yaml。
  */
 RPPController::RPPController()
   : BaseFollowController("rpp_follow_controller")
@@ -86,10 +78,7 @@ RPPController::RPPController()
 }
 
 /**
- * @brief RPPController 析构函数
- *
- * 目前仅输出日志，释放时不做额外资源管理，
- * 主要用于调试查看控制器生命周期。
+ * @brief 析构函数，输出关闭日志
  */
 RPPController::~RPPController()
 {
@@ -99,9 +88,7 @@ RPPController::~RPPController()
 /**
  * @brief 控制器运行期初始化
  *
- * - 根据控制频率设置控制周期 d_t_
- * - 如启用栅格图可视化，则创建保存目录
- * - 设置 initialized_ 标志，避免重复初始化
+ * 初始化周期 d_t_、栅格目录等，只调一次。
  */
 void RPPController::initialize()
 {
@@ -131,16 +118,7 @@ void RPPController::initialize()
 /**
  * @brief 从 YAML 配置文件中加载控制参数
  *
- * 通过 ament_index_cpp 获取包共享目录，拼接外部传入的配置文件相对路径，
- * 使用自定义的 YamlParser 读取纯跟踪算法相关的所有参数，包括：
- * - 目标判定阈值（距离、角度）
- * - 前瞻距离与时间
- * - 线速度 / 角速度上下限及加加速度约束
- * - 曲率约束、接近目标减速参数
- * - 角速度平滑与二阶滤波参数
- * - 位置与角速度滤波器参数
- * - 圆形路径偏差修正参数
- * - 栅格图开关与角速度增益等
+ * 通过 ament_index_cpp 找到包路径，读取跟踪相关阈值、速度/曲率/滤波等配置。
  *
  * @param file_path 配置文件相对路径（以包共享目录为基准）
  */
@@ -226,8 +204,7 @@ void RPPController::updateParameters(std::string file_path)
 /**
  * @brief 设置圆形路径的起止角度范围
  *
- * 用于限定机器人在圆周上行驶的总角度，内部根据起止角度
- * 额外增加 0.6π 的冗余，以便在圆周起止处留有缓冲区。
+ * 限定机器人在圆周上行驶的总角度，内部会额外加一点冗余角度作为缓冲。
  *
  * @param start_angle 圆周起始角度（弧度）
  * @param end_angle 圆周结束角度（弧度）
@@ -242,9 +219,7 @@ void RPPController::setAngleRange(double start_angle, double end_angle)
 /**
  * @brief 设置圆形路径跟随计划
  *
- * 使用圆心和半径描述圆形路径，并结合当前机器人位姿生成一条
- * 「直线切入 + 圆周运动」的目标路径，同时根据半径自动调整
- * 跟踪参数和基准角速度。
+ * 以圆心+半径+当前位姿构造“直线切入 + 圆弧”路径，并按半径调参数。
  *
  * @param circle_center_x 圆心 x 坐标（世界坐标系）
  * @param circle_center_y 圆心 y 坐标（世界坐标系）
@@ -309,11 +284,7 @@ bool RPPController::setPlanForCircle(double circle_center_x, double circle_cente
 /**
  * @brief 设置通用路径跟随计划
  *
- * 支持任意 nav_msgs::Path 类型路径：
- * - 首先重置内部状态
- * - 对路径进行插值和平滑（点数>2时）
- * - 清理掉非法点并统计路径长度和目标信息
- * - 如启用栅格图，可同时初始化可视化底图
+ * 支持任意 nav_msgs::Path，重置状态后做插值/清洗/统计，必要时初始化栅格图。
  *
  * @param orig_global_plan 外部传入的原始全局路径（世界坐标系）
  * @return 设置成功返回 true
@@ -386,8 +357,7 @@ void RPPController::setBackFollow(bool back)
 /**
  * @brief 查询是否已经到达目标
  *
- * 该接口主要供上层规划器调用，用于判断当前控制器是否完成任务。
- * 内部会在首次到达目标时输出一次统计信息（最大/平均误差）。
+ * 供上层调用判断任务是否完成，首次到达时打印一次误差统计。
  *
  * @return 已到达目标返回 true
  */
@@ -420,14 +390,7 @@ bool RPPController::isGoalReached()
 /**
  * @brief 计算当前时刻的速度控制指令
  *
- * 这是控制器的核心入口函数，完成流程如下：
- * 1. 对输入位姿进行滤波与合法性检查
- * 2. 如启用航向预对准（圆形路径或后退模式），优先进行原地转向
- * 3. 在后退模式下对位姿进行等效变换
- * 4. 检查是否已到达目标或圆形路径结束
- * 5. 根据当前位姿裁剪路径，计算前瞻点与角度误差、曲率和横向误差
- * 6. 根据曲率等信息计算期望线速度和角速度
- * 7. 生成最终速度指令并更新栅格图与性能统计
+ * 核心入口：滤波位姿、处理预对准/后退/到达逻辑，裁剪路径并根据前瞻点求 v/w。
  *
  * @param robot_pose 当前机器人位姿
  * @param current_velocity 当前机器人速度
@@ -1026,11 +989,9 @@ double RPPController::calculateRotationVelocity(const double& angle_diff)
 // ============================================================================
 
 /**
- * @brief 对角速度进行多级平滑处理
+ * @brief 角速度多级平滑
  *
- * 根据配置选择不同的平滑方式（低通 / 滑动平均），再通过
- * 二阶滤波器与可选的四阶低通滤波进一步平滑角速度，使其
- * 在保证响应性的前提下尽量平稳。
+ * 支持低通/移动平均+二阶滤波，必要时串联四阶低通。
  *
  * @param current_angular_vel 当前角速度
  * @param desired_angular_vel 期望角速度
@@ -1097,10 +1058,9 @@ double RPPController::smoothAngularVelocity(double current_angular_vel, double d
 // ============================================================================
 
 /**
- * @brief 使用当前路径初始化栅格地图
+ * @brief 用当前路径初始化栅格图
  *
- * 计算路径的边界框和合适的分辨率，创建 OpenCV 图像作为地图，
- * 绘制网格线与路径，并立即保存一次，用于离线观察规划效果。
+ * 基于路径边界创建 OpenCV 图，画网格和路径并保存一帧。
  *
  * @param path 当前全局路径
  */
@@ -1167,8 +1127,7 @@ cv::Point RPPController::worldToGrid(double x, double y)
 /**
  * @brief 在栅格图上绘制路径
  *
- * 将路径中的相邻点连线，同时高亮起点与终点，用于可视化
- * 全局规划结果。
+ * 将路径中的相邻点连线，并高亮起点/终点，方便查看规划结果。
  *
  * @param path 要绘制的路径
  * @param color 线条颜色
@@ -1234,8 +1193,7 @@ void RPPController::drawRobotOnGrid(const geometry_msgs::msg::PoseStamped& pose)
 /**
  * @brief 在栅格图上绘制当前前瞻点
  *
- * 使用十字形标记当前纯跟踪算法使用的前瞻点位置，
- * 便于调试前瞻距离和路径状态。
+ * 使用十字形标记当前前瞻点位置，便于调试前瞻距离和路径状态。
  *
  * @param lookahead_point 前瞻点位置
  */
@@ -1307,11 +1265,7 @@ void RPPController::saveGridMap()
 /**
  * @brief 重置控制器内部状态
  *
- * 在接收新的路径计划或重新规划时调用，重置：
- * - 目标到达标志、等待标志、后退模式等逻辑状态
- * - 横向误差统计量（最大值、平均值等）
- * - 角速度平滑相关滤波器与历史记录
- * - 位置滤波器和角速度滤波器参数
+ * 接收新路径或重新规划前，清空状态标志、误差统计和滤波器。
  */
 void RPPController::resetControllerState()
 {
@@ -1418,11 +1372,9 @@ void RPPController::adjustSpeedForRadius(double radius)
 }
 
 /**
- * @brief 生成圆形路径（以当前机器人位姿为切入点）
+ * @brief 以当前位姿为切入点生成圆形路径
  *
- * 传入的 robot_pose 被视为已经在圆周上的“切入点”，不再根据
- * 机器人与圆心的几何关系重新计算切入点坐标，仅基于该点生成
- * 圆周轨迹，并计算对应的切线方向用于航向预对准。
+ * 直接使用传入位姿作为圆周切入点，按切线方向设置目标航向，并生成圆弧轨迹。
  *
  * @param circle_center_x 圆心 x 坐标
  * @param circle_center_y 圆心 y 坐标
@@ -2027,9 +1979,7 @@ double RPPController::computeDesiredAngularVelocity(double desired_velocity, dou
 /**
  * @brief 生成最终的速度控制指令
  *
- * 通过 linearRegularization() 和角速度增益对期望速度进行整形，
- * 同时在后退模式下对线速度取反，并进行有限性检查，保证输出
- * 速度始终在合理范围内。
+ * 对期望 v/w 做正则化和安全检查，附加后退逻辑后写入 cmd_vel。
  *
  * @param cmd_vel 输出的速度指令
  * @param current_velocity 当前机器人速度
@@ -2040,7 +1990,8 @@ void RPPController::generateVelocityCommand(geometry_msgs::msg::TwistStamped& cm
                                              const geometry_msgs::msg::Twist& current_velocity,
                                              double desired_velocity, double desired_angular_velocity)
 {
-  cmd_vel.twist.linear.x = linearRegularization(current_velocity.linear.x, desired_velocity);
+  // cmd_vel.twist.linear.x = linearRegularization(current_velocity.linear.x, desired_velocity);
+  cmd_vel.twist.linear.x = min_v_;
   desired_velocity_ = desired_velocity;
 
   cmd_vel.twist.angular.z = desired_angular_velocity;
@@ -2070,8 +2021,7 @@ void RPPController::generateVelocityCommand(geometry_msgs::msg::TwistStamped& cm
 /**
  * @brief 按固定时间间隔更新栅格图
  *
- * 为减少磁盘写入频率，仅当距离上次更新超过 1s 时，
- * 才刷新机器人和前瞻点在图中的位置并保存栅格图。
+ * 仅在距离上次更新超过 1s 时刷新机器人/前瞻点并保存栅格图。
  *
  * @param current_pose 当前机器人位姿
  * @param lookahead_pose 当前前瞻点位姿

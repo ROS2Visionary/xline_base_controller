@@ -411,6 +411,16 @@ namespace xline
         RCLCPP_WARN(get_logger(), "[id=%u]: 未知类型 %s，跳过", path_id, type.c_str());
       }
 
+      // type 为 text 时，不执行路径跟随，直接返回成功
+      if (type == "text")
+      {
+        result->success = true;
+        result->error_message.clear();
+        goal_handle->succeed(result);
+        RCLCPP_INFO(get_logger(), "[text, id=%u]: 文本路径不执行路径跟随，直接返回成功", path_id);
+        return;
+      }
+
       // ========== 速度限制逻辑 ==========
       // 当路径模式为 "text" 且不是转场路径时，限制速度为 0.2 m/s
       if (ink_mode == "text" && !is_transition && base_follow_controller_)
@@ -675,7 +685,7 @@ namespace xline
           {
             std::thread([inkjet_client, printer_name]() {
                           // 延迟1秒
-                          std::this_thread::sleep_for(std::chrono::seconds(1));
+                          std::this_thread::sleep_for(std::chrono::seconds(2));
                           inkjet_client->start_print(printer_name);
                         }).detach();
           }
