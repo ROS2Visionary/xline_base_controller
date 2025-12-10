@@ -61,7 +61,7 @@ RPPController::RPPController()
   , grid_resolution_(0.01)
   , grid_width_(10.0)
   , grid_height_(10.0)
-  , grid_map_path_("/home/xline/zyq_ws")
+  , grid_map_path_("/home/xline/zyq_ws")  // 默认路径，可在 YAML 中覆盖
   // 角速度滤波
   , previous_angular_vel_(0.0)
   , predicted_angular_vel_(0.0)
@@ -73,8 +73,9 @@ RPPController::RPPController()
   , second_order_filter_(2.0, 0.7)
 {
   RCLCPP_INFO(get_logger(), "RPPController实例已创建，正在初始化...");
-  initialize();
+  // 先加载参数，再根据参数做一次初始化
   updateParameters("/config/rpp_curve.yaml");
+  initialize();
 }
 
 /**
@@ -190,6 +191,12 @@ void RPPController::updateParameters(std::string file_path)
   // 其他参数
   enable_grid_map_ = parser.getParameter<bool>("enable_grid_map");
   low_speed_mode_ = parser.getParameter<bool>("low_speed_mode");
+
+  // 栅格图保存路径（可选参数）
+  if (parser.hasParameter("grid_map_path"))
+  {
+    grid_map_path_ = parser.getParameter<std::string>("grid_map_path");
+  }
 
   // 记录关键参数
   RCLCPP_INFO(get_logger(),

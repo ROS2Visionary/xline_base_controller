@@ -318,23 +318,15 @@ private:
   }
 };
 
-/**
- * @brief 改进的Stanley控制器，用于高精度直线路径跟随
- *
- * 该控制器结合了Stanley方法、自适应参数调整、传感器融合和平滑滤波
- * 专为RTK定位与IMU传感器结合的系统设计，优化航向纠偏性能
- */
+/// 基于 Stanley 的航向控制器，用在直线路径跟随场景。
+/// 在原始几何控制的基础上，加了一些按速度自适应和滤波的处理。
 class ImprovedHeadingController
 {
 public:
-  /**
-   * @brief 构造函数
-   *
-   * @param k_stanley Stanley增益系数
-   * @param stanley_v0 低速稳定因子
-   * @param heading_weight 航向误差权重
-   * @param cross_track_weight 横向误差权重
-   */
+  /// @param k_stanley Stanley 增益
+  /// @param stanley_v0 低速补偿因子
+  /// @param heading_weight 航向误差权重
+  /// @param cross_track_weight 横向误差权重
   ImprovedHeadingController(double k_stanley = 0.5, double stanley_v0 = 0.1, double heading_weight = 0.7,
                             double cross_track_weight = 0.3)
     : k_stanley_(k_stanley)
@@ -371,9 +363,7 @@ public:
     last_update_time_ = std::chrono::steady_clock::now();
   }
 
-  /**
-   * @brief 重置控制器
-   */
+  /// 重置内部状态和滤波缓存。
   void reset()
   {
     prev_heading_ = 0.0;
@@ -389,13 +379,7 @@ public:
     last_update_time_ = std::chrono::steady_clock::now();
   }
 
-  /**
-   * @brief 设置控制参数
-   *
-   * @param k_stanley Stanley增益系数
-   * @param heading_weight 航向误差权重
-   * @param cross_track_weight 横向误差权重
-   */
+  /// 设置几何控制相关参数。
   void setParameters(double k_stanley, double heading_weight, double cross_track_weight)
   {
     k_stanley_ = k_stanley;
@@ -403,13 +387,7 @@ public:
     cross_track_weight_ = cross_track_weight;
   }
 
-  /**
-   * @brief 设置高级控制参数
-   *
-   * @param max_steering_rate 最大转向变化率(rad/s)
-   * @param smoothing_factor 输出平滑因子(0-1)
-   * @param imu_weight IMU数据权重(0-1)
-   */
+  /// 设置限制转向变化率、输出平滑和 IMU 权重等高阶参数。
   void setAdvancedParameters(double max_steering_rate, double smoothing_factor, double imu_weight)
   {
     max_steering_rate_ = max_steering_rate;
@@ -418,13 +396,7 @@ public:
     rtk_heading_weight_ = 1.0 - imu_weight;
   }
 
-  /**
-   * @brief 设置速度自适应参数
-   *
-   * @param k_min 最小Stanley增益
-   * @param k_max 最大Stanley增益
-   * @param speed_factor 速度影响因子
-   */
+  /// 配置不同车速下的增益范围。
   void setAdaptiveParameters(double k_min, double k_max, double speed_factor)
   {
     k_min_ = k_min;
@@ -432,15 +404,11 @@ public:
     speed_factor_ = speed_factor;
   }
 
-  /**
-   * @brief 主控制函数 - 计算航向控制输出
-   *
-   * @param cross_track_error 横向误差(m)
-   * @param heading_error 航向误差(rad)
-   * @param speed 当前速度(m/s)
-   * @param imu_angular_rate IMU测量的角速度(rad/s)
-   * @return double 角速度控制输出(rad/s)
-   */
+  /// 计算一帧的角速度控制量。
+  /// @param cross_track_error 横向误差(m)
+  /// @param heading_error 航向误差(rad)
+  /// @param speed 当前速度(m/s)
+  /// @param imu_angular_rate IMU 测得角速度(rad/s)
   double computeSteeringControl(double cross_track_error, double heading_error, double speed, double imu_angular_rate)
   {
     // 计算时间增量
@@ -499,11 +467,7 @@ public:
     return final_output;
   }
 
-  /**
-   * @brief 获取控制器诊断信息
-   *
-   * @return 键值对形式的诊断信息
-   */
+  /// 导出部分内部状态，方便做调试/监控。
   std::map<std::string, double> getDiagnostics() const
   {
     std::map<std::string, double> diagnostics;
@@ -565,9 +529,7 @@ private:
   };
   std::vector<std::pair<double, SpeedAdaptiveParams>> speed_adaptive_params_;
 
-  /**
-   * @brief 初始化速度自适应参数表
-   */
+  /// 初始化按速度分段的参数表。
   void initializeSpeedAdaptiveParams()
   {
     // 低速参数(0.1-0.3 m/s)
@@ -586,12 +548,7 @@ private:
     speed_adaptive_params_.push_back({ 999.0, { 0.32, 0.85, 0.15, 0.80 } });
   }
 
-  /**
-   * @brief 获取指定速度对应的自适应参数
-   *
-   * @param speed 当前速度
-   * @return 自适应参数集
-   */
+  /// 根据当前速度查一组插值后的自适应参数。
   SpeedAdaptiveParams getSpeedAdaptiveParams(double speed)
   {
     for (size_t i = 0; i < speed_adaptive_params_.size(); ++i)
@@ -632,13 +589,7 @@ private:
     return speed_adaptive_params_.back().second;
   }
 
-  /**
-   * @brief 基于横向误差大小调整权重
-   *
-   * @param cross_track_error 横向误差
-   * @param heading_weight 航向权重(引用)
-   * @param cte_weight 横向误差权重(引用)
-   */
+  /// 简单根据横向误差大小对航向/横向权重做一点再分配。
   void adjustWeightsByError(double cross_track_error, double& heading_weight, double& cte_weight)
   {
     // 误差很大时，更关注横向误差纠正
@@ -654,13 +605,7 @@ private:
     }
   }
 
-  /**
-   * @brief 使用饱和函数处理大误差
-   *
-   * @param error 原始误差
-   * @param threshold 饱和阈值
-   * @return 处理后的误差
-   */
+  /// 对大误差做一个非线性饱和，避免一步给出过大的控制量。
   double saturatedResponse(double error, double threshold)
   {
     if (std::abs(error) <= threshold)
@@ -674,14 +619,7 @@ private:
     }
   }
 
-  /**
-   * @brief 计算Stanley横向误差项
-   *
-   * @param cross_track_error 横向误差
-   * @param speed 当前速度
-   * @param gain Stanley增益
-   * @return 横向误差控制项
-   */
+  /// Stanley 横向项：k * e / (v + v0) 的反正切形式。
   double computeCrossTrackTerm(double cross_track_error, double speed, double gain)
   {
     // 防止低速时分母接近零
@@ -693,14 +631,7 @@ private:
     return cross_track_term;
   }
 
-  /**
-   * @brief 将IMU角速度数据融合到航向估计中
-   *
-   * @param rtk_heading_error RTK提供的航向误差
-   * @param imu_angular_rate IMU测量的角速度
-   * @param dt 时间增量
-   * @return 融合后的航向误差
-   */
+  /// 用 IMU 的角速度对 RTK 航向做简单一阶融合。
   double fuseHeadingWithIMU(double rtk_heading_error, double imu_angular_rate, double dt)
   {
     // 使用IMU角速度积分估计航向变化
@@ -716,12 +647,7 @@ private:
     return fused_heading_error;
   }
 
-  /**
-   * @brief 应用二阶动态响应特性
-   *
-   * @param error 误差值
-   * @return 处理后的响应
-   */
+  /// 非严格物理意义的二阶近似，用来稍微压一压响应。
   double applySecondOrderDynamics(double error)
   {
     // 二阶系统响应公式
@@ -732,15 +658,7 @@ private:
     return response;
   }
 
-  /**
-   * @brief 限制转向角变化率
-   *
-   * @param new_steering 新计算的转向角
-   * @param prev_steering 上一次的转向角
-   * @param max_rate 最大变化率
-   * @param dt 时间增量
-   * @return 限制后的转向角
-   */
+  /// 限制单周期内的转向变化量。
   double limitSteeringRateOfChange(double new_steering, double prev_steering, double max_rate, double dt)
   {
     double max_change = max_rate * dt;
@@ -760,25 +678,13 @@ private:
     }
   }
 
-  /**
-   * @brief 平滑控制输出
-   *
-   * @param new_value 新计算的输出值
-   * @param prev_value 上一次的输出值
-   * @param alpha 平滑因子(0-1)
-   * @return 平滑后的输出值
-   */
+  /// 一阶滤波器形式的输出平滑。
   double smoothOutput(double new_value, double prev_value, double alpha)
   {
     return alpha * new_value + (1.0 - alpha) * prev_value;
   }
 
-  /**
-   * @brief 中值滤波处理横向误差
-   *
-   * @param new_error 新的横向误差
-   * @return 滤波后的横向误差
-   */
+  /// 很小的中值窗，防止单点噪声把控制拉歪。
   double filterCrossTrackError(double new_error)
   {
     // 添加到滤波器缓冲区

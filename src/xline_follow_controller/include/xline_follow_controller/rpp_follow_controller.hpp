@@ -1,9 +1,4 @@
-/**
- * @file rpp_follow_controller.hpp
- * @brief Regulated Pure Pursuit 路径跟随控制器头文件
- *
- * 改进版 Pure Pursuit 路径跟随控制器，对应实现见 rpp_follow_controller.cpp。
- */
+// Regulated Pure Pursuit 路径跟随控制器声明，对应实现见 rpp_follow_controller.cpp。
 
 #pragma once
 
@@ -35,11 +30,8 @@ namespace xline
 namespace follow_controller
 {
 
-/**
- * @brief Regulated Pure Pursuit 路径跟随控制器
- *
- * 改进的 Pure Pursuit 算法，支持曲率/接近约束、位置/角速度滤波、圆形路径和后退模式等。
- */
+/// Regulated Pure Pursuit 控制器。
+/// 在标准 PP 的基础上加了速度/曲率约束、滤波以及圆轨迹、倒车等扩展。
 class RPPController : public BaseFollowController
 {
 public:
@@ -54,93 +46,46 @@ public:
   // 公共接口
   // ================================
 
-  /**
-   * @brief 初始化控制器
-   */
+  /// 初始化内部状态，只需要调一次。
   void initialize();
 
-  /**
-   * @brief 更新控制器参数
-   * @param file_path 配置文件路径（相对于包共享目录）
-   */
+  /// 从 YAML 文件加载/更新所有参数。
   void updateParameters(std::string file_path);
 
-  /**
-   * @brief 设置圆形路径的角度范围
-   * @param start_angle 起始角度
-   * @param end_angle 终止角度
-   */
+  /// 设置需要走过的圆弧角度范围（弧度）。
   void setAngleRange(double start_angle, double end_angle);
 
-  /**
-   * @brief 设置圆形路径计划
-   * @param circle_center_x 圆心x坐标
-   * @param circle_center_y 圆心y坐标
-   * @param circle_radius 圆半径
-   * @param robot_pose 机器人当前位姿
-   * @return 成功返回true
-   */
+  /// 构造一条“切入直线 + 圆弧”的轨迹。
   bool setPlanForCircle(double circle_center_x, double circle_center_y, double circle_radius,
                         const geometry_msgs::msg::PoseStamped& robot_pose);
 
-  /**
-   * @brief 设置路径计划
-   * @param orig_global_plan 全局路径
-   * @return 成功返回true
-   */
+  /// 设置全局路径。
   bool setPlan(const nav_msgs::msg::Path& orig_global_plan);
 
-  /**
-   * @brief 检查是否到达目标
-   * @return 到达目标返回true
-   */
+  /// 是否已经满足终点与角度阈值。
   bool isGoalReached();
 
-  /**
-   * @brief 计算速度命令
-   * @param pose 机器人当前位姿
-   * @param velocity 机器人当前速度
-   * @param cmd_vel 输出的速度命令
-   * @return 成功返回true
-   */
+  /// 主入口：根据当前位置和速度给出一帧的 cmd_vel。
   bool computeVelocityCommands(const geometry_msgs::msg::PoseStamped& pose,
                                const geometry_msgs::msg::Twist& velocity,
                                geometry_msgs::msg::TwistStamped& cmd_vel);
 
-  /**
-   * @brief 获取前瞻距离
-   * @param speed 当前速度
-   * @return 前瞻距离
-   */
+  /// 根据当前速度算前瞻距离。
   double getLookAheadDistance(double speed);
 
-  /**
-   * @brief 设置后退跟随模式
-   * @param back 是否启用后退模式
-   */
+  /// 控制是否启用后退跟随。
   void setBackFollow(bool back);
 
   // ================================
   // 路径处理方法
   // ================================
 
-  /**
-   * @brief 裁剪全局路径
-   * @param current_pose 当前位姿
-   * @param global_plan 全局路径
-   * @param pruned_plan 裁剪后的路径
-   */
+  /// 从全局路径中裁掉已走过的部分，得到局部路径。
   void pruneGlobalPlan(const geometry_msgs::msg::PoseStamped& current_pose,
                        const nav_msgs::msg::Path& global_plan,
                        std::vector<geometry_msgs::msg::PoseStamped>& pruned_plan);
 
-  /**
-   * @brief 获取前瞻点
-   * @param lookahead_dist 前瞻距离
-   * @param transformed_plan 变换后的路径
-   * @param interpolate_after_goal 是否在目标后插值
-   * @return 前瞻点位姿
-   */
+  /// 在当前路径上寻找前瞻点，必要时做插值。
   geometry_msgs::msg::PoseStamped getLookAheadPoint(
       const double& lookahead_dist,
       const std::vector<geometry_msgs::msg::PoseStamped>& transformed_plan,
@@ -150,77 +95,44 @@ public:
   // 速度约束方法
   // ================================
 
-  /**
-   * @brief 应用曲率约束
-   * @param raw_linear_vel 原始线速度
-   * @param curvature 曲率
-   * @return 约束后的线速度
-   */
+  /// 根据曲率减小线速度。
   double applyCurvatureConstraint(const double raw_linear_vel, const double curvature);
 
-  /**
-   * @brief 应用接近约束
-   * @param raw_linear_vel 原始线速度
-   * @param robot_pose_global 机器人位姿
-   * @param prune_plan 裁剪后的路径
-   * @return 约束后的线速度
-   */
+  /// 接近目标时进一步拉低速度。
   double applyApproachConstraint(const double raw_linear_vel,
                                  geometry_msgs::msg::PoseStamped robot_pose_global,
                                  const std::vector<geometry_msgs::msg::PoseStamped>& prune_plan);
 
-  /**
-   * @brief 线速度正则化
-   * @param current_velocity 当前线速度
-   * @param desired_velocity 期望线速度
-   * @return 正则化后的线速度
-   */
+  /// 对线速度做简单的限幅与渐变。
   double linearRegularization(double current_velocity, double desired_velocity);
 
-  /**
-   * @brief 角速度正则化
-   * @param current_angular_vel 当前角速度
-   * @param desired_angular_vel 期望角速度
-   * @return 正则化后的角速度
-   */
+  /// 对角速度做简单的限幅与渐变。
   double angularRegularization(double current_angular_vel, double desired_angular_vel);
 
   // ================================
   // 辅助计算方法
   // ================================
 
-  /**
-   * @brief 检查是否需要旋转以对齐路径
-   */
+  /// 当前姿态和路径切线的夹角是否需要先单独旋转对齐。
   bool shouldRotateToPath(double angle_to_path, double tolerance);
 
-  /**
-   * @brief 规范化角度到[-π, π]
-   */
+  /// 将角度规范化到 [-π, π]。
   double regularizeAngle(double angle);
 
-  /**
-   * @brief 检查是否需要旋转以对齐目标
-   */
+  /// 是否需要原地旋转对齐终点朝向。
   bool shouldRotateToGoal(const geometry_msgs::msg::PoseStamped& current_pose,
                           const geometry_msgs::msg::PoseStamped& goal_pose);
 
-  /**
-   * @brief 执行航向预对准
-   */
+  /// 航向预对准逻辑，常见于圆轨迹切入前。
   bool performYawPrealignment(const geometry_msgs::msg::PoseStamped& current_pose,
                               double target_yaw,
                               geometry_msgs::msg::TwistStamped& cmd_vel);
 
-  /**
-   * @brief 计算旋转速度
-   */
+  /// 根据角度误差计算一个合适的旋转速度。
   double calculateRotationVelocity(const double& angle_diff);
 
 protected:
-  /**
-   * @brief 计算到前瞻点的角度差
-   */
+  /// 计算机器人当前朝向与前瞻点连线之间的角度差。
   double dphi(geometry_msgs::msg::PointStamped lookahead_pt,
               geometry_msgs::msg::PoseStamped robot_pose_global);
 

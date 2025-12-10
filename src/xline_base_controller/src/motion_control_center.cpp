@@ -685,7 +685,7 @@ namespace xline
           {
             std::thread([inkjet_client, printer_name]() {
                           // 延迟1秒
-                          std::this_thread::sleep_for(std::chrono::seconds(2));
+                          std::this_thread::sleep_for(std::chrono::seconds(1));
                           inkjet_client->start_print(printer_name);
                         }).detach();
           }

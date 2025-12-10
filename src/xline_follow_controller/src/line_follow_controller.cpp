@@ -50,8 +50,9 @@ LineFollowController::LineFollowController()
   initializeFilters();
 
   // 初始化PID控制器
-  pid_heading_controller_ = std::make_shared<PIDController>(angular_kp_, angular_ki_, angular_kd_, 0.2, -0.2);
-  pid_heading_controller_->setIntegralLimits(-0.05, 0.05);
+  heading_pid_controller_ = std::make_shared<PIDController>(heading_following_kp_, heading_following_ki_,
+                                                            heading_following_kd_, 0.2, -0.2);
+  heading_pid_controller_->setIntegralLimits(-0.05, 0.05);
 
   // 初始化时间
   last_time_ = std::chrono::steady_clock::now();
@@ -105,11 +106,6 @@ void LineFollowController::initializeDefaultParameters()
   m_deceleration_sigmoid_center_ = 0.5;
   max_angular_acceleration_ = 0.4;
 
-  // PID参数默认值（激进优化）
-  angular_kp_ = 1.1;  // 从配置文件的激进优化值
-  angular_ki_ = 0.0;
-  angular_kd_ = 0.12;
-
   // 滤波器参数默认值
   m_window_size_ = 5;
   m_polynomial_order_ = 2;
@@ -126,6 +122,14 @@ void LineFollowController::initializeDefaultParameters()
   current_smoother_damping_ = 0.95;
   alpha_ = current_alpha_;
 
+  // 航向 PID 默认参数（对齐与跟随阶段初始一致）
+  heading_alignment_kp_ = 1.1;
+  heading_alignment_ki_ = 0.0;
+  heading_alignment_kd_ = 0.12;
+
+  heading_following_kp_ = heading_alignment_kp_;
+  heading_following_ki_ = heading_alignment_ki_;
+  heading_following_kd_ = heading_alignment_kd_;
 }
 
 void LineFollowController::updateParameters()
@@ -156,6 +160,25 @@ void LineFollowController::updateParameters()
   {
     // --- 调试开关 ---
     debug_ = parser.getParameter<bool>("debug");
+
+    // --- 调试数据导出路径 ---
+    if (parser.hasParameter("debug_paths.raw"))
+    {
+      debug_path_raw_dir_ = parser.getParameter<std::string>("debug_paths.raw");
+    }
+    else
+    {
+      debug_path_raw_dir_.clear();
+    }
+
+    if (parser.hasParameter("debug_paths.filtered"))
+    {
+      debug_path_filtered_dir_ = parser.getParameter<std::string>("debug_paths.filtered");
+    }
+    else
+    {
+      debug_path_filtered_dir_.clear();
+    }
 
     // --- 线速度相关 ---
     acceleration_min_linear_speed_ = parser.getParameter<double>("motion.velocity.limits.acceleration_min");
@@ -194,13 +217,19 @@ void LineFollowController::updateParameters()
 
 
 
-    // --- PID 控制器 ---
-    angular_kp_ = parser.getParameter<double>("control.pid.kp");
-    angular_ki_ = parser.getParameter<double>("control.pid.ki");
-    angular_kd_ = parser.getParameter<double>("control.pid.kd");
-    if (pid_heading_controller_)
+    // --- 航向 PID 控制器 ---
+    heading_alignment_kp_ = parser.getParameter<double>("control.heading_pid.alignment.kp");
+    heading_alignment_ki_ = parser.getParameter<double>("control.heading_pid.alignment.ki");
+    heading_alignment_kd_ = parser.getParameter<double>("control.heading_pid.alignment.kd");
+
+    heading_following_kp_ = parser.getParameter<double>("control.heading_pid.following.kp");
+    heading_following_ki_ = parser.getParameter<double>("control.heading_pid.following.ki");
+    heading_following_kd_ = parser.getParameter<double>("control.heading_pid.following.kd");
+
+    if (heading_pid_controller_)
     {
-      pid_heading_controller_->setGains(angular_kp_, angular_ki_, angular_kd_);
+      // 默认使用跟随阶段参数初始化控制器增益
+      heading_pid_controller_->setGains(heading_following_kp_, heading_following_ki_, heading_following_kd_);
     }
 
     // --- 滤波参数 ---
@@ -216,7 +245,6 @@ void LineFollowController::updateParameters()
       std::string base = "phase_control." + terrain_type + ".";
       params.max_angular_vel = parser.getParameter<double>(base + "max_angular_vel");
       params.max_angular_accel = parser.getParameter<double>(base + "max_angular_accel");
-      params.suppression_factor = parser.getParameter<double>(base + "suppression_factor");
       params.current_heading_weight = parser.getParameter<double>(base + "heading.current_heading_weight");
       params.target_heading_weight = parser.getParameter<double>(base + "heading.target_heading_weight");
       // 新增滤波参数读取
@@ -273,9 +301,9 @@ void LineFollowController::resetControllerState()
   prev_smoothed_angular_velocity_ = 0.0;
   angular_vel_history_.clear();
   // 重置PID控制器
-  if (pid_heading_controller_)
+  if (heading_pid_controller_)
   {
-    pid_heading_controller_->reset();
+    heading_pid_controller_->reset();
   }
 
   // 重置二阶平滑器
@@ -820,29 +848,38 @@ double LineFollowController::computeAngularVelocity(double yaw_error, double dt,
 
   double deadzone_factor = 1.0;  // 默认无衰减
 
-  // 基于IMU地形自适应的精度控制
 
-  double current_max_angular_vel = following_params_.max_angular_vel;  // 当前最大角速度，默认使用平滑地形
-
-
-
-  // 根据距离选择适当的参数集
+  // 根据距离选择适当的参数集：对齐阶段或跟随阶段
   bool is_alignment_phase = (distance_to_start < m_alignment_distance_);
 
-  
+  // 当前使用的最大角速度
+  double current_max_angular_vel =
+      is_alignment_phase ? alignment_params_.max_angular_vel : following_params_.max_angular_vel;
 
-  // 使用当前最大角速度设置PID输出限制
-  pid_heading_controller_->setOutputLimits(-current_max_angular_vel, current_max_angular_vel);
+  // 根据阶段选择对应的航向 PID 参数，并设置输出限幅
+  if (heading_pid_controller_)
+  {
+    if (is_alignment_phase)
+    {
+      heading_pid_controller_->setGains(heading_alignment_kp_, heading_alignment_ki_, heading_alignment_kd_);
+    }
+    else
+    {
+      heading_pid_controller_->setGains(heading_following_kp_, heading_following_ki_, heading_following_kd_);
+    }
+
+    heading_pid_controller_->setOutputLimits(-current_max_angular_vel, current_max_angular_vel);
+  }
 
   // 使用PID计算原始角速度
-  double raw_angular_velocity = pid_heading_controller_->compute(yaw_error, dt);
+  double raw_angular_velocity = heading_pid_controller_->compute(yaw_error, dt);
 
   // 计算并限制角加速度
   double angular_acceleration = (raw_angular_velocity - prev_angular_velocity_) / dt;
 
 
-  // 当前前使用的角加速度限制,默认使用平滑地形
-  double current_max_angular_accel = following_params_.max_angular_accel;
+  // 当前前使用的角加速度限制
+  double current_max_angular_accel = 0.0;
 
   if (is_alignment_phase)
   {
@@ -905,28 +942,7 @@ double LineFollowController::computeAngularVelocity(double yaw_error, double dt,
 
   // 二阶平滑器
   smoothed_angular_vel = angular_smoother_.filter(smoothed_angular_vel, dt);
-  if (debug_)
-  {
-    // LOG_INFO("angular_smoother_: %.5f", smoothed_angular_vel);
-  }
-  // 应用抑制因子和死区因子
-  double current_suppression_factor;
 
-    // 非地形自适应模式：使用平稳地形参数
-    current_suppression_factor =
-        is_alignment_phase ? alignment_params_.suppression_factor : following_params_.suppression_factor;
-
-    // 应用平稳地形的抑制因子和死区因子
-    smoothed_angular_vel *= current_suppression_factor * deadzone_factor;
-
-    if (debug_)
-    {
-      // LOG_INFO("平稳地形控制 - 阶段:%s, 角速度限制:%.3frad/s, 抑制因子:%.2f, 死区因子:%.2f",
-      //          is_alignment_phase ? "对齐" : "跟随", current_max_angular_vel, current_suppression_factor,
-      //          deadzone_factor);
-    }
-
-  // 记录实际输出的角速度作为下次计算的参考
   prev_angular_velocity_ = smoothed_angular_vel;
   return smoothed_angular_vel;
 }
@@ -1134,7 +1150,10 @@ void LineFollowController::handlePathFollowing(double robot_x, double robot_y,
       // 重置PID控制器（仅在第一次进入此阶段时）
       if (current_state_ == ControlState::ALIGNING_START)
       {
-        pid_heading_controller_->reset();
+        if (heading_pid_controller_)
+        {
+          heading_pid_controller_->reset();
+        }
         current_state_ = ControlState::FOLLOWING_PATH;
       }
     }else{
@@ -1416,7 +1435,15 @@ bool LineFollowController::computeVelocityCommands(const geometry_msgs::msg::Pos
       std::string timestamp = std::to_string(
               std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now().time_since_epoch())
                   .count());
-      exportDebugData("/home/xline/zyq_ws/other/path_sg/_" + timestamp + "_line.csv", filtered_path_);
+      // 仅在配置了输出目录时导出调试数据
+      if (!debug_path_raw_dir_.empty())
+      {
+        exportDebugData(debug_path_raw_dir_ + "/_" + timestamp + "_line.csv", original_path_);
+      }
+      if (!debug_path_filtered_dir_.empty())
+      {
+        exportDebugData(debug_path_filtered_dir_ + "/_" + timestamp + "_line.csv", filtered_path_);
+      }
 
       // // 对齐原始终点航向
       // if (handleStateAlignment(robot_yaw_, original_target_pose_.pose.orientation, cmd_vel, false))

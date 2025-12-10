@@ -30,16 +30,8 @@ namespace xline
 namespace follow_controller
 {
 
-/**
- * @brief 直线路径跟随控制器
- *
- * 该控制器实现了机器人沿直线路径的跟随功能，包括：
- * - 初始航向对齐
- * - 路径跟随
- * - 终点航向对齐
- * - 速度平滑控制
- * - 支持前进和后退模式
- */
+/// 简单的直线路径跟随控制器。
+/// 负责起始对齐、沿路径行走以及终点收尾，并对速度/航向做基础的平滑处理。
 class LineFollowController : public BaseFollowController
 {
 public:
@@ -68,7 +60,6 @@ public:
   {
     double max_angular_vel;
     double max_angular_accel;
-    double suppression_factor;
     // 航向混合控制参数
     double current_heading_weight;    // 当前机器人航向权重
     double target_heading_weight;     // 目标路径航向权重
@@ -181,14 +172,25 @@ private:
   double m_deceleration_sigmoid_center_;  // 减速sigmoid中心点
   double max_angular_acceleration_;       // 最大角加速度
 
+  // 调试数据导出路径（从配置读取）
+  std::string debug_path_raw_dir_;      // 原始路径导出目录
+  std::string debug_path_filtered_dir_; // 滤波后路径导出目录
+
   // ================================
   // PID控制器
   // ================================
 
-  std::shared_ptr<PIDController> pid_heading_controller_;  // 航向PID控制器
-  double angular_kp_;                                      // 比例系数
-  double angular_ki_;                                      // 积分系数
-  double angular_kd_;                                      // 微分系数
+  std::shared_ptr<PIDController> heading_pid_controller_;  // 航向 PID 控制器
+
+  // 对齐阶段航向 PID 参数
+  double heading_alignment_kp_;  // 比例系数
+  double heading_alignment_ki_;  // 积分系数
+  double heading_alignment_kd_;  // 微分系数
+
+  // 跟随阶段航向 PID 参数
+  double heading_following_kp_;  // 比例系数
+  double heading_following_ki_;  // 积分系数
+  double heading_following_kd_;  // 微分系数
 
   // ================================
   // 滤波器
@@ -241,14 +243,7 @@ private:
   // double logging_frequency_;                             // 日志记录频率（Hz）
   // std::chrono::steady_clock::time_point last_log_time_;  // 上次记录时间
 
-  // 二阶平滑器相关参数
-  /*
-  自然频率 (ωn)：控制系统响应速度，值越大响应越快
-  阻尼比 (ζ)：控制震荡程度
-  ζ < 1: 欠阻尼（有震荡）
-  ζ = 1: 临界阻尼（最快无震荡响应）
-  ζ > 1: 过阻尼（响应较慢但很平滑）
-  */
+  // 二阶平滑器相关参数（ωn 控制响应快慢，ζ 控制阻尼大小）
   double angular_smoother_freq_;     // 自然频率，默认2.0 Hz
   double angular_smoother_damping_;  // 阻尼比，默认0.7
 

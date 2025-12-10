@@ -1,13 +1,22 @@
 # 全局调试开关
 debug: true
 
+debug_paths:
+  raw: "/home/xline/zyq_ws/other/path_l"
+  filtered: "/home/xline/zyq_ws/other/path_sg"
+
 # 控制系统配置
 control:
-  # PID控制器参数
-  pid:
-    kp: 1.1         # 比例系数
-    ki: 0.0        # 积分系数
-    kd: 0.9       # 微分系数
+  # 航向 PID 控制器参数
+  heading_pid:
+    alignment:
+      kp: 1.1        # 对齐阶段比例系数
+      ki: 0.0        # 对齐阶段积分系数
+      kd: 0.9        # 对齐阶段微分系数
+    following:
+      kp: 1.1        # 跟随阶段比例系数
+      ki: 0.0        # 跟随阶段积分系数
+      kd: 0.9        # 跟随阶段微分系数
 
 # 运动控制参数
 motion:
@@ -83,7 +92,6 @@ phase_control:
   alignment:
     max_angular_vel: 0.1                 # 最大角速度
     max_angular_accel: 0.5               # 最大角加速度
-    suppression_factor: 1              # 抑制因子
     # 航向混合控制参数
     heading:
       current_heading_weight: 0        # 当前机器人航向权重 (0-1)
@@ -100,7 +108,6 @@ phase_control:
   following:
     max_angular_vel: 0.08                 # 最大角速度
     max_angular_accel: 0.5               # 最大角加速度
-    suppression_factor: 1              # 抑制因子
     # 航向混合控制参数（平稳地形保持高精度）
     heading:
       current_heading_weight: 0        # 当前机器人航向权重 (基础值+补偿值)

@@ -26,8 +26,6 @@ approach_min_v: 0.07          # 接近目标时的最小速度（单位：米/�
 x_offset: 0.0
 y_offset: 0.0
 
-radius_log_file_path: '/home/daosn_robotics/zyq_ws/rpp_circle.csv'
-
 radius_offset: 0.0
 lowpass_angular_vel_filter_gain: 0.9
 angular_vel_history_size: 1
@@ -40,6 +38,7 @@ smoother_damping: 0.9   # 阻尼比，控制震荡程度
 collect_positions_for_circle: False
 low_speed_mode: True
 enable_grid_map: True
+grid_map_path: '/home/xline/zyq_ws'
 pos_use_biquad_cascade: True
 pos_use_biquad_cascade_filter: False
 pos_cutoff_freq: 1.5              # 位置数据截止频率
