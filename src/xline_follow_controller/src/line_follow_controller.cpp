@@ -1,5 +1,6 @@
 #include "xline_follow_controller/line_follow_controller.hpp"
 #include "xline_follow_controller/yaml_parser.hpp"
+#include "xline_follow_controller/path_utils.hpp"
 #include <angles/angles.h>
 #include <tf2/utils.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
@@ -164,7 +165,8 @@ void LineFollowController::updateParameters()
     // --- 调试数据导出路径 ---
     if (parser.hasParameter("debug_paths.raw"))
     {
-      debug_path_raw_dir_ = parser.getParameter<std::string>("debug_paths.raw");
+      debug_path_raw_dir_ = xline::path_utils::resolve_path(
+        parser.getParameter<std::string>("debug_paths.raw"));
     }
     else
     {
@@ -173,7 +175,8 @@ void LineFollowController::updateParameters()
 
     if (parser.hasParameter("debug_paths.filtered"))
     {
-      debug_path_filtered_dir_ = parser.getParameter<std::string>("debug_paths.filtered");
+      debug_path_filtered_dir_ = xline::path_utils::resolve_path(
+        parser.getParameter<std::string>("debug_paths.filtered"));
     }
     else
     {

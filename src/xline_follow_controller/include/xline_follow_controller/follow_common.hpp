@@ -17,81 +17,227 @@ namespace xline
 namespace follow_controller
 {
 
+/**
+ * @brief 异常值处理策略枚举
+ */
+enum class OutlierStrategy
+{
+  REPLACE_MEDIAN,      // 直接用中位数替换（原始方式）
+  SOFT_THRESHOLD,      // 软阈值混合，平滑过渡
+  LINEAR_PREDICTION,   // 线性预测，保持运动连续性
+  EXPONENTIAL_DECAY    // 指数衰减，渐进修正
+};
+
+/**
+ * @brief 改进的Hampel滤波器
+ * 
+ * 基于MAD（中位数绝对偏差）的异常值检测与处理滤波器。
+ * 相比原始实现，增加了多种异常值处理策略，特别是针对位置/速度跟踪
+ * 场景优化的线性预测策略，能够保持运动连续性。
+ */
 class HampelFilter
 {
-private:
-  std::deque<double> window;  // 滑动窗口容器
-  int window_size;            // 窗口长度
-  double threshold;           // 阈值系数k
-  bool use_relative_mad;      // 是否使用相对MAD
-
 public:
-  // 构造函数
-  HampelFilter(int size = 5, double k = 3.0, bool relative_mad = false)
-    : window_size(size), threshold(k), use_relative_mad(relative_mad)
+  /**
+   * @brief 构造函数
+   * @param size 滑动窗口大小
+   * @param k 阈值系数（MAD的倍数）
+   * @param relative_mad 是否使用相对MAD
+   * @param strategy 异常值处理策略，默认使用线性预测
+   */
+  HampelFilter(int size = 5, double k = 3.0, bool relative_mad = false,
+               OutlierStrategy strategy = OutlierStrategy::LINEAR_PREDICTION)
+    : window_size_(size)
+    , threshold_(k)
+    , use_relative_mad_(relative_mad)
+    , strategy_(strategy)
+    , prev_output_(0.0)
+    , initialized_(false)
+    , consecutive_outliers_(0)
+    , max_consecutive_outliers_(3)
+    , prediction_confidence_(1.0)
+    , min_confidence_(0.3)
+    , confidence_decay_(0.7)
   {
   }
 
-  // 核心滤波函数
+  /**
+   * @brief 核心滤波函数
+   * @param new_value 新输入值
+   * @return 滤波后的值
+   */
   double filter(double new_value)
   {
     // 更新滑动窗口
-    window.push_back(new_value);
-    if (static_cast<int>(window.size()) > window_size)
+    window_.push_back(new_value);
+    if (static_cast<int>(window_.size()) > window_size_)
     {
-      window.pop_front();
+      window_.pop_front();
     }
 
     // 窗口未填满时直接返回原始值
-    if (static_cast<int>(window.size()) < window_size)
+    if (static_cast<int>(window_.size()) < window_size_)
     {
+      updateValidHistory(new_value);
+      prev_output_ = new_value;
+      initialized_ = true;
       return new_value;
     }
 
     // 计算中位数
-    double median = compute_median(window);
+    double median = computeMedian(window_);
 
-    // 计算MAD
+    // 计算MAD（中位数绝对偏差）
     std::vector<double> abs_deviations;
-    for (auto v : window)
+    abs_deviations.reserve(window_.size());
+    for (const auto& v : window_)
     {
       abs_deviations.push_back(std::abs(v - median));
     }
-    double mad = compute_median(abs_deviations);
+    double mad = computeMedian(abs_deviations);
 
     // 计算动态阈值（1.4826为高斯分布换算系数）
     double sigma = 1.4826 * mad;
-    if (use_relative_mad && median != 0)
+    if (use_relative_mad_ && std::abs(median) > 1e-9)
     {
       sigma /= std::abs(median);
     }
-    double dynamic_threshold = threshold * sigma;
+    
+    // 防止sigma过小导致误判
+    sigma = std::max(sigma, 1e-6);
+    double dynamic_threshold = threshold_ * sigma;
 
-    // 异常值检测与替换
-    bool is_outlier = std::abs(new_value - median) > dynamic_threshold;
-    double result = is_outlier ? median : new_value;
+    // 异常值检测
+    double deviation = std::abs(new_value - median);
+    bool is_outlier = deviation > dynamic_threshold;
 
-    if (is_outlier)
+    double result;
+    if (!is_outlier)
     {
-      // RCLCPP_DEBUG(rclcpp::get_logger("HampelFilter"), "检测到异常值,替换为中位数");
+      // 正常值处理
+      result = new_value;
+      updateValidHistory(new_value);
+      consecutive_outliers_ = 0;
+      prediction_confidence_ = 1.0;
+    }
+    else
+    {
+      // 异常值处理
+      consecutive_outliers_++;
+      result = handleOutlier(new_value, median, dynamic_threshold, deviation);
+      
+      // 更新预测置信度
+      prediction_confidence_ *= confidence_decay_;
+      prediction_confidence_ = std::max(prediction_confidence_, min_confidence_);
+
+      RCLCPP_DEBUG(rclcpp::get_logger("HampelFilter"), 
+                   "检测到异常值: %.4f, 中位数: %.4f, 阈值: %.4f, 输出: %.4f",
+                   new_value, median, dynamic_threshold, result);
     }
 
+    prev_output_ = result;
+    initialized_ = true;
     return result;
   }
 
-  // 清空滤波器状态
-  void reset(int size = 5, double k = 3.0)
+  /**
+   * @brief 重置滤波器状态
+   * @param size 新的窗口大小（可选）
+   * @param k 新的阈值系数（可选）
+   */
+  void reset(int size = -1, double k = -1.0)
   {
-    window.clear();
-    window_size = size;
-    threshold = k;
+    if (size > 0)
+    {
+      window_size_ = size;
+    }
+    if (k > 0)
+    {
+      threshold_ = k;
+    }
+    
+    window_.clear();
+    valid_history_.clear();
+    prev_output_ = 0.0;
+    initialized_ = false;
+    consecutive_outliers_ = 0;
+    prediction_confidence_ = 1.0;
+  }
+
+  /**
+   * @brief 设置异常值处理策略
+   * @param strategy 策略类型
+   */
+  void setStrategy(OutlierStrategy strategy)
+  {
+    strategy_ = strategy;
+  }
+
+  /**
+   * @brief 设置预测相关参数
+   * @param max_consecutive 连续异常值最大数量，超过后降级到中位数
+   * @param min_conf 最小置信度
+   * @param decay 置信度衰减系数
+   */
+  void setPredictionParams(int max_consecutive, double min_conf, double decay)
+  {
+    max_consecutive_outliers_ = max_consecutive;
+    min_confidence_ = std::clamp(min_conf, 0.0, 1.0);
+    confidence_decay_ = std::clamp(decay, 0.0, 1.0);
+  }
+
+  /**
+   * @brief 获取当前预测置信度
+   * @return 置信度值 [0, 1]
+   */
+  double getPredictionConfidence() const
+  {
+    return prediction_confidence_;
+  }
+
+  /**
+   * @brief 获取连续异常值计数
+   * @return 连续异常值数量
+   */
+  int getConsecutiveOutliers() const
+  {
+    return consecutive_outliers_;
   }
 
 private:
-  // 高效中位数计算
-  template <typename T>
-  double compute_median(const T& container)
+  // 基本参数
+  std::deque<double> window_;           // 滑动窗口容器
+  std::deque<double> valid_history_;    // 有效值历史，用于预测
+  int window_size_;                     // 窗口长度
+  double threshold_;                    // 阈值系数k
+  bool use_relative_mad_;               // 是否使用相对MAD
+  OutlierStrategy strategy_;            // 异常值处理策略
+
+  // 状态变量
+  double prev_output_;                  // 上一次输出值
+  bool initialized_;                    // 是否已初始化
+
+  // 预测相关参数
+  int consecutive_outliers_;            // 连续异常值计数
+  int max_consecutive_outliers_;        // 连续异常值最大数量
+  double prediction_confidence_;        // 预测置信度
+  double min_confidence_;               // 最小置信度
+  double confidence_decay_;             // 置信度衰减系数
+
+  // 有效历史窗口大小
+  static constexpr int kValidHistorySize = 5;
+
+  /**
+   * @brief 计算容器中值的中位数
+   */
+  template <typename Container>
+  double computeMedian(const Container& container) const
   {
+    if (container.empty())
+    {
+      return 0.0;
+    }
+
     std::vector<double> temp(container.begin(), container.end());
     size_t n = temp.size() / 2;
     std::nth_element(temp.begin(), temp.begin() + n, temp.end());
@@ -102,10 +248,146 @@ private:
     }
     else
     {
-      double a = *std::max_element(temp.begin(), temp.begin() + n);
-      std::nth_element(temp.begin(), temp.begin() + n, temp.end());
-      return (a + temp[n]) / 2.0;
+      double upper = temp[n];
+      double lower = *std::max_element(temp.begin(), temp.begin() + n);
+      return (lower + upper) / 2.0;
     }
+  }
+
+  /**
+   * @brief 更新有效值历史
+   */
+  void updateValidHistory(double value)
+  {
+    valid_history_.push_back(value);
+    if (static_cast<int>(valid_history_.size()) > kValidHistorySize)
+    {
+      valid_history_.pop_front();
+    }
+  }
+
+  /**
+   * @brief 根据策略处理异常值
+   */
+  double handleOutlier(double new_value, double median, 
+                       double threshold, double deviation)
+  {
+    // 连续异常值过多时，降级到中位数替换
+    if (consecutive_outliers_ >= max_consecutive_outliers_)
+    {
+      RCLCPP_DEBUG(rclcpp::get_logger("HampelFilter"), 
+                   "连续异常值过多，降级到中位数替换");
+      return median;
+    }
+
+    switch (strategy_)
+    {
+      case OutlierStrategy::SOFT_THRESHOLD:
+        return handleSoftThreshold(new_value, median, threshold, deviation);
+
+      case OutlierStrategy::LINEAR_PREDICTION:
+        return handleLinearPrediction(new_value, median, threshold);
+
+      case OutlierStrategy::EXPONENTIAL_DECAY:
+        return handleExponentialDecay(median, threshold);
+
+      case OutlierStrategy::REPLACE_MEDIAN:
+      default:
+        return median;
+    }
+  }
+
+  /**
+   * @brief 软阈值混合处理
+   * 根据偏离程度进行加权混合，偏离越大越接近中位数
+   */
+  double handleSoftThreshold(double new_value, double median,
+                             double threshold, double deviation)
+  {
+    double excess = deviation - threshold;
+    // 使用sigmoid函数实现平滑过渡
+    double blend_factor = 1.0 / (1.0 + excess / threshold);
+    return blend_factor * new_value + (1.0 - blend_factor) * median;
+  }
+
+  /**
+   * @brief 线性预测处理（推荐用于位置/速度跟踪）
+   * 基于有效历史值的趋势进行线性外推预测
+   */
+  double handleLinearPrediction(double new_value, double median, double threshold)
+  {
+    size_t history_size = valid_history_.size();
+
+    // 历史数据不足时回退到软阈值
+    if (history_size < 2)
+    {
+      return median;
+    }
+
+    // 计算加权线性趋势（近期数据权重更高）
+    double weighted_trend = 0.0;
+    double weight_sum = 0.0;
+    
+    for (size_t i = 1; i < history_size; ++i)
+    {
+      double local_trend = valid_history_[i] - valid_history_[i - 1];
+      double weight = static_cast<double>(i);  // 越新的权重越大
+      weighted_trend += local_trend * weight;
+      weight_sum += weight;
+    }
+    
+    double trend = (weight_sum > 0) ? weighted_trend / weight_sum : 0.0;
+
+    // 基于最后一个有效值和趋势进行预测
+    double predicted = valid_history_.back() + trend;
+
+    // 使用置信度混合预测值和中位数
+    predicted = prediction_confidence_ * predicted + 
+                (1.0 - prediction_confidence_) * median;
+
+    // 限制预测值在合理范围内（中位数附近的阈值范围）
+    double max_deviation = threshold * 1.5;
+    double lower_bound = median - max_deviation;
+    double upper_bound = median + max_deviation;
+    predicted = std::clamp(predicted, lower_bound, upper_bound);
+
+    // 额外检查：如果预测值仍然是异常值方向，进行修正
+    // 确保预测值不会比原始异常值更偏离
+    if (new_value > median && predicted > new_value)
+    {
+      predicted = std::min(predicted, new_value);
+    }
+    else if (new_value < median && predicted < new_value)
+    {
+      predicted = std::max(predicted, new_value);
+    }
+
+    return predicted;
+  }
+
+  /**
+   * @brief 指数衰减处理
+   * 从上一个输出值向中位数方向渐进修正
+   */
+  double handleExponentialDecay(double median, double threshold)
+  {
+    if (!initialized_)
+    {
+      return median;
+    }
+
+    // 计算修正步长（与阈值相关）
+    double max_step = threshold * 0.5;
+    double diff = median - prev_output_;
+
+    // 如果差值小于最大步长，直接返回中位数
+    if (std::abs(diff) <= max_step)
+    {
+      return median;
+    }
+
+    // 否则向中位数方向移动一步
+    return prev_output_ + std::copysign(max_step, diff);
   }
 };
 

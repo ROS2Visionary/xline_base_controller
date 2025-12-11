@@ -6,10 +6,12 @@
  */
 
 #include "xline_follow_controller/rpp_follow_controller.hpp"
+#include "xline_follow_controller/path_utils.hpp"
 #include <algorithm>
 #include <cmath>
 #include <iomanip>
 #include <sstream>
+#include <cstdlib>
 
 namespace xline
 {
@@ -61,7 +63,7 @@ RPPController::RPPController()
   , grid_resolution_(0.01)
   , grid_width_(10.0)
   , grid_height_(10.0)
-  , grid_map_path_("/home/xline/zyq_ws")  // 默认路径，可在 YAML 中覆盖
+  , grid_map_path_()
   // 角速度滤波
   , previous_angular_vel_(0.0)
   , predicted_angular_vel_(0.0)
@@ -73,6 +75,13 @@ RPPController::RPPController()
   , second_order_filter_(2.0, 0.7)
 {
   RCLCPP_INFO(get_logger(), "RPPController实例已创建，正在初始化...");
+
+  // 基于环境变量初始化默认的栅格图路径
+  const char* ws_root = std::getenv("XLINE_WS_ROOT");
+  if (ws_root && *ws_root)
+  {
+    grid_map_path_ = ws_root;
+  }
   // 先加载参数，再根据参数做一次初始化
   updateParameters("/config/rpp_curve.yaml");
   initialize();
@@ -195,7 +204,8 @@ void RPPController::updateParameters(std::string file_path)
   // 栅格图保存路径（可选参数）
   if (parser.hasParameter("grid_map_path"))
   {
-    grid_map_path_ = parser.getParameter<std::string>("grid_map_path");
+    grid_map_path_ = xline::path_utils::resolve_path(
+      parser.getParameter<std::string>("grid_map_path"));
   }
 
   // 记录关键参数

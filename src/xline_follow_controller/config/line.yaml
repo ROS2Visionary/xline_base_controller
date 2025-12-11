@@ -2,21 +2,22 @@
 debug: true
 
 debug_paths:
-  raw: "/home/xline/zyq_ws/other/path_l"
-  filtered: "/home/xline/zyq_ws/other/path_sg"
+  # 相对路径将自动挂到 ${XLINE_WS_ROOT} 下
+  raw: "xline_follow_controller/path_l"
+  filtered: "xline_follow_controller/path_sg"
 
 # 控制系统配置
 control:
   # 航向 PID 控制器参数
   heading_pid:
     alignment:
-      kp: 1.1        # 对齐阶段比例系数
+      kp: 1.0        # 对齐阶段比例系数
       ki: 0.0        # 对齐阶段积分系数
-      kd: 0.9        # 对齐阶段微分系数
+      kd: 0.12        # 对齐阶段微分系数
     following:
-      kp: 1.1        # 跟随阶段比例系数
+      kp: 1.0        # 跟随阶段比例系数
       ki: 0.0        # 跟随阶段积分系数
-      kd: 0.9        # 跟随阶段微分系数
+      kd: 0.12        # 跟随阶段微分系数
 
 # 运动控制参数
 motion:
@@ -35,13 +36,14 @@ motion:
     # 距离参数
     distances:
       alignment: 0.08              # 对齐距离阈值
-      deceleration: 0.3           # 开始减速的距离（工作模式）
+      deceleration: 0.5           # 开始减速的距离（工作模式）
+      non_work_deceleration: 0.7  # 非工作模式减速距离（更长，补偿电机响应延迟）
       acceleration: 0.15           # 加速阶段距离
       walking: 0.05                # 步行距离
       lookahead: 0.3               # 前瞻距离
-      waypoint_tolerance: 0.01    # 路径点容差
+      waypoint_tolerance: 0.005    # 路径点容差
       mini_path: 0.3              # 最小路径距离
-      non_work_deceleration: 0.5  # 非工作模式减速距离（更长，补偿电机响应延迟）
+      
     
     # 速度调节参数
     tuning:
@@ -66,7 +68,7 @@ motion:
     following:
       # Hampel滤波器配置
       hampel:
-        window_size: 9             # 窗口大小
+        window_size: 5             # 窗口大小
         k_threshold: 3             # 异常值检测阈值
 
 
@@ -78,8 +80,8 @@ sensors:
       alpha: 0.85                    # 低通滤波器平滑因子
       # Hampel滤波器配置
       hampel:
-        window_size: 9               # 窗口大小
-        k_threshold: 5             # 异常值检测阈值
+        window_size: 5               # 窗口大小
+        k_threshold: 3             # 异常值检测阈值
       savgol:
         window_size: 7               # 窗口大小
         polynomial_order: 3          # 多项式阶数
@@ -90,8 +92,8 @@ phase_control:
 
   # 初始对齐参数（共用）
   alignment:
-    max_angular_vel: 0.1                 # 最大角速度
-    max_angular_accel: 0.5               # 最大角加速度
+    max_angular_vel: 0.08                 # 最大角速度
+    max_angular_accel: 0.05               # 最大角加速度
     # 航向混合控制参数
     heading:
       current_heading_weight: 0        # 当前机器人航向权重 (0-1)
@@ -106,8 +108,8 @@ phase_control:
 
   # 跟随参数
   following:
-    max_angular_vel: 0.08                 # 最大角速度
-    max_angular_accel: 0.5               # 最大角加速度
+    max_angular_vel: 0.07                 # 最大角速度
+    max_angular_accel: 0.03               # 最大角加速度
     # 航向混合控制参数（平稳地形保持高精度）
     heading:
       current_heading_weight: 0        # 当前机器人航向权重 (基础值+补偿值)
@@ -117,6 +119,6 @@ phase_control:
       alpha: 0.9                     # 低通滤波器平滑因子（应用于角速度）
     # 二阶平滑器参数
     smoother:
-      frequency: 18              # 自然频率
+      frequency: 15              # 自然频率
       damping: 0.95                # 阻尼比
   

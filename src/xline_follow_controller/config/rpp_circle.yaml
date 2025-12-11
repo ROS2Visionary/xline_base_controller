@@ -35,7 +35,7 @@ smoother_damping: 0.9   # 阻尼比，控制震荡程度
 
 low_speed_mode: True
 enable_grid_map: True
-grid_map_path: '/home/xline/zyq_ws'
+grid_map_path: 'grid_maps'
 pos_use_biquad_cascade: True
 pos_use_biquad_cascade_filter: False
 pos_cutoff_freq: 1.5              # 位置数据截止频率
