@@ -281,6 +281,70 @@ namespace xline
         layer_name = line["layer"].asString();
       }
       bool is_transition = (layer_name == "TRANSITION");
+
+      // ========== 姿态校正计时逻辑 ==========
+      // 需求：在持续接收任务过程中，以 60s 为周期进行一次姿态校正。
+      // 在每次接收到路径 action 时，如果：
+      //   1) 当前路径为转场路径（TRANSITION），且
+      //   2) 距离上一次姿态校正已超过 60s，或尚未进行过姿态校正
+      // 则先执行一次姿态校正，待校正完成后再继续路径跟随。
+      if (is_transition)
+      {
+        bool need_calibration = false;
+        {
+          std::lock_guard<std::mutex> lock(calibration_mutex_);
+          if (!has_last_calibration_time_)
+          {
+            // 从未进行过姿态校正：在首个转场路径前进行一次校正
+            need_calibration = true;
+          }
+          else
+          {
+            auto now = this->now();
+            auto elapsed = now - last_calibration_time_;
+            if (elapsed.seconds() >= 60.0)
+            {
+              need_calibration = true;
+            }
+          }
+        }
+
+        if (need_calibration)
+        {
+          // 在执行校正前再次检查是否已取消
+          if (goal_handle->is_canceling())
+          {
+            geometry_msgs::msg::Twist stop;
+            cmd_vel_publisher_->publish(stop);
+
+            is_paused_.store(false);
+
+            result->success = false;
+            result->error_message = "任务在姿态校正前被取消";
+            goal_handle->canceled(result);
+            RCLCPP_INFO(get_logger(), "目标已取消：plan_uid=%s", goal->plan_uid.c_str());
+            return;
+          }
+
+          RCLCPP_INFO(get_logger(),
+                      "[id=%u] 转场路径前触发姿态校正：距离上次校正已超过60秒或尚未校正",
+                      path_id);
+
+          // 使用与姿态校正服务相同的参数
+          double calibration_velocity = 0.05;  // m/s
+          double calibration_duration = 3.0;   // 秒
+          bool calibration_success = executeLocalizationCalibration(calibration_velocity, calibration_duration);
+
+          if (!calibration_success)
+          {
+            result->success = false;
+            result->error_message = "转场路径前姿态校正失败";
+            goal_handle->abort(result);
+            RCLCPP_ERROR(get_logger(), "转场路径前姿态校正失败：plan_uid=%s", goal->plan_uid.c_str());
+            return;
+          }
+        }
+      }
       
       // 存储 ink 信息到成员变量，供后续使用
       current_ink_mode_ = ink_mode;
@@ -901,6 +965,30 @@ namespace xline
       RCLCPP_INFO(get_logger(), "停止机器人移动");
       twist_msg.linear.x = 0.0;
       cmd_vel_publisher_->publish(twist_msg);
+
+      // 4.1 在姿态校正结束后额外静止 0.5 秒
+      RCLCPP_INFO(get_logger(), "姿态校正完成，保持静止 0.5 秒...");
+      rclcpp::Rate stop_rate(20);
+      auto pause_start = this->now();
+      auto pause_duration = rclcpp::Duration::from_seconds(0.5);
+      while ((this->now() - pause_start) < pause_duration)
+      {
+        // 持续发布零速，确保机器人保持静止
+        cmd_vel_publisher_->publish(twist_msg);
+        stop_rate.sleep();
+      }
+
+      auto calibration_end = this->now();
+      double total_duration = (calibration_end - start_time).seconds();
+      RCLCPP_INFO(get_logger(), "本次姿态校正总耗时约 %.3f 秒（含 0.5 秒静止）", total_duration);
+
+      // 更新最近一次姿态校正时间戳（从“校正+静止”结束时刻开始计时60秒）
+      {
+        std::lock_guard<std::mutex> lock(calibration_mutex_);
+        last_calibration_time_ = calibration_end;
+        has_last_calibration_time_ = true;
+      }
+      RCLCPP_INFO(get_logger(), "更新姿态校正时间戳，开始计时 60s 窗口");
 
       // 5. 异步检查服务结果（不阻塞，可选）
       std::async(std::launch::async, [this, future = std::move(future)]() mutable {

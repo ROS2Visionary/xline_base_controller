@@ -37,7 +37,7 @@ LineFollowController::LineFollowController()
   , prev_angular_velocity_(0.0)
   , last_yaw_error_(0.0)
   , angular_vel_hampel_filter_(5, 3.0)
-  , wait_duration_(0.5)
+  , wait_duration_(0.2)
   , waiting_(false)
   , angular_smoother_(2.0, 0.7)
 {

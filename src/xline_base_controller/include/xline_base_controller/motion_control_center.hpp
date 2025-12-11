@@ -101,6 +101,11 @@ namespace xline
       
       uint32_t current_layer_id; // 当前路径id
 
+      // 姿态校正计时相关
+      std::mutex calibration_mutex_;
+      rclcpp::Time last_calibration_time_;
+      bool has_last_calibration_time_{false};
+
       // 当前路径的 ink 信息
       std::string current_ink_mode_;      // 喷墨模式: "solid", "dashed", "text"
       std::string current_ink_printer_;   // 打印机: "left", "center", "right"
