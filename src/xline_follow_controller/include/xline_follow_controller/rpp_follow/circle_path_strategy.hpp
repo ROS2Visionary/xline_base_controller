@@ -91,22 +91,6 @@ public:
   /// 获取基准角速度（基于最小线速度和半径计算）
   double getBaselineAngularVelocity() const { return baseline_angular_velocity_; }
 
-  /// 获取当前累计旋转角度
-  double getAccumulatedAngle() const { return accumulated_angle_; }
-
-  /// 获取目标总旋转角度（包含一定冗余）
-  double getTotalAngle() const { return circle_total_angle_; }
-
-  /// 获取圆心坐标（通过引用返回）
-  void getCircleCenter(double& x, double& y) const
-  {
-    x = circle_center_x_;
-    y = circle_center_y_;
-  }
-
-  /// 获取当前设置的圆半径
-  double getCircleRadius() const { return circle_radius_; }
-
   /**
    * @brief 根据半径调整速度和前瞻距离
    *
@@ -136,10 +120,6 @@ private:
   double circle_center_x_;
   double circle_center_y_;
   double circle_radius_;
-  double circle_entry_x_;
-  double circle_entry_y_;
-  double circle_start_angle_;
-  double circle_end_angle_;
   double circle_total_angle_;
   double baseline_angular_velocity_;
 
@@ -147,7 +127,6 @@ private:
   bool last_yaw_initialized_;
   double last_yaw_;
   double accumulated_angle_;
-  int angle_debug_counter_;
 
   // 航向预对准状态
   bool need_yaw_prealign_;

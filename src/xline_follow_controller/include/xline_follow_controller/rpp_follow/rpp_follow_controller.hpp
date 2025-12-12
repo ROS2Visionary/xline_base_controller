@@ -119,26 +119,13 @@ public:
                                  geometry_msgs::msg::PoseStamped robot_pose_global,
                                  const std::vector<geometry_msgs::msg::PoseStamped>& prune_plan);
 
-  /// 对线速度做简单的限幅与渐变。
-  double linearRegularization(double current_velocity, double desired_velocity);
-
-  /// 对角速度做简单的限幅与渐变。
-  double angularRegularization(double current_angular_vel, double desired_angular_vel);
-
 
   // ================================
   // 航向对齐与角度相关工具
   // ================================
 
-  /// 当前姿态和路径切线的夹角是否需要先单独旋转对齐。
-  bool shouldRotateToPath(double angle_to_path, double tolerance);
-
   /// 将角度规范化到 [-π, π]。
   double regularizeAngle(double angle);
-
-  /// 是否需要原地旋转对齐终点朝向。
-  bool shouldRotateToGoal(const geometry_msgs::msg::PoseStamped& current_pose,
-                          const geometry_msgs::msg::PoseStamped& goal_pose);
 
   /// 航向预对准逻辑，常见于圆轨迹切入前。
   bool performYawPrealignment(const geometry_msgs::msg::PoseStamped& current_pose,
@@ -262,9 +249,6 @@ private:
   double computeCurvature(double angle_to_lookahead, double lookahead_distance);
   double computeLateralError(double angle_to_lookahead, double lookahead_distance);
   void updateErrorStatistics();
-  double computeDesiredAngularVelocity(double desired_velocity, double curvature,
-                                        double current_angular_vel, double lookahead_distance,
-                                        double angle_to_lookahead, double dt, bool& filter_reset);
   /// 根据期望线速度/角速度和当前状态，生成最终的 cmd_vel 消息
   void generateVelocityCommand(geometry_msgs::msg::TwistStamped& cmd_vel,
                                 const geometry_msgs::msg::Twist& current_velocity,

@@ -59,15 +59,6 @@ public:
   /// 设置是否启用后退模式（仅记录标志，具体控制由上层处理）
   void setBackFollow(bool enable);
 
-  /// 当前是否处于后退模式
-  bool isBackFollow() const { return back_follow_; }
-
-  /// 获取当前路径的目标位姿（路径终点）
-  const geometry_msgs::msg::PoseStamped& getGoalPose() const { return goal_pose_; }
-
-  /// 获取路径总长度（按相邻点累积计算）
-  double getPathLength() const { return path_length_; }
-
 private:
   /// 与 YAML 中结构对应的策略参数（目标、靠近约束等）
   RPPPathStrategyParams params_;    ///< 策略参数

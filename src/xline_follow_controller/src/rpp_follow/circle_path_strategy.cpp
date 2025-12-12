@@ -23,17 +23,12 @@ CirclePathStrategy::CirclePathStrategy()
   : circle_center_x_(0.0)
   , circle_center_y_(0.0)
   , circle_radius_(0.0)
-  , circle_entry_x_(0.0)
-  , circle_entry_y_(0.0)
-  , circle_start_angle_(0.0)
-  , circle_end_angle_(0.0)
   , circle_total_angle_(0.0)
   , baseline_angular_velocity_(0.0)
   // 角度累计相关
   , last_yaw_initialized_(false)
   , last_yaw_(0.0)
   , accumulated_angle_(0.0)
-  , angle_debug_counter_(0)
   // 航向预对准
   , need_yaw_prealign_(true)
   , yaw_prealign_done_(false)
@@ -217,8 +212,6 @@ nav_msgs::msg::Path CirclePathStrategy::generateCirclePath(
   double actual_radius = radius + params_.smoothing.radius_offset;
 
   geometry_msgs::msg::PoseStamped entry_pose = start_pose;
-  circle_entry_x_ = entry_pose.pose.position.x;
-  circle_entry_y_ = entry_pose.pose.position.y;
 
   // 计算起点相对圆心的切线方向向量，顺时针/逆时针这里不做区分，
   // 只要确定一个稳定的切线方向即可。
@@ -274,8 +267,6 @@ nav_msgs::msg::Path CirclePathStrategy::generateCirclePath(
 
 void CirclePathStrategy::setAngleRange(double start_angle, double end_angle)
 {
-  circle_start_angle_ = start_angle;
-  circle_end_angle_ = end_angle;
   // 这里在两端角度差的基础上加了一点冗余(0.8π)，
   // 让车辆有一定“缓冲区”来完成最终对齐。
   circle_total_angle_ = std::abs(end_angle - start_angle) + 0.8 * M_PI;
@@ -349,7 +340,6 @@ void CirclePathStrategy::resetCirclePathState()
   last_yaw_initialized_ = false;
   last_yaw_ = 0.0;
   accumulated_angle_ = 0.0;
-  angle_debug_counter_ = 0;
 }
 
 bool CirclePathStrategy::updateAccumulatedAngle(double current_yaw)

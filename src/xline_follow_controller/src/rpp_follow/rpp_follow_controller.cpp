@@ -771,82 +771,9 @@ double RPPController::applyApproachConstraint(const double raw_linear_vel,
   return raw_linear_vel;
 }
 
-double RPPController::linearRegularization(double current_velocity, double desired_velocity)
-{
-  double velocity_increment = desired_velocity - current_velocity;
-
-  if (std::fabs(velocity_increment) > params_.velocity.linear.max_inc)
-  {
-    velocity_increment = std::copysign(params_.velocity.linear.max_inc, velocity_increment);
-  }
-
-  double command_velocity = current_velocity + velocity_increment;
-
-  if (std::fabs(command_velocity) > params_.velocity.linear.max)
-  {
-    command_velocity = std::copysign(params_.velocity.linear.max, command_velocity);
-  }
-  else if (std::fabs(command_velocity) < params_.velocity.linear.min && desired_velocity != 0.0)
-  {
-    command_velocity = std::copysign(params_.velocity.linear.min, command_velocity);
-  }
-
-  return command_velocity;
-}
-
-double RPPController::angularRegularization(double current_angular_vel, double desired_angular_vel)
-{
-  double max_allowed_w = params_.velocity.angular.max;
-
-  if (std::fabs(desired_angular_vel) > params_.velocity.angular.max * 0.8)
-  {
-    max_allowed_w = params_.velocity.angular.max * 0.8;
-  }
-
-  if (std::fabs(desired_angular_vel) > max_allowed_w)
-  {
-    desired_angular_vel = std::copysign(max_allowed_w, desired_angular_vel);
-  }
-
-  double angular_increment = desired_angular_vel - current_angular_vel;
-
-  double effective_max_w_inc = params_.velocity.angular.max_inc;
-  if (std::fabs(angular_increment) > params_.velocity.angular.max_inc * 2.0)
-  {
-    effective_max_w_inc = params_.velocity.angular.max_inc * 1.5;
-  }
-  else if (std::fabs(angular_increment) < params_.velocity.angular.max_inc * 0.5)
-  {
-    effective_max_w_inc = params_.velocity.angular.max_inc * 0.8;
-  }
-
-  if (std::fabs(angular_increment) > effective_max_w_inc)
-  {
-    angular_increment = std::copysign(effective_max_w_inc, angular_increment);
-  }
-
-  double command_angular_vel = current_angular_vel + angular_increment;
-
-  if (std::fabs(command_angular_vel) > max_allowed_w)
-  {
-    command_angular_vel = std::copysign(max_allowed_w, command_angular_vel);
-  }
-  else if (std::fabs(command_angular_vel) < params_.velocity.angular.min && desired_angular_vel != 0.0)
-  {
-    command_angular_vel = std::copysign(params_.velocity.angular.min, command_angular_vel);
-  }
-
-  return command_angular_vel;
-}
 // ============================================================================
 // 第八部分：辅助计算
 // ============================================================================
-
-bool RPPController::shouldRotateToPath(double angle_to_path, double tolerance)
-{
-  double angle_threshold = tolerance > 0.0 ? tolerance : params_.goal.rotate_tol;
-  return std::fabs(angle_to_path) > angle_threshold;
-}
 
 double RPPController::regularizeAngle(double angle)
 {
@@ -859,14 +786,6 @@ double RPPController::regularizeAngle(double angle)
     angle += 2.0 * M_PI;
   }
   return angle;
-}
-
-bool RPPController::shouldRotateToGoal(const geometry_msgs::msg::PoseStamped& current_pose,
-                                       const geometry_msgs::msg::PoseStamped& goal_pose)
-{
-  double distance_to_goal = std::hypot(current_pose.pose.position.x - goal_pose.pose.position.x,
-                                       current_pose.pose.position.y - goal_pose.pose.position.y);
-  return distance_to_goal < params_.goal.dist_tol;
 }
 
 double RPPController::dphi(geometry_msgs::msg::PointStamped lookahead_pt,
@@ -1315,19 +1234,6 @@ void RPPController::updateErrorStatistics()
     }
     avg_error_ = error_sum_ / error_count_;
   }
-}
-
-double RPPController::computeDesiredAngularVelocity(double desired_velocity, double curvature,
-                                                     double current_angular_vel, double lookahead_distance,
-                                                     double angle_to_lookahead, double dt, bool& filter_reset)
-{
-  if (!std::isfinite(desired_velocity) || !std::isfinite(curvature))
-  {
-    return 0.0;
-  }
-
-  double pp_angular_velocity = desired_velocity * curvature;
-  return std::isfinite(pp_angular_velocity) ? pp_angular_velocity : 0.0;
 }
 
 void RPPController::generateVelocityCommand(geometry_msgs::msg::TwistStamped& cmd_vel,
