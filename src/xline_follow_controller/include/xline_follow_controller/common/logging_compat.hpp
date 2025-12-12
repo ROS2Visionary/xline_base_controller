@@ -15,4 +15,3 @@ namespace follow_controller {
 #define LOG_INFO(...)  RCLCPP_INFO(rclcpp::get_logger("follow_controller"), __VA_ARGS__)
 #define LOG_WARN(...)  RCLCPP_WARN(rclcpp::get_logger("follow_controller"), __VA_ARGS__)
 #define LOG_ERROR(...) RCLCPP_ERROR(rclcpp::get_logger("follow_controller"), __VA_ARGS__)
-

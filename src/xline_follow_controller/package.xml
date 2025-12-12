@@ -2,27 +2,34 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>xline_follow_controller</name>
-  <version>0.0.0</version>
-  <description>TODO: Package description</description>
-  <maintainer email="zyq@aliyun.com">baul</maintainer>
-  <license>TODO: License declaration</license>
+  <version>2.0.0</version>
+  <description>
+    Regulated Pure Pursuit path following controller with strategy pattern.
+    Supports both curve and circle path following modes.
+  </description>
+  <maintainer email="developer@example.com">Developer</maintainer>
+  <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
   <depend>rclcpp</depend>
   <depend>geometry_msgs</depend>
-  <depend>visualization_msgs</depend>
   <depend>nav_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>visualization_msgs</depend>
   <depend>tf2</depend>
   <depend>tf2_ros</depend>
   <depend>tf2_geometry_msgs</depend>
+  <depend>ament_index_cpp</depend>
   <depend>angles</depend>
-  <depend>opencv</depend>
-  <build_depend>eigen3_cmake_module</build_depend>
-  <build_export_depend>eigen3_cmake_module</build_export_depend>
-  <exec_depend>eigen3_cmake_module</exec_depend>
-  <build_depend>Eigen3</build_depend>
-  <build_export_depend>Eigen3</build_export_depend>
+
+  <build_depend>eigen</build_depend>
+  <build_depend>libopencv-dev</build_depend>
+  <build_depend>yaml-cpp</build_depend>
+
+  <exec_depend>libopencv-dev</exec_depend>
+  <exec_depend>yaml-cpp</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

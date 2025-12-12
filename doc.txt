@@ -5,8 +5,10 @@ colcon build
 source install/setup.sh
 ros2 run xline_inkjet_printer inkjet_printer_node
 
-colcon build --packages-select xline_msgs
-colcon build --parallel-workers 1
+xline_follow_controller xline_msgs  xline_base_controller
+colcon build --packages-select xline_base_controller
+
+colcon build --parallel-workers 
 
 
 ros2 service call /motion_control/execute_calibration std_srvs/srv/Trigger
@@ -14,15 +16,6 @@ ros2 service call /motion_control/execute_calibration std_srvs/srv/Trigger
 
 #  设置工作空间根
 export XLINE_WS_ROOT=/root/xline_ws/xline_base_controller
-
-
-
-1b 02 00 15 7b224555324c223a7b226e6f69736573223a317d7d  {"EU2L":{"noises":1}}
-1b 02 00 19 7b224555324c223a7b2273657475704576656e74223a307d7d  {"EU2L":{"setupEvent":0}}
-
-这是第一条示例：1b 02 00 15 7b224555324c223a7b226e6f69736573223a317d7d -> (1b 02)是固定开头，（00）是可变喷码机编号，（15）是该条信息对应的指令，（7b224555324c223a7b226e6f69736573223a317d7d）是JSON格式的命令{"EU2L":{"noises":1}}转码后的数据
-这是第二条示例：1b 02 00 19 7b224555324c223a7b2273657475704576656e74223a307d7d ->  (1b 02)是固定开头，（00）是可变喷码机编号，（19）是该条信息对应的指令，（7b224555324c223a7b226e6f69736573223a317d7d）是JSON格式的命令{"EU2L":{"setupEvent":0}}转码后的数据
-
 
 
   1. 使用指令名称

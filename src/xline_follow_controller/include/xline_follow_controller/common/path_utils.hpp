@@ -84,4 +84,3 @@ inline std::string resolve_path(const std::string& raw)
 
 }  // namespace path_utils
 }  // namespace xline
-

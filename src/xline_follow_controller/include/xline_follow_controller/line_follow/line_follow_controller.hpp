@@ -1,8 +1,8 @@
 #pragma once
 
-#include "xline_follow_controller/base_follow_controller.hpp"
-#include "xline_follow_controller/follow_common.hpp"
-#include "xline_follow_controller/logging_compat.hpp"
+#include "xline_follow_controller/common/base_follow_controller.hpp"
+#include "xline_follow_controller/common/follow_common.hpp"
+#include "xline_follow_controller/common/logging_compat.hpp"
 #include <yaml-cpp/yaml.h>
 #include "ament_index_cpp/get_package_share_directory.hpp"
 
