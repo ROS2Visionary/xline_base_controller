@@ -1,10 +1,3 @@
-/**
- * @file rpp_follow_controller.cpp
- * @brief Regulated Pure Pursuit 路径跟随控制器实现（策略模式重构版）
- *
- * 使用策略模式分离圆形路径和曲线路径的特有逻辑。
- */
-
 #include "xline_follow_controller/rpp_follow/rpp_follow_controller.hpp"
 #include "xline_follow_controller/common/path_utils.hpp"
 #include <algorithm>
@@ -49,28 +42,24 @@ RPPController::RPPController()
   , remaining_distance_(0.0)
   , last_closest_idx(0)
   // 栅格图参数
-  , enable_grid_map_(false)
   , grid_resolution_(0.01)
   , grid_width_(10.0)
   , grid_height_(10.0)
-  , grid_map_path_()
   // 角速度滤波
   , previous_angular_vel_(0.0)
   , predicted_angular_vel_(0.0)
-  , lowpass_angular_vel_filter_gain_(0.7)
-  , angular_vel_history_size_(5)
   , angle_to_path_prev_(0.0)
   , lookahead_dist_prev_(0.0)
   // 二阶平滑器
   , second_order_filter_(2.0, 0.7)
 {
-  RCLCPP_INFO(get_logger(), "RPPController 实例已创建（策略模式版），正在初始化...");
+  RCLCPP_INFO(get_logger(), "RPPController 实例已创建（结构体参数版），正在初始化...");
 
   // 基于环境变量初始化默认的栅格图路径
   const char* ws_root = std::getenv("XLINE_WS_ROOT");
   if (ws_root && *ws_root)
   {
-    grid_map_path_ = ws_root;
+    params_.debug.grid_map_path = ws_root;
   }
 
   // 创建默认策略（曲线路径）
@@ -98,10 +87,10 @@ void RPPController::initialize()
   d_t_ = 1.0 / 18.0;
 
   // 创建栅格图保存目录
-  if (enable_grid_map_)
+  if (params_.debug.enable_grid_map)
   {
-    std::filesystem::create_directories(grid_map_path_);
-    RCLCPP_INFO(get_logger(), "栅格图将保存到: %s", grid_map_path_.c_str());
+    std::filesystem::create_directories(params_.debug.grid_map_path);
+    RCLCPP_INFO(get_logger(), "栅格图将保存到: %s", params_.debug.grid_map_path.c_str());
   }
 
   initialized_ = true;
@@ -140,76 +129,114 @@ std::string RPPController::getCurrentStrategyType() const
 // 第三部分：参数管理
 // ============================================================================
 
+void RPPController::loadParamsFromYaml(const xline::YamlParser::YamlParser& parser)
+{
+  // =========================================================================
+  // [1] 目标到达判定
+  // =========================================================================
+  params_.goal.dist_tol = parser.getParameter<double>("goal.dist_tol");
+  params_.goal.rotate_tol = parser.getParameter<double>("goal.rotate_tol");
+
+  // =========================================================================
+  // [2] Pure Pursuit 前瞻参数
+  // =========================================================================
+  params_.lookahead.time = parser.getParameter<double>("lookahead.time");
+  params_.lookahead.min_dist = parser.getParameter<double>("lookahead.min_dist");
+  params_.lookahead.max_dist = parser.getParameter<double>("lookahead.max_dist");
+
+  // =========================================================================
+  // [3] 速度控制 - 线速度
+  // =========================================================================
+  params_.velocity.linear.base = parser.getParameter<double>("velocity.linear.base");
+  params_.velocity.linear.min = parser.getParameter<double>("velocity.linear.min");
+  params_.velocity.linear.max = parser.getParameter<double>("velocity.linear.max");
+  params_.velocity.linear.max_inc = parser.getParameter<double>("velocity.linear.max_inc");
+
+  // =========================================================================
+  // [4] 速度控制 - 角速度
+  // =========================================================================
+  params_.velocity.angular.min = parser.getParameter<double>("velocity.angular.min");
+  params_.velocity.angular.max = parser.getParameter<double>("velocity.angular.max");
+  params_.velocity.angular.max_inc = parser.getParameter<double>("velocity.angular.max_inc");
+
+  // =========================================================================
+  // [5] 路径跟踪约束
+  // =========================================================================
+  params_.tracking.regulated_min_radius = parser.getParameter<double>("tracking.regulated_min_radius");
+  params_.tracking.approach.dist = parser.getParameter<double>("tracking.approach.dist");
+  params_.tracking.approach.min_v = parser.getParameter<double>("tracking.approach.min_v");
+
+  // =========================================================================
+  // [6] 角速度平滑 - 基础参数
+  // =========================================================================
+  params_.smoothing.radius_offset = parser.getParameter<double>("smoothing.radius_offset");
+  params_.smoothing.type = parser.getParameter<std::string>("smoothing.type");
+  params_.smoothing.lowpass.gain = parser.getParameter<double>("smoothing.lowpass.gain");
+  params_.smoothing.moving_average.window_size = parser.getParameter<int>("smoothing.moving_average.window_size");
+
+  // =========================================================================
+  // [7] 角速度平滑 - 二阶滤波器
+  // =========================================================================
+  params_.smoothing.second_order.freq = parser.getParameter<double>("smoothing.second_order.freq");
+  params_.smoothing.second_order.damping = parser.getParameter<double>("smoothing.second_order.damping");
+
+  // =========================================================================
+  // [8] 滤波器配置 - 位置
+  // =========================================================================
+  params_.filter.position.enabled = parser.getParameter<bool>("filter.position.enabled");
+  params_.filter.position.active = parser.getParameter<bool>("filter.position.active");
+  params_.filter.position.cutoff_freq = parser.getParameter<double>("filter.position.cutoff_freq");
+  params_.filter.position.sample_rate = parser.getParameter<double>("filter.position.sample_rate");
+  params_.filter.position.output_limit = parser.getParameter<double>("filter.position.output_limit");
+  params_.filter.position.rate_limit = parser.getParameter<double>("filter.position.rate_limit");
+
+  // =========================================================================
+  // [9] 滤波器配置 - 角速度
+  // =========================================================================
+  params_.filter.angular.enabled = parser.getParameter<bool>("filter.angular.enabled");
+  params_.filter.angular.active = parser.getParameter<bool>("filter.angular.active");
+  params_.filter.angular.use_offset_limit = parser.getParameter<bool>("filter.angular.use_offset_limit");
+  params_.filter.angular.output_offset = parser.getParameter<double>("filter.angular.output_offset");
+  params_.filter.angular.cutoff_freq = parser.getParameter<double>("filter.angular.cutoff_freq");
+  params_.filter.angular.sample_rate = parser.getParameter<double>("filter.angular.sample_rate");
+  params_.filter.angular.output_limit_rate = parser.getParameter<double>("filter.angular.output_limit_rate");
+  params_.filter.angular.rate_limit = parser.getParameter<double>("filter.angular.rate_limit");
+
+  // =========================================================================
+  // [10] 运行模式
+  // =========================================================================
+  params_.mode.low_speed = parser.getParameter<bool>("mode.low_speed");
+
+  // =========================================================================
+  // [11] 调试与可视化
+  // =========================================================================
+  params_.debug.enable_grid_map = parser.getParameter<bool>("debug.enable_grid_map");
+  if (parser.hasParameter("debug.grid_map_path"))
+  {
+    params_.debug.grid_map_path = xline::path_utils::resolve_path(
+        parser.getParameter<std::string>("debug.grid_map_path"));
+  }
+
+  // =========================================================================
+  // [12] 偏差控制
+  // =========================================================================
+  params_.deviation.start_factor = parser.getParameter<double>("deviation.start_factor");
+  params_.deviation.end_factor = parser.getParameter<double>("deviation.end_factor");
+  params_.deviation.rate = parser.getParameter<double>("deviation.rate");
+}
+
 void RPPController::updateParameters(std::string file_path)
 {
   std::string package_share_directory = ament_index_cpp::get_package_share_directory("xline_follow_controller");
   std::string config_file_path = package_share_directory + file_path;
   xline::YamlParser::YamlParser parser(config_file_path);
 
-  // 位置和方向容忍度
-  goal_dist_tol_ = parser.getParameter<double>("goal_dist_tol");
-  rotate_tol_ = parser.getParameter<double>("rotate_tol");
+  // 从YAML加载参数到结构体
+  loadParamsFromYaml(parser);
 
-  // 前瞻参数
-  lookahead_time_ = parser.getParameter<double>("lookahead_time");
-  min_lookahead_dist_ = parser.getParameter<double>("min_lookahead_dist");
-  max_lookahead_dist_ = parser.getParameter<double>("max_lookahead_dist");
-
-  // 线速度参数
-  max_v_ = parser.getParameter<double>("max_v");
-  min_v_ = parser.getParameter<double>("min_v");
-  max_v_inc_ = parser.getParameter<double>("max_v_inc");
-  linear_speed_ = parser.getParameter<double>("linear_speed");
-
-  // 角速度参数
-  max_w_ = parser.getParameter<double>("max_w");
-  min_w_ = parser.getParameter<double>("min_w");
-  max_w_inc_ = parser.getParameter<double>("max_w_inc");
-
-  // 路径跟踪参数
-  regulated_min_radius_ = parser.getParameter<double>("regulated_min_radius");
-  approach_dist_ = parser.getParameter<double>("approach_dist");
-  approach_min_v_ = parser.getParameter<double>("approach_min_v");
-
-  // 角速度平滑参数
-  radius_offset_ = parser.getParameter<double>("radius_offset");
-  lowpass_angular_vel_filter_gain_ = parser.getParameter<double>("lowpass_angular_vel_filter_gain");
-  smoothing_type_ = parser.getParameter<std::string>("smoothing_type");
-  angular_vel_history_size_ = parser.getParameter<int>("angular_vel_history_size");
-
-  // 二阶平滑器参数
-  angular_smoother_freq_ = parser.getParameter<double>("smoother_freq");
-  angular_smoother_damping_ = parser.getParameter<double>("smoother_damping");
-  second_order_filter_.setParameters(angular_smoother_freq_, angular_smoother_damping_);
-
-  // 位置滤波参数
-  pos_cutoff_freq = parser.getParameter<double>("pos_cutoff_freq");
-  pos_sample_rate = parser.getParameter<double>("pos_sample_rate");
-  pos_output_limit = parser.getParameter<double>("pos_output_limit");
-  pos_rate_limit = parser.getParameter<double>("pos_rate_limit");
-  pos_use_biquad_cascade_ = parser.getParameter<bool>("pos_use_biquad_cascade");
-  pos_use_biquad_cascade_filter_ = parser.getParameter<bool>("pos_use_biquad_cascade_filter");
-
-  // 角速度滤波参数
-  angle_cutoff_freq = parser.getParameter<double>("angle_cutoff_freq");
-  angle_sample_rate = parser.getParameter<double>("angle_sample_rate");
-  angle_output_limit_rate = parser.getParameter<double>("angle_output_limit_rate");
-  angle_rate_limit = parser.getParameter<double>("angle_rate_limit");
-  angle_use_biquad_cascade_ = parser.getParameter<bool>("angle_use_biquad_cascade");
-  angle_use_biquad_cascade_filter_ = parser.getParameter<bool>("angle_use_biquad_cascade_filter");
-  angle_use_offset_limit_ = parser.getParameter<bool>("angle_use_offset_limit");
-  angle_output_offset_ = parser.getParameter<double>("angle_output_offset");
-
-  // 其他参数
-  enable_grid_map_ = parser.getParameter<bool>("enable_grid_map");
-  low_speed_mode_ = parser.getParameter<bool>("low_speed_mode");
-
-  // 栅格图保存路径（可选参数）
-  if (parser.hasParameter("grid_map_path"))
-  {
-    grid_map_path_ = xline::path_utils::resolve_path(
-        parser.getParameter<std::string>("grid_map_path"));
-  }
+  // 更新二阶平滑器参数
+  second_order_filter_.setParameters(params_.smoothing.second_order.freq, 
+                                      params_.smoothing.second_order.damping);
 
   // 更新策略参数
   if (path_strategy_)
@@ -219,7 +246,9 @@ void RPPController::updateParameters(std::string file_path)
 
   RCLCPP_INFO(get_logger(),
               "参数已更新: 前瞻距离[%.2f-%.2f]m, 速度[%.2f-%.2f]m/s, 角速度[%.2f-%.2f]rad/s",
-              min_lookahead_dist_, max_lookahead_dist_, min_v_, max_v_, min_w_, max_w_);
+              params_.lookahead.min_dist, params_.lookahead.max_dist, 
+              params_.velocity.linear.min, params_.velocity.linear.max, 
+              params_.velocity.angular.min, params_.velocity.angular.max);
 }
 
 // ============================================================================
@@ -268,18 +297,24 @@ bool RPPController::setPlanForCircle(double circle_center_x, double circle_cente
   }
 
   // 根据半径调整速度参数（非低速模式时）
-  if (!low_speed_mode_)
+  if (!params_.mode.low_speed)
   {
-    circle_strategy->adjustSpeedForRadius(circle_radius, min_v_, max_v_, min_lookahead_dist_);
-    max_lookahead_dist_ = min_lookahead_dist_;
-    linear_speed_ = min_v_;
+    double min_v = params_.velocity.linear.min;
+    double max_v = params_.velocity.linear.max;
+    double lookahead = params_.lookahead.min_dist;
+    circle_strategy->adjustSpeedForRadius(circle_radius, min_v, max_v, lookahead);
+    params_.velocity.linear.min = min_v;
+    params_.velocity.linear.max = max_v;
+    params_.lookahead.min_dist = lookahead;
+    params_.lookahead.max_dist = lookahead;
+    params_.velocity.linear.base = min_v;
   }
 
   // 设置圆形参数
-  double actual_radius = circle_radius + radius_offset_;
+  double actual_radius = circle_radius + params_.smoothing.radius_offset;
   circle_strategy->setCircleCenter(circle_center_x, circle_center_y);
   circle_strategy->setCircleRadius(actual_radius);
-  circle_strategy->setBaselineLinearVelocity(min_v_);
+  circle_strategy->setBaselineLinearVelocity(params_.velocity.linear.min);
 
   // 重置控制器状态
   resetControllerState();
@@ -356,7 +391,7 @@ bool RPPController::setPlan(const nav_msgs::msg::Path& orig_global_plan)
   }
 
   // 初始化栅格图
-  if (enable_grid_map_)
+  if (params_.debug.enable_grid_map)
   {
     initializeGridMap(global_plan_);
   }
@@ -405,7 +440,6 @@ bool RPPController::isGoalReached()
 
   return false;
 }
-
 // ============================================================================
 // 第五部分：核心速度计算
 // ============================================================================
@@ -494,8 +528,8 @@ bool RPPController::computeVelocityCommands(const geometry_msgs::msg::PoseStampe
     ctx.current_velocity = current_velocity;
     ctx.current_yaw = tf2::getYaw(current_pose.pose.orientation);
     ctx.dt = d_t_;
-    ctx.min_v = min_v_;
-    ctx.max_v = max_v_;
+    ctx.min_v = params_.velocity.linear.min;
+    ctx.max_v = params_.velocity.linear.max;
 
     // 检查是否到达目标（使用策略）
     if (path_strategy_ && path_strategy_->isGoalReached(ctx))
@@ -548,7 +582,7 @@ bool RPPController::computeVelocityCommands(const geometry_msgs::msg::PoseStampe
     updateErrorStatistics();
 
     // 计算期望速度
-    double desired_velocity = applyCurvatureConstraint(linear_speed_, current_curvature_);
+    double desired_velocity = applyCurvatureConstraint(params_.velocity.linear.base, current_curvature_);
 
     // 更新策略上下文
     ctx.angle_to_lookahead = angle_to_lookahead;
@@ -693,8 +727,8 @@ geometry_msgs::msg::PoseStamped RPPController::getLookAheadPoint(
 
 double RPPController::getLookAheadDistance(double speed)
 {
-  double lookahead_dist = std::abs(speed) * lookahead_time_;
-  return std::clamp(lookahead_dist, min_lookahead_dist_, max_lookahead_dist_);
+  double lookahead_dist = std::abs(speed) * params_.lookahead.time;
+  return std::clamp(lookahead_dist, params_.lookahead.min_dist, params_.lookahead.max_dist);
 }
 
 // ============================================================================
@@ -709,10 +743,10 @@ double RPPController::applyCurvatureConstraint(const double raw_linear_vel, cons
   }
 
   double radius = 1.0 / std::abs(curvature);
-  if (radius < regulated_min_radius_)
+  if (radius < params_.tracking.regulated_min_radius)
   {
-    double scale = radius / regulated_min_radius_;
-    return std::max(min_v_, raw_linear_vel * scale);
+    double scale = radius / params_.tracking.regulated_min_radius;
+    return std::max(params_.velocity.linear.min, raw_linear_vel * scale);
   }
 
   return raw_linear_vel;
@@ -732,10 +766,10 @@ double RPPController::applyApproachConstraint(const double raw_linear_vel,
       robot_pose_global.pose.position.x - goal.pose.position.x,
       robot_pose_global.pose.position.y - goal.pose.position.y);
 
-  if (distance_to_end < approach_dist_)
+  if (distance_to_end < params_.tracking.approach.dist)
   {
-    double ratio = distance_to_end / approach_dist_;
-    return std::max(approach_min_v_, raw_linear_vel * ratio);
+    double ratio = distance_to_end / params_.tracking.approach.dist;
+    return std::max(params_.tracking.approach.min_v, raw_linear_vel * ratio);
   }
 
   return raw_linear_vel;
@@ -745,20 +779,20 @@ double RPPController::linearRegularization(double current_velocity, double desir
 {
   double velocity_increment = desired_velocity - current_velocity;
 
-  if (std::fabs(velocity_increment) > max_v_inc_)
+  if (std::fabs(velocity_increment) > params_.velocity.linear.max_inc)
   {
-    velocity_increment = std::copysign(max_v_inc_, velocity_increment);
+    velocity_increment = std::copysign(params_.velocity.linear.max_inc, velocity_increment);
   }
 
   double command_velocity = current_velocity + velocity_increment;
 
-  if (std::fabs(command_velocity) > max_v_)
+  if (std::fabs(command_velocity) > params_.velocity.linear.max)
   {
-    command_velocity = std::copysign(max_v_, command_velocity);
+    command_velocity = std::copysign(params_.velocity.linear.max, command_velocity);
   }
-  else if (std::fabs(command_velocity) < min_v_ && desired_velocity != 0.0)
+  else if (std::fabs(command_velocity) < params_.velocity.linear.min && desired_velocity != 0.0)
   {
-    command_velocity = std::copysign(min_v_, command_velocity);
+    command_velocity = std::copysign(params_.velocity.linear.min, command_velocity);
   }
 
   return command_velocity;
@@ -766,11 +800,11 @@ double RPPController::linearRegularization(double current_velocity, double desir
 
 double RPPController::angularRegularization(double current_angular_vel, double desired_angular_vel)
 {
-  double max_allowed_w = max_w_;
+  double max_allowed_w = params_.velocity.angular.max;
 
-  if (std::fabs(desired_angular_vel) > max_w_ * 0.8)
+  if (std::fabs(desired_angular_vel) > params_.velocity.angular.max * 0.8)
   {
-    max_allowed_w = max_w_ * 0.8;
+    max_allowed_w = params_.velocity.angular.max * 0.8;
   }
 
   if (std::fabs(desired_angular_vel) > max_allowed_w)
@@ -780,14 +814,14 @@ double RPPController::angularRegularization(double current_angular_vel, double d
 
   double angular_increment = desired_angular_vel - current_angular_vel;
 
-  double effective_max_w_inc = max_w_inc_;
-  if (std::fabs(angular_increment) > max_w_inc_ * 2.0)
+  double effective_max_w_inc = params_.velocity.angular.max_inc;
+  if (std::fabs(angular_increment) > params_.velocity.angular.max_inc * 2.0)
   {
-    effective_max_w_inc = max_w_inc_ * 1.5;
+    effective_max_w_inc = params_.velocity.angular.max_inc * 1.5;
   }
-  else if (std::fabs(angular_increment) < max_w_inc_ * 0.5)
+  else if (std::fabs(angular_increment) < params_.velocity.angular.max_inc * 0.5)
   {
-    effective_max_w_inc = max_w_inc_ * 0.8;
+    effective_max_w_inc = params_.velocity.angular.max_inc * 0.8;
   }
 
   if (std::fabs(angular_increment) > effective_max_w_inc)
@@ -801,21 +835,20 @@ double RPPController::angularRegularization(double current_angular_vel, double d
   {
     command_angular_vel = std::copysign(max_allowed_w, command_angular_vel);
   }
-  else if (std::fabs(command_angular_vel) < min_w_ && desired_angular_vel != 0.0)
+  else if (std::fabs(command_angular_vel) < params_.velocity.angular.min && desired_angular_vel != 0.0)
   {
-    command_angular_vel = std::copysign(min_w_, command_angular_vel);
+    command_angular_vel = std::copysign(params_.velocity.angular.min, command_angular_vel);
   }
 
   return command_angular_vel;
 }
-
 // ============================================================================
 // 第八部分：辅助计算
 // ============================================================================
 
 bool RPPController::shouldRotateToPath(double angle_to_path, double tolerance)
 {
-  double angle_threshold = tolerance > 0.0 ? tolerance : rotate_tol_;
+  double angle_threshold = tolerance > 0.0 ? tolerance : params_.goal.rotate_tol;
   return std::fabs(angle_to_path) > angle_threshold;
 }
 
@@ -837,7 +870,7 @@ bool RPPController::shouldRotateToGoal(const geometry_msgs::msg::PoseStamped& cu
 {
   double distance_to_goal = std::hypot(current_pose.pose.position.x - goal_pose.pose.position.x,
                                        current_pose.pose.position.y - goal_pose.pose.position.y);
-  return distance_to_goal < goal_dist_tol_;
+  return distance_to_goal < params_.goal.dist_tol;
 }
 
 double RPPController::dphi(geometry_msgs::msg::PointStamped lookahead_pt,
@@ -919,7 +952,7 @@ double RPPController::smoothAngularVelocity(double current_angular_vel, double d
 
   // 更新历史记录
   angular_vel_history_.push_back(desired_angular_vel);
-  if (angular_vel_history_.size() > static_cast<size_t>(angular_vel_history_size_))
+  if (angular_vel_history_.size() > static_cast<size_t>(params_.smoothing.moving_average.window_size))
   {
     angular_vel_history_.pop_front();
   }
@@ -927,12 +960,12 @@ double RPPController::smoothAngularVelocity(double current_angular_vel, double d
   double smoothed_angular_vel = desired_angular_vel;
 
   // 应用选定的平滑方法
-  if (smoothing_type_ == "lowpass")
+  if (params_.smoothing.type == "lowpass")
   {
-    smoothed_angular_vel = lowpass_angular_vel_filter_gain_ * desired_angular_vel +
-                           (1 - lowpass_angular_vel_filter_gain_) * previous_angular_vel_;
+    smoothed_angular_vel = params_.smoothing.lowpass.gain * desired_angular_vel +
+                           (1 - params_.smoothing.lowpass.gain) * previous_angular_vel_;
   }
-  else if (smoothing_type_ == "movingAverage")
+  else if (params_.smoothing.type == "movingAverage")
   {
     smoothed_angular_vel = 0.0;
     for (double vel : angular_vel_history_)
@@ -946,7 +979,7 @@ double RPPController::smoothAngularVelocity(double current_angular_vel, double d
   smoothed_angular_vel = second_order_filter_.filter(smoothed_angular_vel, dt);
 
   // 四阶低通滤波
-  if (angle_use_biquad_cascade_filter_)
+  if (params_.filter.angular.active)
   {
     smoothed_angular_vel = angle_vel_filter_.filter(smoothed_angular_vel);
   }
@@ -997,22 +1030,32 @@ void RPPController::resetControllerState()
   }
 
   pos_x_filter_.reset();
-  pos_x_filter_.initialize(pos_cutoff_freq, pos_sample_rate, pos_output_limit);
-  pos_x_filter_.setLimits(pos_output_limit, pos_rate_limit, true);
-  pos_x_filter_.use_biquad_cascade_ = pos_use_biquad_cascade_;
+  pos_x_filter_.initialize(params_.filter.position.cutoff_freq, 
+                            params_.filter.position.sample_rate, 
+                            params_.filter.position.output_limit);
+  pos_x_filter_.setLimits(params_.filter.position.output_limit, 
+                           params_.filter.position.rate_limit, true);
+  pos_x_filter_.use_biquad_cascade_ = params_.filter.position.enabled;
 
   pos_y_filter_.reset();
-  pos_y_filter_.initialize(pos_cutoff_freq, pos_sample_rate, pos_output_limit);
-  pos_y_filter_.setLimits(pos_output_limit, pos_rate_limit, true);
-  pos_y_filter_.use_biquad_cascade_ = pos_use_biquad_cascade_;
+  pos_y_filter_.initialize(params_.filter.position.cutoff_freq, 
+                            params_.filter.position.sample_rate, 
+                            params_.filter.position.output_limit);
+  pos_y_filter_.setLimits(params_.filter.position.output_limit, 
+                           params_.filter.position.rate_limit, true);
+  pos_y_filter_.use_biquad_cascade_ = params_.filter.position.enabled;
 
   double angle_limit = (baseline_angular_vel > 0) ?
-      angle_output_limit_rate * baseline_angular_vel : angle_output_limit_rate;
+      params_.filter.angular.output_limit_rate * baseline_angular_vel : 
+      params_.filter.angular.output_limit_rate;
   angle_vel_filter_.reset();
-  angle_vel_filter_.initialize(angle_cutoff_freq, angle_sample_rate, angle_limit);
-  angle_vel_filter_.setLimits(angle_limit, angle_rate_limit, true);
-  angle_vel_filter_.setOffsetLimit(angle_output_offset_, angle_use_offset_limit_);
-  angle_vel_filter_.use_biquad_cascade_ = angle_use_biquad_cascade_;
+  angle_vel_filter_.initialize(params_.filter.angular.cutoff_freq, 
+                                params_.filter.angular.sample_rate, 
+                                angle_limit);
+  angle_vel_filter_.setLimits(angle_limit, params_.filter.angular.rate_limit, true);
+  angle_vel_filter_.setOffsetLimit(params_.filter.angular.output_offset, 
+                                    params_.filter.angular.use_offset_limit);
+  angle_vel_filter_.use_biquad_cascade_ = params_.filter.angular.enabled;
 
   last_closest_idx = 0;
 
@@ -1152,7 +1195,7 @@ geometry_msgs::msg::PoseStamped RPPController::filterRobotPose(const geometry_ms
   filtered_x = sg_x_filter_.filter(filtered_x);
   filtered_y = sg_y_filter_.filter(filtered_y);
 
-  if (pos_use_biquad_cascade_filter_)
+  if (params_.filter.position.active)
   {
     filtered_x = pos_x_filter_.filter(filtered_x);
     filtered_y = pos_y_filter_.filter(filtered_y);
@@ -1295,7 +1338,7 @@ void RPPController::generateVelocityCommand(geometry_msgs::msg::TwistStamped& cm
                                              const geometry_msgs::msg::Twist& current_velocity,
                                              double desired_velocity, double desired_angular_velocity)
 {
-  cmd_vel.twist.linear.x = min_v_;
+  cmd_vel.twist.linear.x = params_.velocity.linear.min;
   desired_velocity_ = desired_velocity;
 
   cmd_vel.twist.angular.z = desired_angular_velocity;
@@ -1320,7 +1363,7 @@ void RPPController::generateVelocityCommand(geometry_msgs::msg::TwistStamped& cm
   // 安全检查
   if (!std::isfinite(cmd_vel.twist.linear.x))
   {
-    cmd_vel.twist.linear.x = min_v_;
+    cmd_vel.twist.linear.x = params_.velocity.linear.min;
   }
   if (!std::isfinite(cmd_vel.twist.angular.z))
   {
@@ -1330,7 +1373,6 @@ void RPPController::generateVelocityCommand(geometry_msgs::msg::TwistStamped& cm
   cmd_vel.header.stamp = this->now();
   cmd_vel.header.frame_id = "base_link";
 }
-
 // ============================================================================
 // 第十二部分：栅格图可视化
 // ============================================================================
@@ -1477,19 +1519,19 @@ void RPPController::drawGridLines()
 
 void RPPController::saveGridMap()
 {
-  if (grid_map_.empty() || grid_map_path_.empty())
+  if (grid_map_.empty() || params_.debug.grid_map_path.empty())
   {
     return;
   }
 
-  std::string filename = grid_map_path_ + "/path_tracking.png";
+  std::string filename = params_.debug.grid_map_path + "/path_tracking.png";
   cv::imwrite(filename, grid_map_);
 }
 
 void RPPController::updateGridMapIfNeeded(const geometry_msgs::msg::PoseStamped& current_pose,
                                            const geometry_msgs::msg::PoseStamped& lookahead_pose)
 {
-  if (!enable_grid_map_)
+  if (!params_.debug.enable_grid_map)
   {
     return;
   }

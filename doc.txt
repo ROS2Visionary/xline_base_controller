@@ -6,9 +6,9 @@ source install/setup.sh
 ros2 run xline_inkjet_printer inkjet_printer_node
 
 xline_follow_controller xline_msgs  xline_base_controller
-colcon build --packages-select xline_base_controller
+colcon build --packages-select xline_follow_controller xline_base_controller
 
-colcon build --parallel-workers 
+colcon build --parallel-workers 1
 
 
 ros2 service call /motion_control/execute_calibration std_srvs/srv/Trigger
@@ -56,3 +56,6 @@ bash kill.sh
 colcon build
 source install/setup.sh
 ros2 run xline_path_planner planner_node   >/dev/null 2>&1 &
+
+
+TerrainControlParamsPhaseRuntimeParams实际用于阶段控制，非地形PhaseParamsPhaseConfig统一叶子节点用Config后缀SpeedLimitsVelocityLimitsConfig与YAML路径一致ControlDistancesDistanceConfig简化命名SpeedTuningVelocityTuningConfig与YAML路径一致SpeedParamsVelocityParams与YAML中velocity对应AngularFilterConfigAngularFollowingConfig更明确表示用途SecondOrderConfigSmootherConfig更直观HampelConfigHampelFilterConfig统一Filter命名PositionFilterParamsPositionFilterConfig统一Config后缀PositionParamsPositionSensorParams更明确PIDConfigControlParams与YAML中control对应LowpassConfigLowpassFilterConfig统一Filter命名fromPhaseParams()fromPhaseConfig()配合PhaseConfig改名

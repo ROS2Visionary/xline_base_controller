@@ -1,8 +1,3 @@
-/**
- * @file circle_path_strategy.cpp
- * @brief 圆形路径跟随策略实现
- */
-
 #include "xline_follow_controller/rpp_follow/circle_path_strategy.hpp"
 #include "xline_follow_controller/common/yaml_parser.hpp"
 #include "ament_index_cpp/get_package_share_directory.hpp"
@@ -41,14 +36,6 @@ CirclePathStrategy::CirclePathStrategy()
   , need_yaw_prealign_(true)
   , yaw_prealign_done_(false)
   , target_yaw_(0.0)
-  // 偏差参数
-  , start_deviation_factor_(0.5)
-  , end_deviation_factor_(0.5)
-  , deviation_rate_(0.1)
-  // 其他参数
-  , goal_dist_tol_(0.02)
-  , rotate_tol_(0.035)
-  , radius_offset_(0.0)
   // 状态
   , goal_reached_(false)
   , start_print_(false)
@@ -69,10 +56,7 @@ bool CirclePathStrategy::setPlan(const nav_msgs::msg::Path& path)
     return false;
   }
 
-  // 重置状态
   reset();
-
-  // 保存路径
   global_plan_ = path;
 
   RCLCPP_INFO(getLogger(), "圆形路径设置完成 - 点数: %zu, 总角度: %.2f rad (%.1f°)",
@@ -89,7 +73,6 @@ bool CirclePathStrategy::isGoalReached(const PathStrategyContext& ctx)
     return true;
   }
 
-  // 使用累计角度判定
   double current_yaw = ctx.current_yaw;
   bool completed = updateAccumulatedAngle(current_yaw);
 
@@ -109,34 +92,27 @@ bool CirclePathStrategy::isGoalReached(const PathStrategyContext& ctx)
 void CirclePathStrategy::computeAngularVelocity(const PathStrategyContext& ctx,
                                                  PathStrategyResult& result)
 {
-  // 基础 Pure Pursuit 角速度
   double pp_angular_velocity = ctx.base_angular_velocity;
   double desired_angular_velocity = pp_angular_velocity;
-
-  // 是否需要重置滤波器
   bool filter_reset = false;
 
   // 根据累计角度阶段调整角速度
-  if (accumulated_angle_ >= ((start_deviation_factor_ - 0.1) * M_PI))
+  if (accumulated_angle_ >= ((params_.deviation.start_factor - 0.1) * M_PI))
   {
-    // 进入正常跟踪阶段，应用基于基准角速度的偏差约束
     desired_angular_velocity = constrainAngularVelocity(pp_angular_velocity);
     filter_reset = false;
   }
   else
   {
-    // 起始过渡阶段，不约束角速度
     desired_angular_velocity = pp_angular_velocity;
     filter_reset = true;
   }
 
-  // 更新结果
   result.angular_velocity = desired_angular_velocity;
-  result.linear_velocity = ctx.min_v;  // 圆形路径使用固定低速
+  result.linear_velocity = ctx.min_v;
   result.goal_reached = goal_reached_;
   result.filter_reset = filter_reset;
 
-  // 生成状态信息
   std::ostringstream oss;
   oss << std::fixed << std::setprecision(3)
       << "Circle: acc_angle=" << accumulated_angle_ << "/" << circle_total_angle_
@@ -147,20 +123,11 @@ void CirclePathStrategy::computeAngularVelocity(const PathStrategyContext& ctx,
 
 void CirclePathStrategy::reset()
 {
-  // 重置路径
   global_plan_.poses.clear();
-
-  // 重置目标状态
   goal_reached_ = false;
-
-  // 重置圆形路径状态
   resetCirclePathState();
-
-  // 重置预对准
   need_yaw_prealign_ = true;
   yaw_prealign_done_ = false;
-
-  // 重置打印标志
   start_print_ = false;
   stop_print_ = false;
 
@@ -177,17 +144,21 @@ void CirclePathStrategy::updateParameters(const std::string& config_path)
 
     xline::YamlParser::YamlParser parser(full_path);
 
-    // 读取参数
-    goal_dist_tol_ = parser.getParameter<double>("goal_dist_tol");
-    rotate_tol_ = parser.getParameter<double>("rotate_tol");
-    radius_offset_ = parser.getParameter<double>("radius_offset");
-    start_deviation_factor_ = parser.getParameter<double>("start_deviation_factor");
-    end_deviation_factor_ = parser.getParameter<double>("end_deviation_factor");
-    deviation_rate_ = parser.getParameter<double>("deviation_rate");
+    // 目标到达判定参数
+    params_.goal.dist_tol = parser.getParameter<double>("goal.dist_tol");
+    params_.goal.rotate_tol = parser.getParameter<double>("goal.rotate_tol");
+    
+    // 圆形路径特有参数
+    params_.smoothing.radius_offset = parser.getParameter<double>("smoothing.radius_offset");
+    
+    // 偏差控制参数
+    params_.deviation.start_factor = parser.getParameter<double>("deviation.start_factor");
+    params_.deviation.end_factor = parser.getParameter<double>("deviation.end_factor");
+    params_.deviation.rate = parser.getParameter<double>("deviation.rate");
 
     RCLCPP_INFO(getLogger(),
                 "CirclePathStrategy 参数已更新: deviation_rate=%.2f, radius_offset=%.3f",
-                deviation_rate_, radius_offset_);
+                params_.deviation.rate, params_.smoothing.radius_offset);
   }
   catch (const std::exception& e)
   {
@@ -230,15 +201,12 @@ nav_msgs::msg::Path CirclePathStrategy::generateCirclePath(
   circle_path.header.frame_id = "world";
   circle_path.header.stamp = rclcpp::Clock().now();
 
-  // 应用半径偏移
-  double actual_radius = radius + radius_offset_;
+  double actual_radius = radius + params_.smoothing.radius_offset;
 
-  // 使用传入位姿作为切入点
   geometry_msgs::msg::PoseStamped entry_pose = start_pose;
   circle_entry_x_ = entry_pose.pose.position.x;
   circle_entry_y_ = entry_pose.pose.position.y;
 
-  // 计算切入点处的切线方向
   double tangent_x = -(entry_pose.pose.position.y - center_y);
   double tangent_y = (entry_pose.pose.position.x - center_x);
   double tangent_length = std::hypot(tangent_x, tangent_y);
@@ -256,10 +224,8 @@ nav_msgs::msg::Path CirclePathStrategy::generateCirclePath(
   entry_q.setRPY(0, 0, entry_yaw);
   entry_pose.pose.orientation = tf2::toMsg(entry_q);
 
-  // 添加切入点
   circle_path.poses.push_back(entry_pose);
 
-  // 生成圆周路径点
   int num_circle_points = 1500;
   double start_angle = std::atan2(
       entry_pose.pose.position.y - center_y,
@@ -275,7 +241,6 @@ nav_msgs::msg::Path CirclePathStrategy::generateCirclePath(
     circle_pose.pose.position.y = center_y + actual_radius * std::sin(angle);
     circle_pose.pose.position.z = start_pose.pose.position.z;
 
-    // 设置切线方向作为朝向
     double tangent_direction = angle + M_PI / 2;
     tf2::Quaternion circle_q;
     circle_q.setRPY(0, 0, tangent_direction);
@@ -294,7 +259,6 @@ void CirclePathStrategy::setAngleRange(double start_angle, double end_angle)
 {
   circle_start_angle_ = start_angle;
   circle_end_angle_ = end_angle;
-  // 加入一些冗余角度作为缓冲
   circle_total_angle_ = std::abs(end_angle - start_angle) + 0.8 * M_PI;
 
   RCLCPP_INFO(getLogger(), "设置角度范围: [%.2f, %.2f], 总角度: %.2f rad",
@@ -377,10 +341,8 @@ bool CirclePathStrategy::updateAccumulatedAngle(double current_yaw)
     return false;
   }
 
-  // 计算航向角变化量
   double delta_yaw = current_yaw - last_yaw_;
 
-  // 处理角度跨越 ±π 的情况
   if (delta_yaw > M_PI)
   {
     delta_yaw -= 2.0 * M_PI;
@@ -390,7 +352,6 @@ bool CirclePathStrategy::updateAccumulatedAngle(double current_yaw)
     delta_yaw += 2.0 * M_PI;
   }
 
-  // 只累计正向角度变化（假设逆时针为正）
   if (delta_yaw > 0)
   {
     accumulated_angle_ += delta_yaw;
@@ -398,14 +359,12 @@ bool CirclePathStrategy::updateAccumulatedAngle(double current_yaw)
 
   last_yaw_ = current_yaw;
 
-  // 开始打印标志
   if (accumulated_angle_ > 0.2 * M_PI)
   {
     start_print_ = true;
     stop_print_ = false;
   }
 
-  // 判断是否完成
   if (accumulated_angle_ >= (circle_total_angle_ - 0.4 * M_PI))
   {
     return true;
@@ -416,32 +375,25 @@ bool CirclePathStrategy::updateAccumulatedAngle(double current_yaw)
 
 double CirclePathStrategy::constrainAngularVelocity(double base_omega)
 {
-  // 计算与基准角速度的偏差
   double angular_velocity_delta = base_omega - baseline_angular_velocity_;
+  double error_ratio = 0.05;
 
-  // 确定允许的偏差比例
-  double error_ratio = 0.05;  // 默认 5%
-
-  // 起始区间：使用更大的偏差容许
-  if (accumulated_angle_ < (start_deviation_factor_ * M_PI))
+  if (accumulated_angle_ < (params_.deviation.start_factor * M_PI))
   {
-    error_ratio = deviation_rate_;
+    error_ratio = params_.deviation.rate;
   }
 
-  // 结束区间：同样使用更大的偏差容许
-  if (accumulated_angle_ > (circle_total_angle_ - end_deviation_factor_ * M_PI))
+  if (accumulated_angle_ > (circle_total_angle_ - params_.deviation.end_factor * M_PI))
   {
-    error_ratio = deviation_rate_;
+    error_ratio = params_.deviation.rate;
   }
 
-  // 限制偏差范围
   double max_angular_delta = baseline_angular_velocity_ * error_ratio;
   if (std::abs(angular_velocity_delta) > max_angular_delta)
   {
     angular_velocity_delta = std::copysign(max_angular_delta, angular_velocity_delta);
   }
 
-  // 返回约束后的角速度
   return baseline_angular_velocity_ + angular_velocity_delta;
 }
 

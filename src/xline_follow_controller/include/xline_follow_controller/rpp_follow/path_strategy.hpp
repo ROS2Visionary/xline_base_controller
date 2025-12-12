@@ -86,93 +86,37 @@ public:
   // 核心接口
   // ================================
 
-  /**
-   * @brief 获取策略类型名称
-   * @return 策略类型标识字符串
-   */
   virtual std::string getTypeName() const = 0;
-
-  /**
-   * @brief 设置路径计划
-   * @param path 全局路径
-   * @return 设置成功返回 true
-   */
   virtual bool setPlan(const nav_msgs::msg::Path& path) = 0;
-
-  /**
-   * @brief 检查是否到达目标
-   * @param ctx 当前上下文信息
-   * @return 到达目标返回 true
-   */
   virtual bool isGoalReached(const PathStrategyContext& ctx) = 0;
-
-  /**
-   * @brief 计算角速度
-   *
-   * 根据策略特有的逻辑调整角速度输出
-   *
-   * @param ctx 当前上下文信息
-   * @param result 输出结果
-   */
   virtual void computeAngularVelocity(const PathStrategyContext& ctx,
                                        PathStrategyResult& result) = 0;
-
-  /**
-   * @brief 重置策略状态
-   *
-   * 清空内部状态，准备处理新的路径
-   */
   virtual void reset() = 0;
-
-  /**
-   * @brief 更新策略参数
-   * @param params YAML 参数解析器（具体类型由实现决定）
-   */
   virtual void updateParameters(const std::string& config_path) = 0;
 
   // ================================
   // 可选接口（带默认实现）
   // ================================
 
-  /**
-   * @brief 获取目标航向角（用于预对准）
-   * @return 目标航向角（弧度），如果不需要预对准返回 NaN
-   */
   virtual double getTargetYaw() const
   {
     return std::numeric_limits<double>::quiet_NaN();
   }
 
-  /**
-   * @brief 是否需要航向预对准
-   * @return 需要预对准返回 true
-   */
   virtual bool needsYawPrealignment() const
   {
     return false;
   }
 
-  /**
-   * @brief 设置预对准完成状态
-   */
   virtual void setYawPrealignmentDone()
   {
-    // 默认空实现
   }
 
-  /**
-   * @brief 获取用于调试的状态信息
-   * @return 状态描述字符串
-   */
   virtual std::string getDebugInfo() const
   {
     return "";
   }
 
-  /**
-   * @brief 设置 ROS 日志器
-   * @param logger ROS 日志器实例
-   */
   void setLogger(const rclcpp::Logger& logger)
   {
     logger_ = logger;
@@ -180,10 +124,6 @@ public:
   }
 
 protected:
-  /**
-   * @brief 获取日志器
-   * @return ROS 日志器引用
-   */
   const rclcpp::Logger& getLogger() const
   {
     if (has_logger_)
@@ -194,11 +134,6 @@ protected:
     return default_logger;
   }
 
-  /**
-   * @brief 角度归一化到 [-π, π]
-   * @param angle 输入角度（弧度）
-   * @return 归一化后的角度
-   */
   static double normalizeAngle(double angle)
   {
     while (angle > M_PI)
@@ -228,8 +163,6 @@ enum class PathStrategyType
 
 /**
  * @brief 路径策略工厂函数声明
- * @param type 策略类型
- * @return 策略实例指针
  */
 PathStrategy::UniquePtr createPathStrategy(PathStrategyType type);
 

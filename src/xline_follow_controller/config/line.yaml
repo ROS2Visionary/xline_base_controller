@@ -1,124 +1,88 @@
-# 全局调试开关
-debug: true
 
-debug_paths:
-  # 相对路径将自动挂到 ${XLINE_WS_ROOT} 下
-  raw: "xline_follow_controller/path_l"
-  filtered: "xline_follow_controller/path_sg"
-
-# 控制系统配置
-control:
-  # 航向 PID 控制器参数
-  heading_pid:
-    alignment:
-      kp: 1.0        # 对齐阶段比例系数
-      ki: 0.0        # 对齐阶段积分系数
-      kd: 0.1        # 对齐阶段微分系数
-    following:
-      kp: 1.0        # 跟随阶段比例系数
-      ki: 0.0        # 跟随阶段积分系数
-      kd: 0.1        # 跟随阶段微分系数
-
-# 运动控制参数
-motion:
-  # 速度控制
-  velocity:
-    # 速度限制
-    limits:
-      acceleration_min: 0.05      # 加速时最小线速度
-      deceleration_min: 0.03     # 减速时最小线速度
-      walk_max: 0.35               # 步行模式最大速度
-      work_max: 0.35               # 工作模式最大速度
-      work_short: 0.2             # 短路径工作速度
-      alignment: 0.05              # 对齐阶段速度
-      
-    
-    # 距离参数
-    distances:
-      alignment: 0.08              # 对齐距离阈值
-      deceleration: 0.3           # 开始减速的距离（工作模式）
-      non_work_deceleration: 0.4  # 非工作模式减速距离（更长，补偿电机响应延迟）
-      acceleration: 0.15           # 加速阶段距离
-      walking: 0.05                # 步行距离
-      lookahead: 0.25               # 前瞻距离
-      waypoint_tolerance: 0.005    # 路径点容差
-      mini_path: 0.3              # 最小路径距离
-      
-    
-    # 速度调节参数
-    tuning:
-      acce_factor: 0.0005              # 加速因子
-      speed_increment: 0.02            # 速度增量
-      acceleration_factor: 6         # 加速sigmoid函数系数
-      deceleration_factor: 10         # 减速sigmoid函数系数
-      acceleration_sigmoid_center: 0.9 # 加速sigmoid函数中心点
-      deceleration_sigmoid_center: 0.3 # 减速sigmoid函数中心点
-
-  # 角速度控制参数
-  angular:
-    rotation:
-      limits:
-        max: 0.8                       # 最大角速度
-        min: 0.15                      # 最小角速度
-      tuning:
-        factor: 1.2                    # 角速度调节因子
-        angle_threshold: 0.5           # 角度阈值
-        smooth_factor: 0.6             # 角速度平滑因子
-    
-    following:
-      # Hampel滤波器配置
-      hampel:
-        window_size: 7             # 窗口大小
-        k_threshold: 3             # 异常值检测阈值
+# 调试配置
+debug:
+  enabled: true
+  raw_path: "xline_follow_controller/path_l"
+  filtered_path: "xline_follow_controller/path_sg"
 
 
-# 传感器数据处理配置
-sensors:
-  # 位置数据处理配置
-  position:
-    filtering:
-      alpha: 0.85                    # 低通滤波器平滑因子
-      # Hampel滤波器配置
-      hampel:
-        window_size: 5               # 窗口大小
-        k_threshold: 3             # 异常值检测阈值
-      savgol:
-        window_size: 7               # 窗口大小
-        polynomial_order: 3          # 多项式阶数
-    
+# 航向PID控制
+heading_pid:
+  alignment:                         # 对齐阶段
+    kp: 1.0
+    ki: 0.0
+    kd: 0.1
+  following:                         # 跟随阶段
+    kp: 1.0
+    ki: 0.0
+    kd: 0.1
 
-# 自适应控制参数
-phase_control:
 
-  # 初始对齐参数（共用）
-  alignment:
-    max_angular_vel: 0.075                 # 最大角速度
-    max_angular_accel: 0.05               # 最大角加速度
-    # 航向混合控制参数
-    heading:
-      current_heading_weight: 0        # 当前机器人航向权重 (0-1)
-      target_heading_weight: 1         # 目标路径航向权重 (0-1)
-    # 角速度滤波参数
-    filtering:
-      alpha: 0.95                            # 低通滤波器平滑因子（应用于角速度）
-    # 二阶平滑器参数
-    smoother:
-      frequency: 15                   # 自然频率
-      damping: 0.86                     # 阻尼比
+# 速度控制
+velocity:
+  # 速度限制
+  accel_min: 0.05                    # 加速时最小线速度 [m/s]
+  decel_min: 0.03                    # 减速时最小线速度 [m/s]
+  walk_max: 0.35                     # 步行模式最大速度 [m/s]
+  work_max: 0.35                     # 工作模式最大速度 [m/s]
+  work_short: 0.2                    # 短路径工作速度 [m/s]
+  alignment: 0.05                    # 对齐阶段速度 [m/s]
+  # 调速参数
+  acce_factor: 0.0005                # 加速因子
+  accel_sigmoid_k: 6.0               # 加速sigmoid系数
+  decel_sigmoid_k: 10.0              # 减速sigmoid系数
+  accel_sigmoid_center: 0.9          # 加速sigmoid中心点
+  decel_sigmoid_center: 0.3          # 减速sigmoid中心点
 
-  # 跟随参数
-  following:
-    max_angular_vel: 0.065                 # 最大角速度
-    max_angular_accel: 0.03               # 最大角加速度
-    # 航向混合控制参数（平稳地形保持高精度）
-    heading:
-      current_heading_weight: 0        # 当前机器人航向权重 (基础值+补偿值)
-      target_heading_weight: 1         # 目标路径航向权重 (基础值+补偿值)
-    # 角速度滤波参数
-    filtering:
-      alpha: 0.95                     # 低通滤波器平滑因子（应用于角速度）
-    # 二阶平滑器参数
-    smoother:
-      frequency: 15              # 自然频率
-      damping: 0.86                # 阻尼比
-  
+
+# 距离阈值
+distance:
+  alignment: 0.08                    # 对齐距离阈值 [m]
+  deceleration: 0.3                  # 减速距离（工作模式）[m]
+  non_work_deceleration: 0.4         # 减速距离（非工作模式）[m]
+  acceleration: 0.15                 # 加速阶段距离 [m]
+  lookahead: 0.25                    # 前瞻距离 [m]
+  waypoint_tolerance: 0.005          # 路径点容差 [m]
+  mini_path: 0.3                     # 最小路径距离 [m]
+
+
+# 原地旋转控制
+rotation:
+  max_w: 0.8                         # 最大角速度 [rad/s]
+  min_w: 0.15                        # 最小角速度 [rad/s]
+  factor: 1.2                        # 角速度调节因子
+  angle_threshold: 0.5               # 角度阈值 [rad]
+  smooth_factor: 0.6                 # 平滑因子
+
+
+# 滤波器配置
+filter:
+  # 位置滤波
+  pos_hampel_window: 5               # Hampel窗口大小
+  pos_hampel_k: 3.0                  # Hampel异常值阈值
+  pos_savgol_window: 7               # Savitzky-Golay窗口大小
+  pos_savgol_order: 3                # Savitzky-Golay多项式阶数
+  # 角速度滤波
+  angular_hampel_window: 7           # Hampel窗口大小
+  angular_hampel_k: 3.0              # Hampel异常值阈值
+
+
+# 阶段控制参数
+phase:
+  alignment:                         # 对齐阶段
+    max_angular_vel: 0.075           # 最大角速度 [rad/s]
+    max_angular_accel: 0.05          # 最大角加速度 [rad/s²]
+    current_heading_weight: 0.0      # 当前航向权重
+    target_heading_weight: 1.0       # 目标航向权重
+    filter_alpha: 0.95               # 低通滤波系数
+    smoother_freq: 15.0              # 平滑器频率 [Hz]
+    smoother_damping: 0.86           # 平滑器阻尼比
+
+  following:                         # 跟随阶段
+    max_angular_vel: 0.065           # 最大角速度 [rad/s]
+    max_angular_accel: 0.03          # 最大角加速度 [rad/s²]
+    current_heading_weight: 0.0      # 当前航向权重
+    target_heading_weight: 1.0       # 目标航向权重
+    filter_alpha: 0.95               # 低通滤波系数
+    smoother_freq: 15.0              # 平滑器频率 [Hz]
+    smoother_damping: 0.86           # 平滑器阻尼比

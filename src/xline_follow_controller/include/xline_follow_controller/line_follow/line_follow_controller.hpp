@@ -3,7 +3,8 @@
 #include "xline_follow_controller/common/base_follow_controller.hpp"
 #include "xline_follow_controller/common/follow_common.hpp"
 #include "xline_follow_controller/common/logging_compat.hpp"
-#include <yaml-cpp/yaml.h>
+#include "xline_follow_controller/line_follow/line_params.hpp"
+#include "xline_follow_controller/common/yaml_parser.hpp"
 #include "ament_index_cpp/get_package_share_directory.hpp"
 
 #include <rclcpp/rclcpp.hpp>
@@ -21,8 +22,8 @@
 #include <atomic>
 #include <sstream>
 #include <iomanip>
-#include <cmath>        // for std::cos, std::sin, M_PI
-#include <algorithm>    // for std::clamp
+#include <cmath>
+#include <algorithm>
 #include <std_msgs/msg/string.hpp>
 
 namespace xline
@@ -30,8 +31,7 @@ namespace xline
 namespace follow_controller
 {
 
-/// 简单的直线路径跟随控制器。
-/// 负责起始对齐、沿路径行走以及终点收尾，并对速度/航向做基础的平滑处理。
+
 class LineFollowController : public BaseFollowController
 {
 public:
@@ -40,13 +40,14 @@ public:
 
   // 基类接口实现
   bool setPlan(const nav_msgs::msg::Path& orig_global_plan) override;
-  bool computeVelocityCommands(const geometry_msgs::msg::PoseStamped& pose, const geometry_msgs::msg::Twist& velocity,
+  bool computeVelocityCommands(const geometry_msgs::msg::PoseStamped& pose, 
+                               const geometry_msgs::msg::Twist& velocity,
                                geometry_msgs::msg::TwistStamped& cmd_vel) override;
   bool isGoalReached() override;
   bool cancel() override;
 
   // 扩展接口
-  // 通过起点/终点坐标直接生成直线路径
+  /// 通过起点/终点坐标直接生成直线路径
   bool setPlan(double start_x, double start_y, double end_x, double end_y);
   bool setPlan(const std::shared_ptr<std::vector<geometry_msgs::msg::PoseStamped>>& plan);
   void setSpeedLimit(const double& speed_limit);
@@ -54,21 +55,8 @@ public:
   void setBackFollow(bool back);
   void setPose(const geometry_msgs::msg::PoseStamped& pose);
 
-
-  // 地形控制参数结构体（公有访问，用于函数返回类型）
-  struct TerrainControlParams
-  {
-    double max_angular_vel;
-    double max_angular_accel;
-    // 航向混合控制参数
-    double current_heading_weight;    // 当前机器人航向权重
-    double target_heading_weight;     // 目标路径航向权重
-    // 角速度滤波参数
-    double alpha;                     // 低通滤波器平滑因子（应用于角速度）
-    // 二阶平滑器参数
-    double smoother_frequency;        // 自然频率
-    double smoother_damping;          // 阻尼比
-  };
+  /// 获取当前参数（只读）
+  const LineParams& getParams() const { return params_; }
 
 private:
   // ================================
@@ -80,219 +68,195 @@ private:
    */
   enum class ControlState
   {
-    IDLE,            // 空闲状态
-    ALIGNING_START,  // 对齐起始航向
-    FOLLOWING_PATH,  // 跟随路径
-    ALIGNING_END,    // 对齐终点航向
-    GOAL_REACHED,    // 到达目标
-    WAITING          // 等待状态
+    IDLE,            ///< 空闲状态
+    ALIGNING_START,  ///< 对齐起始航向
+    FOLLOWING_PATH,  ///< 跟随路径
+    ALIGNING_END,    ///< 对齐终点航向
+    GOAL_REACHED,    ///< 到达目标
+    WAITING          ///< 等待状态
   };
 
-  ControlState current_state_;  // 当前控制器状态
-  bool received_plan_;          // 是否接收到路径
-  bool goal_reached_;           // 是否到达目标
-  bool back_follow_;            // 是否后退模式
-  bool m_work_state_;           // 工作状态（影响最大速度）
-  bool short_path_;             // 是否为短路径
-  bool reset_required_;         // 是否需要重置
-  bool debug_;                  // 调试模式开关
-  bool decel_phase_entered_;    // 是否已进入减速阶段
+  ControlState current_state_;        ///< 当前控制器状态
+  bool received_plan_;                ///< 是否接收到路径
+  bool goal_reached_;                 ///< 是否到达目标
+  bool back_follow_;                  ///< 是否后退模式
+  bool m_work_state_;                 ///< 工作状态（影响最大速度）
+  bool short_path_;                   ///< 是否为短路径
+  bool reset_required_;               ///< 是否需要重置
+  bool decel_phase_entered_;          ///< 是否已进入减速阶段
 
-  // ================================
+  // 参数结构体（从YAML加载，只读）
+  LineParams params_;                 ///< 控制器参数（结构体形式）
+
+
+  // 速度限制（可动态修改）
+  double runtime_walk_max_vel_;           ///< 步行最大速度 [m/s]
+  double runtime_work_max_vel_;           ///< 工作最大速度 [m/s]
+  double runtime_accel_min_vel_;          ///< 加速时最小线速度 [m/s]
+  double runtime_decel_min_vel_;          ///< 减速时最小线速度 [m/s]
+  double runtime_alignment_vel_;          ///< 对齐阶段速度 [m/s]
+
+  // 距离参数（短路径时动态调整）
+  double runtime_alignment_dist_;         ///< 对齐距离 [m]
+  double runtime_decel_dist_;             ///< 减速距离 [m]
+  double runtime_accel_dist_;             ///< 加速距离 [m]
+  
+
+  // 阶段运行时参数（可被setSpeedLimit修改权重）
+  LinePhaseRuntimeParams following_params_;     ///< 跟随阶段参数
+  LinePhaseRuntimeParams alignment_params_;     ///< 对齐阶段参数
+  
+
+  // 运行时状态变量
+  double max_linear_speed_;           ///< 当前最大线速度（计算用）
+  double current_linear_speed_;       ///< 当前线速度
+  double current_angular_speed_;      ///< 当前角速度
+  double robot_yaw_;                  ///< 机器人当前偏航角
+  double alpha_;                      ///< 当前低通滤波系数
+
   // 路径和位姿信息
-  // ================================
+  nav_msgs::msg::Path global_plan_;                       ///< 全局路径
+  geometry_msgs::msg::PoseStamped start_pose_;            ///< 起始位姿
+  geometry_msgs::msg::PoseStamped target_pose_;           ///< 目标位姿
+  geometry_msgs::msg::PoseStamped end_pose_;              ///< 终点位姿
+  geometry_msgs::msg::PoseStamped current_pose_;          ///< 当前位姿
+  geometry_msgs::msg::PoseStamped original_target_pose_;  ///< 原始目标位姿（延长前）
 
-  nav_msgs::msg::Path global_plan_;                       // 全局路径
-  geometry_msgs::msg::PoseStamped start_pose_;            // 起始位姿
-  geometry_msgs::msg::PoseStamped target_pose_;           // 目标位姿
-  geometry_msgs::msg::PoseStamped end_pose_;              // 终点位姿
-  geometry_msgs::msg::PoseStamped current_pose_;          // 当前位姿
-  geometry_msgs::msg::PoseStamped original_target_pose_;  // 原始目标位姿（延长前）
-
-  size_t current_waypoint_index_;  // 当前路径点索引
-  double path_length_;             // 路径长度
-  double original_path_length_;    // 原始路径长度（延长前）
-  double robot_yaw_;               // 机器人当前偏航角
+  size_t current_waypoint_index_;     ///< 当前路径点索引
+  double path_length_;                ///< 路径长度
+  double original_path_length_;       ///< 原始路径长度（延长前）
 
   // 路径延长参数
-  static constexpr double PATH_EXTENSION_LENGTH = 0.5;  // 路径延长距离（米）
-  static constexpr double PATH_POINT_INTERVAL = 0.003;   // 路径点间隔（米）
-
-  // ================================
-  // 速度控制参数
-  // ================================
-
-  // 线速度参数
-  double max_linear_speed_;      // 最大线速度
-  double acceleration_min_linear_speed_;      // 加速时最小线速度
-  double deceleration_min_linear_speed_;      // 减速时最小线速度
-  double current_linear_speed_;  // 当前线速度
-  double m_walk_max_vel_;        // 步行最大速度
-  double m_work_max_vel_;        // 工作最大速度
-  double m_alignment_vel_;       // 对齐阶段速度
-  double mini_path_distance_;
-
-  // 角速度参数
-  double max_rotation_angular_vel_;        // 最大角速度
-  double min_rotation_angular_vel_;        // 最小角速度
-  double current_angular_speed_;  // 当前角速度
-  double rotation_angular_factor_;         // 角速度调节因子
-  double rotation_angle_threshold_;        // 角度阈值
-  double rotation_angle_smooth_factor_;          // 平滑因子
+  static constexpr double PATH_EXTENSION_LENGTH = 0.5;  ///< 路径延长距离 [m]
+  static constexpr double PATH_POINT_INTERVAL = 0.003;  ///< 路径点间隔 [m]
 
 
-  //三种场景地形控制参数
-  TerrainControlParams following_params_;     // 跟随参数
-  TerrainControlParams alignment_params_;          // 通用对齐阶段参数
-
-  // 翻滚角数据（用于调试和记录）
-
-
-  // ================================
-  // 运动控制参数
-  // ================================
-
-  // 距离参数
-  double waypoint_tolerance_;     // 路径点容差
-  double yaw_tolerance_;          // 角度容差
-  double lookahead_distance_;     // 前瞻距离
-  double deceleration_distance_;  // 减速距离（工作模式）
-  double m_alignment_distance_;   // 对齐距离
-  double m_acce_distance_;        // 加速距离
-  
-  // 非工作模式的减速参数
-  double non_work_deceleration_distance_;  // 非工作模式减速距离（应更长）
-
-
-  // 速度调节参数
-  double m_acce_factor_;                  // 加速因子
-  double m_acceleration_factor_;          // 加速sigmoid因子
-  double m_deceleration_factor_;          // 减速sigmoid因子
-  double m_acceleration_sigmoid_center_;  // 加速sigmoid中心点
-  double m_deceleration_sigmoid_center_;  // 减速sigmoid中心点
-  double max_angular_acceleration_;       // 最大角加速度
-
-  // 调试数据导出路径（从配置读取）
-  std::string debug_path_raw_dir_;      // 原始路径导出目录
-  std::string debug_path_filtered_dir_; // 滤波后路径导出目录
-
-  // ================================
-  // PID控制器
-  // ================================
-
-  std::shared_ptr<PIDController> heading_pid_controller_;  // 航向 PID 控制器
-
-  // 对齐阶段航向 PID 参数
-  double heading_alignment_kp_;  // 比例系数
-  double heading_alignment_ki_;  // 积分系数
-  double heading_alignment_kd_;  // 微分系数
-
-  // 跟随阶段航向 PID 参数
-  double heading_following_kp_;  // 比例系数
-  double heading_following_ki_;  // 积分系数
-  double heading_following_kd_;  // 微分系数
-
-  // ================================
-  // 滤波器
-  // ================================
+  std::shared_ptr<PIDController> heading_pid_controller_;  ///< 航向 PID 控制器
 
   // 位置滤波
-  SavitzkyGolayFilter x_filter_;  // X坐标SG滤波器
-  SavitzkyGolayFilter y_filter_;  // Y坐标SG滤波器
-  HampelFilter h_x_filter_;       // X坐标Hampel滤波器
-  HampelFilter h_y_filter_;       // Y坐标Hampel滤波器
-
-  int m_window_size_;       // SG滤波窗口大小
-  int m_polynomial_order_;  // SG多项式阶数
-  int m_hampel_window_;     // Hampel滤波窗口
-  double m_hampel_k_;       // Hampel滤波参数
+  SavitzkyGolayFilter x_filter_;      ///< X坐标SG滤波器
+  SavitzkyGolayFilter y_filter_;      ///< Y坐标SG滤波器
+  HampelFilter h_x_filter_;           ///< X坐标Hampel滤波器
+  HampelFilter h_y_filter_;           ///< Y坐标Hampel滤波器
 
   // 角速度滤波
-  double prev_angular_velocity_;           // 上一次角速度
-  double prev_smoothed_angular_velocity_;  // 上一次平滑后角速度
-  double last_yaw_error_;                  // 上一次航向误差
+  double prev_angular_velocity_;      ///< 上一次角速度
+  double prev_smoothed_angular_velocity_; ///< 上一次平滑后角速度
+  double last_yaw_error_;             ///< 上一次航向误差
   double second_prev_angular_velocity_;
-  double alpha_;                           // 当前使用的低通滤波器平滑因子
-  std::deque<double> angular_vel_history_;  // 角速度历史记录
-  int angular_vel_history_size_ = 5;
-  HampelFilter angular_vel_hampel_filter_;  // 角速度Hampel滤波器
-  int angular_following_hampel_window_;     
-  double angular_following_hampel_k_;       
-  
-  // 当前地形动态滤波参数（会根据地形类型动态切换）
-  double current_alpha_;                   // 当前地形使用的alpha参数
-  double current_smoother_frequency_;      // 当前地形使用的二阶平滑器频率
-  double current_smoother_damping_;        // 当前地形使用的二阶平滑器阻尼
+  std::deque<double> angular_vel_history_; ///< 角速度历史记录
+  HampelFilter angular_vel_hampel_filter_; ///< 角速度Hampel滤波器
 
+  // 二阶平滑器
+  SecondOrderSmoother angular_smoother_; ///< 二阶平滑器实例
 
-  std::chrono::steady_clock::time_point last_time_;        // 上次计算时间
-  std::chrono::steady_clock::time_point wait_start_time_;  // 等待开始时间
-  double wait_duration_;                                   // 等待持续时间
-  bool waiting_;                                           // 是否在等待
-
-
-  std::vector<std::vector<double>> original_path_;         // 原始路径点
-  std::vector<std::vector<double>> filtered_path_;         // 滤波后路径点
-  std::mutex file_mutex_;                                  // 文件操作互斥锁
-
-
-  // 可配置的数据记录参数
-  // std::string data_log_base_path_;                       // 数据日志基础路径（可配置）
-  // bool enable_detailed_logging_;                         // 是否启用详细日志记录
-  // bool enable_imu_terrain_logging_;                      // 是否启用IMU地形数据记录
-  // double logging_frequency_;                             // 日志记录频率（Hz）
-  // std::chrono::steady_clock::time_point last_log_time_;  // 上次记录时间
-
-  // 二阶平滑器相关参数（ωn 控制响应快慢，ζ 控制阻尼大小）
-  double angular_smoother_freq_;     // 自然频率，默认2.0 Hz
-  double angular_smoother_damping_;  // 阻尼比，默认0.7
-
-  // 二阶平滑器实例
-  SecondOrderSmoother angular_smoother_;
-
+  std::chrono::steady_clock::time_point last_time_;        ///< 上次计算时间
+  std::chrono::steady_clock::time_point wait_start_time_;  ///< 等待开始时间
+  double wait_duration_;              ///< 等待持续时间
+  bool waiting_;                      ///< 是否在等待
 
   // ================================
-  // 私有方法
+  // 调试数据
   // ================================
 
-  // 参数管理
+  std::vector<std::vector<double>> original_path_;   ///< 原始路径点
+  std::vector<std::vector<double>> filtered_path_;   ///< 滤波后路径点
+  std::mutex file_mutex_;             ///< 文件操作互斥锁
+
+  // 调试数据导出路径（解析后的完整路径）
+  std::string resolved_debug_raw_dir_;
+  std::string resolved_debug_filtered_dir_;
+
+  // ================================
+  // 私有方法 - 参数管理
+  // ================================
+
   void updateParameters();
+  void syncRuntimeParams();           ///< 将结构体参数同步到运行时变量
   void initializeFilters();
   void resetControllerState();
-  void initializeDefaultParameters();
 
-  // 状态判断
-  bool shouldGoBackward(double curr_x, double curr_y, double curr_yaw, double target_x, double target_y,
-                        double target_yaw);
+  // ================================
+  // 私有方法 - 状态判断
+  // ================================
+
+  bool shouldGoBackward(double curr_x, double curr_y, double curr_yaw, 
+                        double target_x, double target_y, double target_yaw);
   bool isBeyondGoal(double robot_x, double robot_y);
-  bool isAlignedWithTarget(double robot_yaw, const geometry_msgs::msg::Quaternion& target_orientation,
+  bool isAlignedWithTarget(double robot_yaw, 
+                           const geometry_msgs::msg::Quaternion& target_orientation,
                            bool is_backward);
 
-  // 路径管理
+  // ================================
+  // 私有方法 - 路径管理
+  // ================================
+
   geometry_msgs::msg::PoseStamped getNextWaypoint(double robot_x, double robot_y);
   size_t findNearestSegment(double robot_x, double robot_y);
   double computeCrossTrackError(double robot_x, double robot_y);
-  void extendPath();  // 延长路径
+  void extendPath();
 
-  // 速度计算
+  // ================================
+  // 私有方法 - 速度计算
+  // ================================
+
   double computeLinearSpeed(double distance_to_target, double distance_to_start);
-  double computeAngularVelocity(double yaw_error, double dt, double distance_to_target, double distance_to_start,
+  double computeAngularVelocity(double yaw_error, double dt, 
+                                double distance_to_target, double distance_to_start,
                                 double linear_speed);
   double calculateRotationVelocity(const double& angle_diff);
 
-  // 控制逻辑
-  bool handleStateAlignment(double robot_yaw, const geometry_msgs::msg::Quaternion& target_orientation,
-                            geometry_msgs::msg::TwistStamped& cmd_vel, bool is_backward = false);
-  void handlePathFollowing(double robot_x, double robot_y, geometry_msgs::msg::TwistStamped& cmd_vel);
+  // ================================
+  // 私有方法 - 控制逻辑
+  // ================================
+
+  bool handleStateAlignment(double robot_yaw, 
+                            const geometry_msgs::msg::Quaternion& target_orientation,
+                            geometry_msgs::msg::TwistStamped& cmd_vel, 
+                            bool is_backward = false);
+  void handlePathFollowing(double robot_x, double robot_y, 
+                           geometry_msgs::msg::TwistStamped& cmd_vel);
   bool handleWaitingState(geometry_msgs::msg::TwistStamped& cmd_vel);
 
-  // 工具方法
+  // ================================
+  // 私有方法 - 工具方法
+  // ================================
+
   double getDeltaTime();
   double normalizeAngle(double angle);
   double distanceToSegment(double x, double y, double x1, double y1, double x2, double y2);
-  void exportDebugData(const std::string& file_path, const std::vector<std::vector<double>>& data);
+  void exportDebugData(const std::string& file_path, 
+                       const std::vector<std::vector<double>>& data);
 
+  // ================================
+  // 便捷访问器（简化代码中对params_的访问）
+  // ================================
 
+  // 调试
+  inline bool isDebugEnabled() const { return params_.debug.enabled; }
+  
+  // PID参数
+  inline const LinePIDGains& alignmentPID() const { return params_.heading_pid.alignment; }
+  inline const LinePIDGains& followingPID() const { return params_.heading_pid.following; }
+  
+  // 旋转参数
+  inline double rotationMaxW() const { return params_.rotation.max_w; }
+  inline double rotationMinW() const { return params_.rotation.min_w; }
+  inline double rotationFactor() const { return params_.rotation.factor; }
+  inline double rotationAngleThreshold() const { return params_.rotation.angle_threshold; }
+  inline double rotationSmoothFactor() const { return params_.rotation.smooth_factor; }
+  
+  // 距离参数
+  inline double lookaheadDist() const { return params_.distance.lookahead; }
+  inline double waypointTolerance() const { return params_.distance.waypoint_tolerance; }
+  inline double miniPathDist() const { return params_.distance.mini_path; }
+  
+  // 速度调节参数
+  inline double acceFactor() const { return params_.velocity.acce_factor; }
+  inline double accelSigmoidK() const { return params_.velocity.accel_sigmoid_k; }
+  inline double decelSigmoidK() const { return params_.velocity.decel_sigmoid_k; }
+  inline double accelSigmoidCenter() const { return params_.velocity.accel_sigmoid_center; }
+  inline double decelSigmoidCenter() const { return params_.velocity.decel_sigmoid_center; }
 };
 
 }  // namespace follow_controller

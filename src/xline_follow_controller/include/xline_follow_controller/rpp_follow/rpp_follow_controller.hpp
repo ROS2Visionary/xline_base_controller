@@ -1,11 +1,3 @@
-/**
- * @file rpp_follow_controller.hpp
- * @brief Regulated Pure Pursuit 路径跟随控制器声明（策略模式重构版）
- *
- * 使用策略模式分离圆形路径和曲线路径的特有逻辑，
- * 控制器专注于共享的核心控制流程。
- */
-
 #pragma once
 
 #include <geometry_msgs/msg/pose_stamped.hpp>
@@ -29,6 +21,7 @@
 #include "xline_follow_controller/rpp_follow/path_strategy.hpp"
 #include "xline_follow_controller/rpp_follow/circle_path_strategy.hpp"
 #include "xline_follow_controller/rpp_follow/curve_path_strategy.hpp"
+#include "xline_follow_controller/rpp_follow/rpp_params.hpp"
 
 #include "ament_index_cpp/get_package_share_directory.hpp"
 #include "rclcpp/rclcpp.hpp"
@@ -45,7 +38,7 @@ namespace follow_controller
 {
 
 /**
- * @brief Regulated Pure Pursuit 控制器（策略模式版）
+ * @brief Regulated Pure Pursuit 控制器（结构体参数版）
  *
  * 在标准 PP 的基础上加了速度/曲率约束、滤波以及圆轨迹、倒车等扩展。
  * 使用策略模式分离不同路径类型的特有逻辑：
@@ -98,6 +91,9 @@ public:
 
   /// 获取当前策略类型名称
   std::string getCurrentStrategyType() const;
+
+  /// 获取当前参数（只读）
+  const RPPParams& getParams() const { return params_; }
 
   // ================================
   // 路径处理方法
@@ -174,6 +170,12 @@ private:
   void switchStrategy(PathStrategyType type);
 
   // ================================
+  // 参数结构体
+  // ================================
+
+  RPPParams params_;           ///< 控制器参数（结构体形式）
+
+  // ================================
   // 状态标志
   // ================================
 
@@ -191,34 +193,13 @@ private:
   double target_yaw_;         ///< 目标航向角
 
   // ================================
-  // 控制参数
+  // 控制参数（运行时缓存）
   // ================================
 
   double d_t_;                   ///< 控制时间间隔
-  double regulated_min_radius_;  ///< 曲率约束最小半径阈值
-  double approach_dist_;         ///< 接近目标阈值
-  double approach_min_v_;        ///< 接近目标最小速度
 
   // 目标参数
   double goal_x_, goal_y_, goal_theta_;  ///< 目标位置和角度
-  double goal_dist_tol_;    ///< 目标距离容忍度
-  double rotate_tol_;       ///< 旋转角度容忍度
-
-  // 前瞻参数
-  double lookahead_time_;       ///< 前瞻时间
-  double min_lookahead_dist_;   ///< 最小前瞻距离
-  double max_lookahead_dist_;   ///< 最大前瞻距离
-
-  // 线速度参数
-  double max_v_;          ///< 最大线速度
-  double min_v_;          ///< 最小线速度
-  double max_v_inc_;      ///< 最大线速度增量
-  double linear_speed_;   ///< 基准线速度
-
-  // 角速度参数
-  double max_w_;          ///< 最大角速度
-  double min_w_;          ///< 最小角速度
-  double max_w_inc_;      ///< 最大角速度增量
 
   // ================================
   // 路径与距离信息
@@ -261,63 +242,42 @@ private:
   FourthOrderLowpassFilter angle_vel_filter_;
 
   // ================================
-  // 角速度平滑参数
+  // 角速度平滑状态
   // ================================
 
   double previous_angular_vel_;             ///< 上次角速度
   double predicted_angular_vel_;            ///< 预测角速度
-  double lowpass_angular_vel_filter_gain_;  ///< 低通滤波增益
   std::deque<double> angular_vel_history_;  ///< 角速度历史
-  int angular_vel_history_size_;            ///< 历史记录大小
   double angle_to_path_prev_;               ///< 上次路径角度差
   double lookahead_dist_prev_;              ///< 上次前瞻距离
-  std::string smoothing_type_ = "lowpass";  ///< 平滑类型
 
   // 二阶平滑器
-  double angular_smoother_freq_;      ///< 自然频率
-  double angular_smoother_damping_;   ///< 阻尼比
   SecondOrderSmoother second_order_filter_;
 
-  // ================================
-  // 滤波参数
-  // ================================
-
-  // 位置滤波参数
-  double pos_cutoff_freq;
-  double pos_sample_rate;
-  double pos_output_limit;
-  double pos_rate_limit;
-  bool pos_use_biquad_cascade_;
-  bool pos_use_biquad_cascade_filter_;
-  bool low_speed_mode_;
-
-  // 角速度滤波参数
-  double angle_cutoff_freq;
-  double angle_sample_rate;
-  double angle_output_limit_rate;
-  double angle_rate_limit;
-  bool angle_use_biquad_cascade_;
-  bool angle_use_biquad_cascade_filter_;
-  bool angle_use_offset_limit_;
-  double angle_output_offset_;
-
-  // 其他参数
-  double radius_offset_;
+  // 其他状态
   size_t last_closest_idx;
 
   // ================================
   // 栅格图相关
   // ================================
 
-  bool enable_grid_map_;
   double grid_resolution_;
   double grid_width_;
   double grid_height_;
   double grid_origin_x_;
   double grid_origin_y_;
-  std::string grid_map_path_;
   cv::Mat grid_map_;
   rclcpp::Time last_grid_update_time_;
+
+  // ================================
+  // 私有辅助方法 - 参数加载
+  // ================================
+
+  /**
+   * @brief 从YAML解析器加载参数到结构体
+   * @param parser YAML解析器
+   */
+  void loadParamsFromYaml(const xline::YamlParser::YamlParser& parser);
 
   // ================================
   // 私有辅助方法 - 状态重置

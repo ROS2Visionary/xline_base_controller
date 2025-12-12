@@ -1,8 +1,3 @@
-/**
- * @file path_strategy_factory.cpp
- * @brief 路径策略工厂实现
- */
-
 #include "xline_follow_controller/rpp_follow/path_strategy.hpp"
 #include "xline_follow_controller/rpp_follow/curve_path_strategy.hpp"
 #include "xline_follow_controller/rpp_follow/circle_path_strategy.hpp"

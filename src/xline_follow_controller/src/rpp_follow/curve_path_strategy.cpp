@@ -1,8 +1,3 @@
-/**
- * @file curve_path_strategy.cpp
- * @brief 曲线路径跟随策略实现
- */
-
 #include "xline_follow_controller/rpp_follow/curve_path_strategy.hpp"
 #include "xline_follow_controller/common/yaml_parser.hpp"
 #include "ament_index_cpp/get_package_share_directory.hpp"
@@ -21,11 +16,7 @@ namespace follow_controller
 // ============================================================================
 
 CurvePathStrategy::CurvePathStrategy()
-  : goal_dist_tol_(0.02)
-  , rotate_tol_(0.035)
-  , approach_dist_(0.05)
-  , approach_min_v_(0.07)
-  , goal_x_(0.0)
+  : goal_x_(0.0)
   , goal_y_(0.0)
   , goal_theta_(0.0)
   , path_length_(0.0)
@@ -47,13 +38,8 @@ bool CurvePathStrategy::setPlan(const nav_msgs::msg::Path& path)
     return false;
   }
 
-  // 重置状态
   reset();
-
-  // 保存路径
   global_plan_ = path;
-
-  // 计算路径信息
   calculatePathInfo();
 
   RCLCPP_INFO(getLogger(), "曲线路径设置完成 - 点数: %zu, 长度: %.3fm, 目标: (%.3f, %.3f)",
@@ -69,13 +55,11 @@ bool CurvePathStrategy::isGoalReached(const PathStrategyContext& ctx)
     return true;
   }
 
-  // 计算到目标的距离
   double distance_to_goal = std::hypot(
       ctx.current_pose.pose.position.x - goal_x_,
       ctx.current_pose.pose.position.y - goal_y_);
 
-  // 判断是否到达
-  if (distance_to_goal < goal_dist_tol_)
+  if (distance_to_goal < params_.goal.dist_tol)
   {
     goal_reached_ = true;
     RCLCPP_INFO(getLogger(), "曲线路径目标已达到 - 最终距离误差: %.4fm", distance_to_goal);
@@ -88,11 +72,8 @@ bool CurvePathStrategy::isGoalReached(const PathStrategyContext& ctx)
 void CurvePathStrategy::computeAngularVelocity(const PathStrategyContext& ctx,
                                                 PathStrategyResult& result)
 {
-  // 标准 Pure Pursuit 角速度计算
-  // w = v * curvature = v * (2 * sin(alpha) / L)
   double desired_angular_velocity = ctx.base_angular_velocity;
 
-  // 应用接近目标约束
   double distance_to_goal = std::hypot(
       ctx.current_pose.pose.position.x - goal_x_,
       ctx.current_pose.pose.position.y - goal_y_);
@@ -100,13 +81,11 @@ void CurvePathStrategy::computeAngularVelocity(const PathStrategyContext& ctx,
   double adjusted_linear_velocity = applyApproachConstraint(
       ctx.desired_linear_velocity, distance_to_goal);
 
-  // 更新结果
   result.angular_velocity = desired_angular_velocity;
   result.linear_velocity = adjusted_linear_velocity;
   result.goal_reached = goal_reached_;
   result.filter_reset = false;
 
-  // 生成状态信息
   std::ostringstream oss;
   oss << std::fixed << std::setprecision(3)
       << "Curve: dist=" << distance_to_goal
@@ -137,15 +116,17 @@ void CurvePathStrategy::updateParameters(const std::string& config_path)
 
     xline::YamlParser::YamlParser parser(full_path);
 
-    // 读取参数
-    goal_dist_tol_ = parser.getParameter<double>("goal_dist_tol");
-    rotate_tol_ = parser.getParameter<double>("rotate_tol");
-    approach_dist_ = parser.getParameter<double>("approach_dist");
-    approach_min_v_ = parser.getParameter<double>("approach_min_v");
+    // 目标到达判定参数
+    params_.goal.dist_tol = parser.getParameter<double>("goal.dist_tol");
+    params_.goal.rotate_tol = parser.getParameter<double>("goal.rotate_tol");
+    
+    // 路径跟踪约束参数
+    params_.tracking.approach.dist = parser.getParameter<double>("tracking.approach.dist");
+    params_.tracking.approach.min_v = parser.getParameter<double>("tracking.approach.min_v");
 
     RCLCPP_INFO(getLogger(),
                 "CurvePathStrategy 参数已更新: goal_tol=%.3fm, rotate_tol=%.3frad",
-                goal_dist_tol_, rotate_tol_);
+                params_.goal.dist_tol, params_.goal.rotate_tol);
   }
   catch (const std::exception& e)
   {
@@ -187,7 +168,6 @@ void CurvePathStrategy::calculatePathInfo()
     return;
   }
 
-  // 计算路径长度
   path_length_ = 0.0;
   for (size_t i = 0; i < global_plan_.poses.size() - 1; ++i)
   {
@@ -198,7 +178,6 @@ void CurvePathStrategy::calculatePathInfo()
     path_length_ += std::hypot(dx, dy);
   }
 
-  // 提取目标信息
   goal_pose_ = global_plan_.poses.back();
   goal_x_ = goal_pose_.pose.position.x;
   goal_y_ = goal_pose_.pose.position.y;
@@ -208,11 +187,10 @@ void CurvePathStrategy::calculatePathInfo()
 double CurvePathStrategy::applyApproachConstraint(double raw_velocity,
                                                    double distance_to_goal)
 {
-  if (distance_to_goal < approach_dist_)
+  if (distance_to_goal < params_.tracking.approach.dist)
   {
-    // 线性降速
-    double ratio = distance_to_goal / approach_dist_;
-    return std::max(approach_min_v_, raw_velocity * ratio);
+    double ratio = distance_to_goal / params_.tracking.approach.dist;
+    return std::max(params_.tracking.approach.min_v, raw_velocity * ratio);
   }
   return raw_velocity;
 }
