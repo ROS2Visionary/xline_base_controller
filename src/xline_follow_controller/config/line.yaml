@@ -75,6 +75,7 @@ phase:
     current_heading_weight: 0.0      # 当前航向权重
     target_heading_weight: 1.0       # 目标航向权重
     filter_alpha: 0.95               # 低通滤波系数
+
     smoother_freq: 15.0              # 平滑器频率 [Hz]
     smoother_damping: 0.86           # 平滑器阻尼比
 
@@ -84,5 +85,6 @@ phase:
     current_heading_weight: 0.0      # 当前航向权重
     target_heading_weight: 1.0       # 目标航向权重
     filter_alpha: 0.95               # 低通滤波系数
+    
     smoother_freq: 15.0              # 平滑器频率 [Hz]
     smoother_damping: 0.86           # 平滑器阻尼比
