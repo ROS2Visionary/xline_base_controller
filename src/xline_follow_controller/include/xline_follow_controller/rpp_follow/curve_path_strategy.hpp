@@ -1,10 +1,3 @@
-/**
- * @file curve_path_strategy.hpp
- * @brief 曲线路径跟随策略声明（结构体参数版）
- *
- * 实现标准 Pure Pursuit 曲线路径跟随，使用距离判定目标到达。
- */
-
 #pragma once
 
 #include "xline_follow_controller/rpp_follow/path_strategy.hpp"
@@ -16,24 +9,14 @@ namespace xline
 namespace follow_controller
 {
 
-/**
- * @brief 曲线路径跟随策略
- *
- * 适用于一般曲线路径的 Pure Pursuit 跟随控制：
- * - 基于距离的目标到达判定
- * - 标准 Pure Pursuit 角速度计算
- * - 支持后退跟随模式
- */
+
 class CurvePathStrategy : public PathStrategy
 {
 public:
   CurvePathStrategy();
   ~CurvePathStrategy() override = default;
 
-  // ================================
   // PathStrategy 接口实现
-  // ================================
-
   std::string getTypeName() const override { return "curve"; }
 
   bool setPlan(const nav_msgs::msg::Path& path) override;
@@ -49,26 +32,18 @@ public:
 
   std::string getDebugInfo() const override;
 
-  // ================================
   // 曲线路径特有接口
-  // ================================
-
   void setBackFollow(bool enable);
   bool isBackFollow() const { return back_follow_; }
   const geometry_msgs::msg::PoseStamped& getGoalPose() const { return goal_pose_; }
   double getPathLength() const { return path_length_; }
 
 private:
-  // ================================
-  // 参数结构体
-  // ================================
+
 
   RPPPathStrategyParams params_;    ///< 策略参数
 
-  // ================================
   // 状态
-  // ================================
-
   nav_msgs::msg::Path global_plan_;
   geometry_msgs::msg::PoseStamped goal_pose_;
   double goal_x_, goal_y_, goal_theta_;
@@ -76,10 +51,7 @@ private:
   bool goal_reached_;
   bool back_follow_;
 
-  // ================================
   // 私有方法
-  // ================================
-
   void calculatePathInfo();
   double applyApproachConstraint(double raw_velocity, double distance_to_goal);
 };

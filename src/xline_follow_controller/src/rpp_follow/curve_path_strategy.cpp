@@ -11,10 +11,6 @@ namespace xline
 namespace follow_controller
 {
 
-// ============================================================================
-// 构造函数
-// ============================================================================
-
 CurvePathStrategy::CurvePathStrategy()
   : goal_x_(0.0)
   , goal_y_(0.0)
@@ -26,10 +22,7 @@ CurvePathStrategy::CurvePathStrategy()
   RCLCPP_INFO(getLogger(), "CurvePathStrategy 创建完成");
 }
 
-// ============================================================================
 // PathStrategy 接口实现
-// ============================================================================
-
 bool CurvePathStrategy::setPlan(const nav_msgs::msg::Path& path)
 {
   if (path.poses.empty())
@@ -147,20 +140,14 @@ std::string CurvePathStrategy::getDebugInfo() const
   return oss.str();
 }
 
-// ============================================================================
 // 曲线路径特有接口
-// ============================================================================
-
 void CurvePathStrategy::setBackFollow(bool enable)
 {
   back_follow_ = enable;
   RCLCPP_INFO(getLogger(), "后退模式: %s", enable ? "启用" : "禁用");
 }
 
-// ============================================================================
 // 私有方法
-// ============================================================================
-
 void CurvePathStrategy::calculatePathInfo()
 {
   if (global_plan_.poses.empty())

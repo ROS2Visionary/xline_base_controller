@@ -12,10 +12,6 @@ namespace xline
 namespace follow_controller
 {
 
-// ============================================================================
-// 构造函数
-// ============================================================================
-
 CirclePathStrategy::CirclePathStrategy()
   // 圆形路径参数
   : circle_center_x_(0.0)

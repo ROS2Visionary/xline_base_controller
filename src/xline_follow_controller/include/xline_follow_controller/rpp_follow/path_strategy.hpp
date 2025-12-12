@@ -1,11 +1,3 @@
-/**
- * @file path_strategy.hpp
- * @brief 路径跟随策略接口定义
- *
- * 定义路径策略的抽象接口，支持圆形路径和曲线路径两种实现。
- * 使用策略模式分离不同路径类型的特有逻辑。
- */
-
 #pragma once
 
 #include <geometry_msgs/msg/pose_stamped.hpp>
@@ -20,11 +12,7 @@ namespace xline
 namespace follow_controller
 {
 
-/**
- * @brief 路径策略上下文信息
- *
- * 用于在控制器和策略之间传递计算所需的上下文数据
- */
+
 struct PathStrategyContext
 {
   // 当前状态
@@ -49,11 +37,8 @@ struct PathStrategyContext
   double traversed_distance;                       ///< 已行驶距离
 };
 
-/**
- * @brief 路径策略结果
- *
- * 策略计算返回的结果数据
- */
+
+// 路径策略结果,策略计算返回的结果数据
 struct PathStrategyResult
 {
   double angular_velocity;                         ///< 期望角速度
@@ -63,12 +48,8 @@ struct PathStrategyResult
   std::string status_message;                      ///< 状态信息（用于日志）
 };
 
-/**
- * @brief 路径策略抽象基类
- *
- * 定义路径跟随策略的通用接口，不同类型的路径（圆形、曲线等）
- * 通过继承此接口实现各自的特有逻辑。
- */
+
+// 通过继承此接口实现各自的特有逻辑。
 class PathStrategy
 {
 public:
@@ -82,10 +63,7 @@ public:
   PathStrategy(const PathStrategy&) = delete;
   PathStrategy& operator=(const PathStrategy&) = delete;
 
-  // ================================
   // 核心接口
-  // ================================
-
   virtual std::string getTypeName() const = 0;
   virtual bool setPlan(const nav_msgs::msg::Path& path) = 0;
   virtual bool isGoalReached(const PathStrategyContext& ctx) = 0;
@@ -94,10 +72,7 @@ public:
   virtual void reset() = 0;
   virtual void updateParameters(const std::string& config_path) = 0;
 
-  // ================================
   // 可选接口（带默认实现）
-  // ================================
-
   virtual double getTargetYaw() const
   {
     return std::numeric_limits<double>::quiet_NaN();
@@ -152,18 +127,15 @@ private:
   bool has_logger_ = false;
 };
 
-/**
- * @brief 路径策略类型枚举
- */
+// 路径策略类型枚举
 enum class PathStrategyType
 {
   CURVE,    ///< 曲线路径
   CIRCLE    ///< 圆形路径
 };
 
-/**
- * @brief 路径策略工厂函数声明
- */
+
+// 路径策略工厂函数声明
 PathStrategy::UniquePtr createPathStrategy(PathStrategyType type);
 
 }  // namespace follow_controller

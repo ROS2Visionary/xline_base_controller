@@ -37,28 +37,15 @@ namespace xline
 namespace follow_controller
 {
 
-/**
- * @brief Regulated Pure Pursuit 控制器（结构体参数版）
- *
- * 在标准 PP 的基础上加了速度/曲率约束、滤波以及圆轨迹、倒车等扩展。
- * 使用策略模式分离不同路径类型的特有逻辑：
- * - CurvePathStrategy: 一般曲线路径
- * - CirclePathStrategy: 圆形路径
- */
+
 class RPPController : public BaseFollowController
 {
 public:
-  // ================================
-  // 构造与析构
-  // ================================
 
   RPPController();
   ~RPPController();
 
-  // ================================
   // 公共接口
-  // ================================
-
   /// 初始化内部状态，只需要调一次。
   void initialize();
 
@@ -95,9 +82,6 @@ public:
   /// 获取当前参数（只读）
   const RPPParams& getParams() const { return params_; }
 
-  // ================================
-  // 路径处理方法
-  // ================================
 
   /// 从全局路径中裁掉已走过的部分，得到局部路径。
   void pruneGlobalPlan(const geometry_msgs::msg::PoseStamped& current_pose,
@@ -110,9 +94,6 @@ public:
       const std::vector<geometry_msgs::msg::PoseStamped>& transformed_plan,
       bool interpolate_after_goal);
 
-  // ================================
-  // 速度约束方法
-  // ================================
 
   /// 根据曲率减小线速度。
   double applyCurvatureConstraint(const double raw_linear_vel, const double curvature);
@@ -128,9 +109,6 @@ public:
   /// 对角速度做简单的限幅与渐变。
   double angularRegularization(double current_angular_vel, double desired_angular_vel);
 
-  // ================================
-  // 辅助计算方法
-  // ================================
 
   /// 当前姿态和路径切线的夹角是否需要先单独旋转对齐。
   bool shouldRotateToPath(double angle_to_path, double tolerance);
@@ -156,64 +134,40 @@ protected:
               geometry_msgs::msg::PoseStamped robot_pose_global);
 
 private:
-  // ================================
-  // 策略模式
-  // ================================
+
 
   PathStrategy::UniquePtr path_strategy_;        ///< 当前路径策略
   PathStrategyType current_strategy_type_;       ///< 当前策略类型
 
-  /**
-   * @brief 切换路径策略
-   * @param type 目标策略类型
-   */
+  // 切换路径策略
   void switchStrategy(PathStrategyType type);
-
-  // ================================
-  // 参数结构体
-  // ================================
 
   RPPParams params_;           ///< 控制器参数（结构体形式）
 
-  // ================================
   // 状态标志
-  // ================================
-
   bool initialized_;          ///< 控制器是否已初始化
   bool goal_reached_;         ///< 是否已到达目标
   bool waiting_;              ///< 是否在等待状态
   bool back_follow_;          ///< 是否后退模式
 
-  // ================================
   // 航向预对准相关
-  // ================================
-
   bool need_yaw_prealign_;    ///< 是否需要航向预对准
   bool yaw_prealign_done_;    ///< 航向预对准是否完成
   double target_yaw_;         ///< 目标航向角
 
-  // ================================
   // 控制参数（运行时缓存）
-  // ================================
-
   double d_t_;                   ///< 控制时间间隔
 
   // 目标参数
   double goal_x_, goal_y_, goal_theta_;  ///< 目标位置和角度
 
-  // ================================
   // 路径与距离信息
-  // ================================
-
   nav_msgs::msg::Path global_plan_;   ///< 全局路径
   double path_length_;                ///< 路径总长度
   double traversed_distance_;         ///< 已行驶距离
   double remaining_distance_;         ///< 剩余距离
 
-  // ================================
   // 误差统计
-  // ================================
-
   double max_error_;           ///< 最大横向误差
   double avg_error_;           ///< 平均横向误差
   double error_sum_;           ///< 误差累加
@@ -221,30 +175,21 @@ private:
   double current_lateral_error_;  ///< 当前横向误差
   double current_curvature_;      ///< 当前曲率
 
-  // ================================
   // 当前状态缓存
-  // ================================
-
   geometry_msgs::msg::Twist current_velocity_;   ///< 当前速度
   double desired_velocity_;                       ///< 期望速度
 
-  // ================================
   // 滤波器
-  // ================================
-
   SavitzkyGolayFilter sg_x_filter_ = SavitzkyGolayFilter(7, 2);
   SavitzkyGolayFilter sg_y_filter_ = SavitzkyGolayFilter(7, 2);
-  HampelFilter h_x_filter = HampelFilter(7, 3.0);
-  HampelFilter h_y_filter = HampelFilter(7, 3.0);
+  HampelFilter h_x_filter = HampelFilter(5, 3.0);
+  HampelFilter h_y_filter = HampelFilter(5, 3.0);
 
   FourthOrderLowpassFilter pos_x_filter_;
   FourthOrderLowpassFilter pos_y_filter_;
   FourthOrderLowpassFilter angle_vel_filter_;
 
-  // ================================
   // 角速度平滑状态
-  // ================================
-
   double previous_angular_vel_;             ///< 上次角速度
   double predicted_angular_vel_;            ///< 预测角速度
   std::deque<double> angular_vel_history_;  ///< 角速度历史
@@ -257,10 +202,7 @@ private:
   // 其他状态
   size_t last_closest_idx;
 
-  // ================================
   // 栅格图相关
-  // ================================
-
   double grid_resolution_;
   double grid_width_;
   double grid_height_;
@@ -269,34 +211,19 @@ private:
   cv::Mat grid_map_;
   rclcpp::Time last_grid_update_time_;
 
-  // ================================
-  // 私有辅助方法 - 参数加载
-  // ================================
+  // 从YAML解析器加载参数到结构体
 
-  /**
-   * @brief 从YAML解析器加载参数到结构体
-   * @param parser YAML解析器
-   */
   void loadParamsFromYaml(const xline::YamlParser::YamlParser& parser);
 
-  // ================================
-  // 私有辅助方法 - 状态重置
-  // ================================
-
+  // 状态重置
   void resetControllerState();
 
-  // ================================
-  // 私有辅助方法 - 路径处理
-  // ================================
-
+  // 路径处理
   nav_msgs::msg::Path smoothAndSubdividePath(const nav_msgs::msg::Path& orig_path);
   bool validateAndCleanPath();
   void calculatePathInfo();
 
-  // ================================
-  // 私有辅助方法 - 速度计算
-  // ================================
-
+  // 速度计算
   void initializeCommandVel(geometry_msgs::msg::TwistStamped& cmd_vel);
   geometry_msgs::msg::PoseStamped filterRobotPose(const geometry_msgs::msg::PoseStamped& robot_pose);
   geometry_msgs::msg::PoseStamped adjustPoseForBackward(const geometry_msgs::msg::PoseStamped& pose);
@@ -318,17 +245,11 @@ private:
                                 const geometry_msgs::msg::Twist& current_velocity,
                                 double desired_velocity, double desired_angular_velocity);
 
-  // ================================
-  // 私有辅助方法 - 角速度平滑
-  // ================================
-
+  // 角速度平滑
   double smoothAngularVelocity(double current_angular_vel, double desired_angular_vel,
                                double lookahead_dist, double angle_to_path, double dt, bool is_reset);
 
-  // ================================
-  // 私有辅助方法 - 栅格图
-  // ================================
-
+  // 栅格图
   void initializeGridMap(const nav_msgs::msg::Path& path);
   cv::Point worldToGrid(double x, double y);
   void drawPathOnGrid(const nav_msgs::msg::Path& path, const cv::Scalar& color, int thickness);
@@ -340,10 +261,7 @@ private:
                               const geometry_msgs::msg::PoseStamped& lookahead_pose);
   bool isPointInGrid(const cv::Point& pt);
 
-  // ================================
-  // 私有辅助方法 - 性能监控
-  // ================================
-
+  // 性能监控
   void checkComputationTime(const rclcpp::Time& start_time);
 };
 

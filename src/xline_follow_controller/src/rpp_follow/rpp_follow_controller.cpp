@@ -11,10 +11,6 @@ namespace xline
 namespace follow_controller
 {
 
-// ============================================================================
-// 第一部分：构造函数、析构函数与初始化
-// ============================================================================
-
 RPPController::RPPController()
   : BaseFollowController("rpp_follow_controller")
   // 策略模式

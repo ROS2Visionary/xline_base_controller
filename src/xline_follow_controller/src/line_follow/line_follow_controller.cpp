@@ -449,10 +449,6 @@ bool LineFollowController::setPlan(double start_x, double start_y, double end_x,
   return setPlan(path);
 }
 
-// ============================================================================
-// 扩展接口
-// ============================================================================
-
 void LineFollowController::setSpeedLimit(const double& speed_limit)
 {
   if (speed_limit > 0.0)
