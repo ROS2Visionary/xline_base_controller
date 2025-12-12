@@ -32,6 +32,18 @@ namespace follow_controller
 {
 
 
+/**
+ * @brief 直线路径跟随控制器
+ *
+ * 主要用于处理“起点 -> 终点”的直线路径或简单折线：
+ * - 从 YAML 文件加载一整套参数（速度、距离、阶段控制等），并映射到结构体 LineParams；
+ * - 在起点、路径跟随、终点对齐几个阶段之间切换控制状态；
+ * - 对线速度使用加速/减速 Sigmoid 曲线，尽量保证起步和刹车都比较平滑；
+ * - 对角速度使用 PID + Hampel + Savitzky-Golay + 二阶平滑器做多层滤波；
+ * - 支持后退模式、工作/非工作两种速度档以及调试路径导出。
+ *
+ * 该控制器实现了 BaseFollowController 的接口，供上层 MotionControlCenter 统一调度。
+ */
 class LineFollowController : public BaseFollowController
 {
 public:
@@ -49,10 +61,15 @@ public:
   // 扩展接口
   /// 通过起点/终点坐标直接生成直线路径
   bool setPlan(double start_x, double start_y, double end_x, double end_y);
+  /// 通过一组离散的 Pose 点设置路径（常用于上层自定义路径）
   bool setPlan(const std::shared_ptr<std::vector<geometry_msgs::msg::PoseStamped>>& plan);
+  /// 限制最大运行速度（会同时调整内部运行时参数和阶段权重）
   void setSpeedLimit(const double& speed_limit);
+  /// 设置工作/非工作模式（影响速度上限和短路径策略）
   void setWorkState(bool state);
+  /// 切换是否采用后退方式跟随路径
   void setBackFollow(bool back);
+  /// 外部更新当前机器人位姿（部分逻辑会用到缓存位姿）
   void setPose(const geometry_msgs::msg::PoseStamped& pose);
 
   /// 获取当前参数（只读）
@@ -127,6 +144,7 @@ private:
   double original_path_length_;       ///< 原始路径长度（延长前）
 
   // 路径延长参数
+  // 为了保证终点对齐时有一定“缓冲区”，在原始终点之后再向前延长一小段直线。
   static constexpr double PATH_EXTENSION_LENGTH = 0.5;  ///< 路径延长距离 [m]
   static constexpr double PATH_POINT_INTERVAL = 0.003;  ///< 路径点间隔 [m]
 

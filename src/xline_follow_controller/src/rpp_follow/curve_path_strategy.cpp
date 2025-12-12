@@ -1,3 +1,7 @@
+// 曲线路径跟随策略的具体实现。
+// 和圆形策略类似，这里只关心局部的路径信息和速度调节，
+// 不直接操作上层控制器的状态机。
+
 #include "xline_follow_controller/rpp_follow/curve_path_strategy.hpp"
 #include "xline_follow_controller/common/yaml_parser.hpp"
 #include "ament_index_cpp/get_package_share_directory.hpp"
@@ -11,6 +15,8 @@ namespace xline
 namespace follow_controller
 {
 
+// 构造函数主要是把内部状态拉回一个“已知初始值”，
+// 方便复用同一个对象多次计算不同路径。
 CurvePathStrategy::CurvePathStrategy()
   : goal_x_(0.0)
   , goal_y_(0.0)
@@ -22,9 +28,12 @@ CurvePathStrategy::CurvePathStrategy()
   RCLCPP_INFO(getLogger(), "CurvePathStrategy 创建完成");
 }
 
+// ================================
 // PathStrategy 接口实现
+// ================================
 bool CurvePathStrategy::setPlan(const nav_msgs::msg::Path& path)
 {
+  // 统一入口：从 RPP 控制器传入一条已经规划好的路径
   if (path.poses.empty())
   {
     RCLCPP_ERROR(getLogger(), "收到空路径，无法设置计划");
@@ -35,6 +44,7 @@ bool CurvePathStrategy::setPlan(const nav_msgs::msg::Path& path)
   global_plan_ = path;
   calculatePathInfo();
 
+  // 这里记录一下路径长度和终点坐标，方便日志排查问题
   RCLCPP_INFO(getLogger(), "曲线路径设置完成 - 点数: %zu, 长度: %.3fm, 目标: (%.3f, %.3f)",
               global_plan_.poses.size(), path_length_, goal_x_, goal_y_);
 
@@ -43,6 +53,7 @@ bool CurvePathStrategy::setPlan(const nav_msgs::msg::Path& path)
 
 bool CurvePathStrategy::isGoalReached(const PathStrategyContext& ctx)
 {
+  // 一旦标记为到达，就不再重复计算，避免日志刷屏
   if (goal_reached_)
   {
     return true;
@@ -52,6 +63,8 @@ bool CurvePathStrategy::isGoalReached(const PathStrategyContext& ctx)
       ctx.current_pose.pose.position.x - goal_x_,
       ctx.current_pose.pose.position.y - goal_y_);
 
+  // 这里的判定比较简单：只看位置距离，不看角度。
+  // 角度误差由上层控制器在最后阶段单独处理。
   if (distance_to_goal < params_.goal.dist_tol)
   {
     goal_reached_ = true;
@@ -65,12 +78,15 @@ bool CurvePathStrategy::isGoalReached(const PathStrategyContext& ctx)
 void CurvePathStrategy::computeAngularVelocity(const PathStrategyContext& ctx,
                                                 PathStrategyResult& result)
 {
+  // 曲线策略对角速度不做特别处理，直接沿用 RPP 计算出的基础角速度
   double desired_angular_velocity = ctx.base_angular_velocity;
 
   double distance_to_goal = std::hypot(
       ctx.current_pose.pose.position.x - goal_x_,
       ctx.current_pose.pose.position.y - goal_y_);
 
+  // 线速度在接近终点时做一层“靠近约束”，
+  // 避免车子在终点附近速度过高导致 overshoot。
   double adjusted_linear_velocity = applyApproachConstraint(
       ctx.desired_linear_velocity, distance_to_goal);
 
@@ -79,6 +95,7 @@ void CurvePathStrategy::computeAngularVelocity(const PathStrategyContext& ctx,
   result.goal_reached = goal_reached_;
   result.filter_reset = false;
 
+  // 生成一条方便排查的状态字符串
   std::ostringstream oss;
   oss << std::fixed << std::setprecision(3)
       << "Curve: dist=" << distance_to_goal
@@ -96,6 +113,7 @@ void CurvePathStrategy::reset()
   path_length_ = 0.0;
   goal_reached_ = false;
 
+  // 这里不重置 back_follow_，是否后退由外部显式控制
   RCLCPP_DEBUG(getLogger(), "CurvePathStrategy 状态已重置");
 }
 
@@ -103,6 +121,7 @@ void CurvePathStrategy::updateParameters(const std::string& config_path)
 {
   try
   {
+    // 和其他模块统一，从 ament_index 中拿到安装目录，再拼接配置路径。
     std::string package_share_directory =
         ament_index_cpp::get_package_share_directory("xline_follow_controller");
     std::string full_path = package_share_directory + config_path;
@@ -129,6 +148,8 @@ void CurvePathStrategy::updateParameters(const std::string& config_path)
 
 std::string CurvePathStrategy::getDebugInfo() const
 {
+  // 这里输出的是当前路径的一些“静态信息”，
+  // 和实时误差/曲率无关，适合作为整体状态的一部分。
   std::ostringstream oss;
   oss << std::fixed << std::setprecision(3)
       << "CurvePathStrategy["
@@ -144,6 +165,8 @@ std::string CurvePathStrategy::getDebugInfo() const
 void CurvePathStrategy::setBackFollow(bool enable)
 {
   back_follow_ = enable;
+  // 这里仅记录模式切换，具体如何根据 back_follow_ 修正速度方向，
+  // 由上层控制器或策略调用方决定。
   RCLCPP_INFO(getLogger(), "后退模式: %s", enable ? "启用" : "禁用");
 }
 
@@ -155,6 +178,8 @@ void CurvePathStrategy::calculatePathInfo()
     return;
   }
 
+  // 简单按相邻点累积距离，得到一条路径的总长度，
+  // 后面主要用于调试和日志。
   path_length_ = 0.0;
   for (size_t i = 0; i < global_plan_.poses.size() - 1; ++i)
   {
@@ -168,12 +193,16 @@ void CurvePathStrategy::calculatePathInfo()
   goal_pose_ = global_plan_.poses.back();
   goal_x_ = goal_pose_.pose.position.x;
   goal_y_ = goal_pose_.pose.position.y;
+  // 记录终点的朝向，方便做一些调试输出或后续扩展
   goal_theta_ = tf2::getYaw(goal_pose_.pose.orientation);
 }
 
 double CurvePathStrategy::applyApproachConstraint(double raw_velocity,
                                                    double distance_to_goal)
 {
+  // 很典型的一种“靠近目标减速”策略：
+  // - 距离大于阈值：直接用原始速度
+  // - 距离小于阈值：按比例缩小速度，但不低于一个安全下限
   if (distance_to_goal < params_.tracking.approach.dist)
   {
     double ratio = distance_to_goal / params_.tracking.approach.dist;

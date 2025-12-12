@@ -37,11 +37,23 @@ namespace xline
 namespace follow_controller
 {
 
-
+/**
+ * @brief Regulated Pure Pursuit 主控制器
+ *
+ * 这个类在整体上负责：
+ * - 作为 BaseFollowController 的一个具体实现，对外提供 setPlan / computeVelocityCommands 等统一接口；
+ * - 持有一套结构化的参数 RPPParams，并从 YAML 中加载/更新这些参数；
+ * - 基于 PathStrategy 抽象，在“曲线策略”和“圆形策略”之间切换；
+ * - 完成路径裁剪、前瞻点选择、速度约束（曲率/接近目标）以及角速度平滑等一整套 PP 控制流程；
+ * - 可选地维护一张栅格图，用于路径、机器人轨迹和前瞻点的可视化调试。
+ *
+ * 头文件主要声明接口和成员变量，具体实现细节可参考 rpp_follow_controller.cpp。
+ */
 class RPPController : public BaseFollowController
 {
 public:
 
+  // 构造/析构：只做基本成员初始化，详细初始化由 initialize() 完成。
   RPPController();
   ~RPPController();
 
@@ -69,6 +81,10 @@ public:
   bool computeVelocityCommands(const geometry_msgs::msg::PoseStamped& pose,
                                const geometry_msgs::msg::Twist& velocity,
                                geometry_msgs::msg::TwistStamped& cmd_vel);
+
+  // ================================
+  // 纯几何/约束相关的工具接口
+  // ================================
 
   /// 根据当前速度算前瞻距离。
   double getLookAheadDistance(double speed);
@@ -110,6 +126,10 @@ public:
   double angularRegularization(double current_angular_vel, double desired_angular_vel);
 
 
+  // ================================
+  // 航向对齐与角度相关工具
+  // ================================
+
   /// 当前姿态和路径切线的夹角是否需要先单独旋转对齐。
   bool shouldRotateToPath(double angle_to_path, double tolerance);
 
@@ -129,6 +149,10 @@ public:
   double calculateRotationVelocity(const double& angle_diff);
 
 protected:
+  // ================================
+  // 几何工具与误差计算（供子类或扩展使用）
+  // ================================
+
   /// 计算机器人当前朝向与前瞻点连线之间的角度差。
   double dphi(geometry_msgs::msg::PointStamped lookahead_pt,
               geometry_msgs::msg::PoseStamped robot_pose_global);
@@ -139,7 +163,7 @@ private:
   PathStrategy::UniquePtr path_strategy_;        ///< 当前路径策略
   PathStrategyType current_strategy_type_;       ///< 当前策略类型
 
-  // 切换路径策略
+  // 切换路径策略（在曲线策略和圆形策略之间切换）
   void switchStrategy(PathStrategyType type);
 
   RPPParams params_;           ///< 控制器参数（结构体形式）
@@ -179,7 +203,7 @@ private:
   geometry_msgs::msg::Twist current_velocity_;   ///< 当前速度
   double desired_velocity_;                       ///< 期望速度
 
-  // 滤波器
+  // 滤波器（位置与角速度，具体参数来自 RPPParams）
   SavitzkyGolayFilter sg_x_filter_ = SavitzkyGolayFilter(7, 2);
   SavitzkyGolayFilter sg_y_filter_ = SavitzkyGolayFilter(7, 2);
   HampelFilter h_x_filter = HampelFilter(5, 3.0);
@@ -212,7 +236,7 @@ private:
   rclcpp::Time last_grid_update_time_;
 
   // 从YAML解析器加载参数到结构体
-
+  // 注意：这里只做“参数 -> 结构体”的映射，不涉及运行时状态重置。
   void loadParamsFromYaml(const xline::YamlParser::YamlParser& parser);
 
   // 状态重置
@@ -223,7 +247,7 @@ private:
   bool validateAndCleanPath();
   void calculatePathInfo();
 
-  // 速度计算
+  // 速度计算与目标检查
   void initializeCommandVel(geometry_msgs::msg::TwistStamped& cmd_vel);
   geometry_msgs::msg::PoseStamped filterRobotPose(const geometry_msgs::msg::PoseStamped& robot_pose);
   geometry_msgs::msg::PoseStamped adjustPoseForBackward(const geometry_msgs::msg::PoseStamped& pose);
@@ -241,11 +265,12 @@ private:
   double computeDesiredAngularVelocity(double desired_velocity, double curvature,
                                         double current_angular_vel, double lookahead_distance,
                                         double angle_to_lookahead, double dt, bool& filter_reset);
+  /// 根据期望线速度/角速度和当前状态，生成最终的 cmd_vel 消息
   void generateVelocityCommand(geometry_msgs::msg::TwistStamped& cmd_vel,
                                 const geometry_msgs::msg::Twist& current_velocity,
                                 double desired_velocity, double desired_angular_velocity);
 
-  // 角速度平滑
+  // 角速度平滑：在期望角速度的基础上做一层动态滤波
   double smoothAngularVelocity(double current_angular_vel, double desired_angular_vel,
                                double lookahead_dist, double angle_to_path, double dt, bool is_reset);
 

@@ -1,7 +1,9 @@
-/**
- * @file line_follow_controller.cpp
- * @brief 直线路径跟随控制器实现（扁平化参数版）
- */
+// 直线路径跟随控制器的具体实现。
+// 主要流程：
+// 1. 从 YAML 中加载参数到 LineParams 结构体；
+// 2. 根据路径长度和工作模式动态调整加速/减速/对齐距离；
+// 3. 使用带多层滤波的 PID 控制角速度，Sigmoid 曲线控制线速度；
+// 4. 在起始对齐 -> 路径跟随 -> 终点对齐之间切换状态。
 
 #include "xline_follow_controller/line_follow/line_follow_controller.hpp"
 #include "xline_follow_controller/common/yaml_parser.hpp"
@@ -22,6 +24,9 @@ namespace xline
 {
 namespace follow_controller
 {
+
+// 构造函数：只做一次性的初始化工作，
+// 包括参数加载、滤波器初始化以及 PID/时间戳设置。
 LineFollowController::LineFollowController()
   : BaseFollowController("line_follow_controller")
   , current_state_(ControlState::IDLE)
@@ -62,6 +67,7 @@ LineFollowController::~LineFollowController()
 
 void LineFollowController::updateParameters()
 {
+  // 从 ament_index 中查找安装路径，再拼接出 line.yaml 的完整路径
   std::string package_share_directory = ament_index_cpp::get_package_share_directory("xline_follow_controller");
   std::string config_file_path = package_share_directory + "/config/line.yaml";
 
@@ -69,6 +75,9 @@ void LineFollowController::updateParameters()
 
   try
   {
+    // ================================
+    // 1. 调试路径相关参数
+    // ================================
     // 调试参数 (debug.*)
     params_.debug.enabled = parser.getParameter<bool>("debug.enabled");
     params_.debug.raw_path = parser.getParameter<std::string>("debug.raw_path");
@@ -77,6 +86,9 @@ void LineFollowController::updateParameters()
     resolved_debug_raw_dir_ = xline::path_utils::resolve_path(params_.debug.raw_path);
     resolved_debug_filtered_dir_ = xline::path_utils::resolve_path(params_.debug.filtered_path);
 
+    // ================================
+    // 2. 航向 PID 参数
+    // ================================
     // 航向PID参数 (heading_pid.*)
     params_.heading_pid.alignment.kp = parser.getParameter<double>("heading_pid.alignment.kp");
     params_.heading_pid.alignment.ki = parser.getParameter<double>("heading_pid.alignment.ki");
@@ -86,6 +98,9 @@ void LineFollowController::updateParameters()
     params_.heading_pid.following.ki = parser.getParameter<double>("heading_pid.following.ki");
     params_.heading_pid.following.kd = parser.getParameter<double>("heading_pid.following.kd");
 
+    // ================================
+    // 3. 速度参数
+    // ================================
     // 速度参数 (velocity.*)
     params_.velocity.accel_min = parser.getParameter<double>("velocity.accel_min");
     params_.velocity.decel_min = parser.getParameter<double>("velocity.decel_min");
@@ -99,6 +114,9 @@ void LineFollowController::updateParameters()
     params_.velocity.accel_sigmoid_center = parser.getParameter<double>("velocity.accel_sigmoid_center");
     params_.velocity.decel_sigmoid_center = parser.getParameter<double>("velocity.decel_sigmoid_center");
 
+    // ================================
+    // 4. 距离参数
+    // ================================
     // 距离参数 (distance.*)
     params_.distance.alignment = parser.getParameter<double>("distance.alignment");
     params_.distance.deceleration = parser.getParameter<double>("distance.deceleration");
@@ -108,6 +126,9 @@ void LineFollowController::updateParameters()
     params_.distance.waypoint_tolerance = parser.getParameter<double>("distance.waypoint_tolerance");
     params_.distance.mini_path = parser.getParameter<double>("distance.mini_path");
 
+    // ================================
+    // 5. 原地旋转参数
+    // ================================
     // 旋转参数 (rotation.*)
     params_.rotation.max_w = parser.getParameter<double>("rotation.max_w");
     params_.rotation.min_w = parser.getParameter<double>("rotation.min_w");
@@ -115,6 +136,9 @@ void LineFollowController::updateParameters()
     params_.rotation.angle_threshold = parser.getParameter<double>("rotation.angle_threshold");
     params_.rotation.smooth_factor = parser.getParameter<double>("rotation.smooth_factor");
 
+    // ================================
+    // 6. 滤波器参数
+    // ================================
     // 滤波器参数 (filter.*)
     params_.filter.pos_hampel_window = parser.getParameter<int>("filter.pos_hampel_window");
     params_.filter.pos_hampel_k = parser.getParameter<double>("filter.pos_hampel_k");
@@ -123,6 +147,9 @@ void LineFollowController::updateParameters()
     params_.filter.angular_hampel_window = parser.getParameter<int>("filter.angular_hampel_window");
     params_.filter.angular_hampel_k = parser.getParameter<double>("filter.angular_hampel_k");
 
+    // ================================
+    // 7. 阶段参数（对齐/跟随）
+    // ================================
     // 阶段参数 (phase.*)
     params_.phase.alignment.max_angular_vel = parser.getParameter<double>("phase.alignment.max_angular_vel");
     params_.phase.alignment.max_angular_accel = parser.getParameter<double>("phase.alignment.max_angular_accel");
@@ -152,6 +179,11 @@ void LineFollowController::updateParameters()
 
 void LineFollowController::syncRuntimeParams()
 {
+  // 将 YAML 里的“静态配置”映射到方便运行时使用的成员变量：
+  // - 速度/距离等标量参数；
+  // - 两个阶段（对齐/跟随）的运行时配置；
+  // - 滤波器和平滑器的参数；
+  // - PID 控制器的系数。
   // 速度参数
   runtime_accel_min_vel_ = params_.velocity.accel_min;
   runtime_decel_min_vel_ = params_.velocity.decel_min;
@@ -183,6 +215,8 @@ void LineFollowController::syncRuntimeParams()
 
 void LineFollowController::initializeFilters()
 {
+  // 根据配置重新初始化所有滤波器。
+  // 由于窗口大小、阶数等可能在参数更新后变化，这里统一 reset。
   x_filter_.reset(params_.filter.pos_savgol_window, params_.filter.pos_savgol_order);
   y_filter_.reset(params_.filter.pos_savgol_window, params_.filter.pos_savgol_order);
   h_x_filter_.reset(params_.filter.pos_hampel_window, params_.filter.pos_hampel_k);
@@ -192,6 +226,8 @@ void LineFollowController::initializeFilters()
 
 void LineFollowController::resetControllerState()
 {
+  // 将状态机与速度等运行时状态恢复到“未开始跟随”的初始状态，
+  // 不会重新加载 YAML，只是清理缓存。
   current_state_ = ControlState::IDLE;
   goal_reached_ = false;
   back_follow_ = false;
@@ -223,6 +259,8 @@ void LineFollowController::resetControllerState()
 
 bool LineFollowController::setPlan(const nav_msgs::msg::Path& orig_global_plan)
 {
+  // 主入口：接收一条只包含起点和终点的路径（或简单直线），
+  // 完成路径长度统计、短路径判断和一系列运行参数的自适应调整。
   if (orig_global_plan.poses.empty())
   {
     LOG_ERROR("接收到空路径");
@@ -378,6 +416,7 @@ bool LineFollowController::setPlan(const nav_msgs::msg::Path& orig_global_plan)
 
 bool LineFollowController::setPlan(const std::shared_ptr<std::vector<geometry_msgs::msg::PoseStamped>>& plan)
 {
+  // 适配上层传入的一维 Pose 数组，转换成 nav_msgs::Path 再复用主 setPlan 逻辑。
   if (!plan || plan->empty())
   {
     LOG_ERROR("接收到空路径或空指针");
@@ -398,6 +437,8 @@ bool LineFollowController::setPlan(const std::shared_ptr<std::vector<geometry_ms
 
 bool LineFollowController::setPlan(double start_x, double start_y, double end_x, double end_y)
 {
+  // 通过简单的起点/终点坐标生成一条直线路径，
+  // 起点朝向对齐到终点方向，便于后续对齐逻辑使用。
   nav_msgs::msg::Path path;
   path.header.stamp = this->now();
   path.header.frame_id = "world";
@@ -451,6 +492,10 @@ bool LineFollowController::setPlan(double start_x, double start_y, double end_x,
 
 void LineFollowController::setSpeedLimit(const double& speed_limit)
 {
+  // 提供一个外部“总速度限制”入口：
+  // - 同时压缩工作/非工作最大速度；
+  // - 对阶段权重做一点调整，让低速情况下更注重当前航向；
+  // - 并对对齐阶段速度做下限保护。
   if (speed_limit > 0.0)
   {
     runtime_work_max_vel_ = std::min(runtime_work_max_vel_, speed_limit);
@@ -522,6 +567,11 @@ bool LineFollowController::cancel()
 
 double LineFollowController::computeLinearSpeed(double distance_to_target, double distance_to_start)
 {
+  // 线速度规划核心：
+  // - 远离终点时：根据起点距离用 Sigmoid 做渐进加速；
+  // - 接近终点时：根据终点距离用另一条 Sigmoid 曲线平滑减速；
+  // - 短路径会进一步压缩最大速度；
+  // - 还会对每一帧的减速度做上限，避免速度突变。
   static double prev_speed = 0.0;
   double target_speed = 0.0;
 
@@ -637,6 +687,10 @@ double LineFollowController::computeAngularVelocity(double yaw_error, double dt,
   (void)distance_to_target;
   (void)linear_speed;
 
+  // 角速度规划核心：
+  // - 对齐阶段和跟随阶段使用不同的 PID 参数和角速度/角加速度限制；
+  // - 对 PID 输出做 Hampel 滤波 + 一阶低通（alpha）；
+  // - 最后再经过一个二阶平滑器，减少急剧转向带来的抖动。
   bool is_alignment_phase = (distance_to_start < runtime_alignment_dist_);
   double current_max_angular_vel =
       is_alignment_phase ? alignment_params_.max_angular_vel : following_params_.max_angular_vel;
@@ -697,6 +751,9 @@ double LineFollowController::calculateRotationVelocity(const double& angle_diff)
 bool LineFollowController::shouldGoBackward(double curr_x, double curr_y, double curr_yaw,
                                             double target_x, double target_y, double target_yaw)
 {
+  // 简单的“是否后退更优”判定：
+  // 比较正向和反向两种走法在“起始对齐 + 终点对齐”时需要转的总角度，
+  // 谁的总转角更小，就认为谁更优。
   double dx = target_x - curr_x;
   double dy = target_y - curr_y;
   double target_direction = std::atan2(dy, dx);
@@ -715,6 +772,9 @@ bool LineFollowController::shouldGoBackward(double curr_x, double curr_y, double
 
 bool LineFollowController::isBeyondGoal(double robot_x, double robot_y)
 {
+  // 判断是否已经“越过”终点：
+  // - 沿起点到终点的方向做投影，看投影长度是否超过整条路径；
+  // - 或者距离终点已经小于 waypoint 容差，也认为到达/略过了终点。
   double path_dx = original_target_pose_.pose.position.x - start_pose_.pose.position.x;
   double path_dy = original_target_pose_.pose.position.y - start_pose_.pose.position.y;
   double path_length = std::sqrt(path_dx * path_dx + path_dy * path_dy);
@@ -744,6 +804,9 @@ bool LineFollowController::isAlignedWithTarget(double robot_yaw,
                                                const geometry_msgs::msg::Quaternion& target_orientation,
                                                bool is_backward)
 {
+  // 判断当前航向是否已经与目标航向对齐：
+  // - 前进模式直接比较 yaw 差值；
+  // - 后退模式会把目标 yaw 加 π，等价于“倒着面对目标”。
   double target_yaw = tf2::getYaw(target_orientation);
   const double yaw_tolerance = 0.05;
 
@@ -1036,6 +1099,10 @@ bool LineFollowController::computeVelocityCommands(const geometry_msgs::msg::Pos
 {
   (void)velocity;
 
+  // 主循环入口：
+  // - 根据当前状态机分支到起始对齐/路径跟随/终点对齐；
+  // - 在路径跟随阶段调用 computeLinearSpeed + computeAngularVelocity 计算 cmd_vel；
+  // - 在终点对齐阶段主要做调试数据导出。
   if (!received_plan_)
   {
     LOG_WARN("尚未接收到路径");
