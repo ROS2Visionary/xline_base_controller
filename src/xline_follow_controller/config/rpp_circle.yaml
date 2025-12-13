@@ -64,14 +64,14 @@ smoothing:
 filter:
   position:
     enabled: true
-    active: false
+    lowpass_active: false    # 是否实际应用四阶低通滤波
     cutoff_freq: 1.5         # 截止频率 [Hz]
     sample_rate: 18.0        # 采样率 [Hz]
     output_limit: 0.3        # 输出限幅 [m]
     rate_limit: 0.3          # 变化率限制 [m/s]
   angular:
     enabled: true
-    active: true
+    lowpass_active: true     # 是否实际应用四阶低通滤波
     use_offset_limit: true
     output_offset: 0.1       # 输出偏移量 [rad/s]
     cutoff_freq: 1.5         # 截止频率 [Hz]

@@ -187,7 +187,6 @@ private:
   double current_curvature_;      ///< 当前曲率
 
   // 当前状态缓存
-  geometry_msgs::msg::Twist current_velocity_;   ///< 当前速度
   double desired_velocity_;                       ///< 期望速度
 
   // 滤波器（位置与角速度，具体参数来自 RPPParams）
@@ -196,9 +195,9 @@ private:
   HampelFilter h_x_filter = HampelFilter(5, 3.0);
   HampelFilter h_y_filter = HampelFilter(5, 3.0);
 
-  FourthOrderLowpassFilter pos_x_filter_;
-  FourthOrderLowpassFilter pos_y_filter_;
-  FourthOrderLowpassFilter angle_vel_filter_;
+  FourthOrderLowpassFilter pos_x_lowpass_filter_;
+  FourthOrderLowpassFilter pos_y_lowpass_filter_;
+  FourthOrderLowpassFilter angle_vel_lowpass_filter_;
 
   // 角速度平滑状态
   double previous_angular_vel_;             ///< 上次角速度
@@ -235,7 +234,6 @@ private:
   void calculatePathInfo();
 
   // 速度计算与目标检查
-  void initializeCommandVel(geometry_msgs::msg::TwistStamped& cmd_vel);
   geometry_msgs::msg::PoseStamped filterRobotPose(const geometry_msgs::msg::PoseStamped& robot_pose);
   geometry_msgs::msg::PoseStamped adjustPoseForBackward(const geometry_msgs::msg::PoseStamped& pose);
   bool isValidPose(const geometry_msgs::msg::PoseStamped& pose);

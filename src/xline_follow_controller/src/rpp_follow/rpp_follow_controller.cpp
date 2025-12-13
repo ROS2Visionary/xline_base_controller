@@ -180,7 +180,7 @@ void RPPController::loadParamsFromYaml(const xline::YamlParser::YamlParser& pars
   // [8] 滤波器配置 - 位置
   // =========================================================================
   params_.filter.position.enabled = parser.getParameter<bool>("filter.position.enabled");
-  params_.filter.position.active = parser.getParameter<bool>("filter.position.active");
+  params_.filter.position.lowpass_active = parser.getParameter<bool>("filter.position.lowpass_active");
   params_.filter.position.cutoff_freq = parser.getParameter<double>("filter.position.cutoff_freq");
   params_.filter.position.sample_rate = parser.getParameter<double>("filter.position.sample_rate");
   params_.filter.position.output_limit = parser.getParameter<double>("filter.position.output_limit");
@@ -190,7 +190,7 @@ void RPPController::loadParamsFromYaml(const xline::YamlParser::YamlParser& pars
   // [9] 滤波器配置 - 角速度
   // =========================================================================
   params_.filter.angular.enabled = parser.getParameter<bool>("filter.angular.enabled");
-  params_.filter.angular.active = parser.getParameter<bool>("filter.angular.active");
+  params_.filter.angular.lowpass_active = parser.getParameter<bool>("filter.angular.lowpass_active");
   params_.filter.angular.use_offset_limit = parser.getParameter<bool>("filter.angular.use_offset_limit");
   params_.filter.angular.output_offset = parser.getParameter<double>("filter.angular.output_offset");
   params_.filter.angular.cutoff_freq = parser.getParameter<double>("filter.angular.cutoff_freq");
@@ -451,7 +451,10 @@ bool RPPController::computeVelocityCommands(const geometry_msgs::msg::PoseStampe
   }
 
   // 初始化输出命令
-  initializeCommandVel(cmd_vel);
+  cmd_vel.twist.linear.x = 0.0;
+  cmd_vel.twist.angular.z = 0.0;
+  cmd_vel.header.stamp = this->now();
+  cmd_vel.header.frame_id = "base_link";
 
   // 检查是否已到达目标
   if (goal_reached_)
@@ -474,7 +477,6 @@ bool RPPController::computeVelocityCommands(const geometry_msgs::msg::PoseStampe
 
   // 位置滤波处理
   geometry_msgs::msg::PoseStamped current_pose = filterRobotPose(robot_pose);
-  current_velocity_ = current_velocity;
 
   static bool filter_reset = false;
   try
@@ -894,9 +896,9 @@ double RPPController::smoothAngularVelocity(double current_angular_vel, double d
   smoothed_angular_vel = second_order_filter_.filter(smoothed_angular_vel, dt);
 
   // 四阶低通滤波
-  if (params_.filter.angular.active)
+  if (params_.filter.angular.lowpass_active)
   {
-    smoothed_angular_vel = angle_vel_filter_.filter(smoothed_angular_vel);
+    smoothed_angular_vel = angle_vel_lowpass_filter_.filter(smoothed_angular_vel);
   }
 
   // 更新历史数据
@@ -944,33 +946,33 @@ void RPPController::resetControllerState()
     }
   }
 
-  pos_x_filter_.reset();
-  pos_x_filter_.initialize(params_.filter.position.cutoff_freq, 
+  pos_x_lowpass_filter_.reset();
+  pos_x_lowpass_filter_.initialize(params_.filter.position.cutoff_freq, 
                             params_.filter.position.sample_rate, 
                             params_.filter.position.output_limit);
-  pos_x_filter_.setLimits(params_.filter.position.output_limit, 
+  pos_x_lowpass_filter_.setLimits(params_.filter.position.output_limit, 
                            params_.filter.position.rate_limit, true);
-  pos_x_filter_.use_biquad_cascade_ = params_.filter.position.enabled;
+  pos_x_lowpass_filter_.use_biquad_cascade_ = params_.filter.position.enabled;
 
-  pos_y_filter_.reset();
-  pos_y_filter_.initialize(params_.filter.position.cutoff_freq, 
+  pos_y_lowpass_filter_.reset();
+  pos_y_lowpass_filter_.initialize(params_.filter.position.cutoff_freq, 
                             params_.filter.position.sample_rate, 
                             params_.filter.position.output_limit);
-  pos_y_filter_.setLimits(params_.filter.position.output_limit, 
+  pos_y_lowpass_filter_.setLimits(params_.filter.position.output_limit, 
                            params_.filter.position.rate_limit, true);
-  pos_y_filter_.use_biquad_cascade_ = params_.filter.position.enabled;
+  pos_y_lowpass_filter_.use_biquad_cascade_ = params_.filter.position.enabled;
 
   double angle_limit = (baseline_angular_vel > 0) ?
       params_.filter.angular.output_limit_rate * baseline_angular_vel : 
       params_.filter.angular.output_limit_rate;
-  angle_vel_filter_.reset();
-  angle_vel_filter_.initialize(params_.filter.angular.cutoff_freq, 
+  angle_vel_lowpass_filter_.reset();
+  angle_vel_lowpass_filter_.initialize(params_.filter.angular.cutoff_freq, 
                                 params_.filter.angular.sample_rate, 
                                 angle_limit);
-  angle_vel_filter_.setLimits(angle_limit, params_.filter.angular.rate_limit, true);
-  angle_vel_filter_.setOffsetLimit(params_.filter.angular.output_offset, 
+  angle_vel_lowpass_filter_.setLimits(angle_limit, params_.filter.angular.rate_limit, true);
+  angle_vel_lowpass_filter_.setOffsetLimit(params_.filter.angular.output_offset, 
                                     params_.filter.angular.use_offset_limit);
-  angle_vel_filter_.use_biquad_cascade_ = params_.filter.angular.enabled;
+  angle_vel_lowpass_filter_.use_biquad_cascade_ = params_.filter.angular.enabled;
 
   last_closest_idx = 0;
 
@@ -1090,13 +1092,6 @@ void RPPController::calculatePathInfo()
               path_length_, goal_x_, goal_y_, goal_theta_);
 }
 
-void RPPController::initializeCommandVel(geometry_msgs::msg::TwistStamped& cmd_vel)
-{
-  cmd_vel.twist.linear.x = 0.0;
-  cmd_vel.twist.angular.z = 0.0;
-  cmd_vel.header.stamp = this->now();
-  cmd_vel.header.frame_id = "base_link";
-}
 
 geometry_msgs::msg::PoseStamped RPPController::filterRobotPose(const geometry_msgs::msg::PoseStamped& robot_pose)
 {
@@ -1110,10 +1105,11 @@ geometry_msgs::msg::PoseStamped RPPController::filterRobotPose(const geometry_ms
   filtered_x = sg_x_filter_.filter(filtered_x);
   filtered_y = sg_y_filter_.filter(filtered_y);
 
-  if (params_.filter.position.active)
+  // 四阶低通滤波
+  if (params_.filter.position.lowpass_active)
   {
-    filtered_x = pos_x_filter_.filter(filtered_x);
-    filtered_y = pos_y_filter_.filter(filtered_y);
+    filtered_x = pos_x_lowpass_filter_.filter(filtered_x);
+    filtered_y = pos_y_lowpass_filter_.filter(filtered_y);
   }
 
   current_pose.pose.position.x = filtered_x;

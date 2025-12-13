@@ -94,7 +94,7 @@ struct RPPSmoothingParams
 struct RPPPositionFilterParams
 {
   bool enabled = true;         ///< 是否启用滤波器结构
-  bool active = false;         ///< 是否实际应用滤波
+  bool lowpass_active = false;         ///< 是否实际应用滤波
   double cutoff_freq = 1.5;    ///< 截止频率 [Hz]
   double sample_rate = 18.0;   ///< 采样率 [Hz]
   double output_limit = 0.3;   ///< 输出限幅 [m]
@@ -104,7 +104,7 @@ struct RPPPositionFilterParams
 struct RPPAngularFilterParams
 {
   bool enabled = true;             ///< 是否启用滤波器结构
-  bool active = true;              ///< 是否实际应用滤波
+  bool lowpass_active = true;              ///< 是否实际应用滤波
   bool use_offset_limit = true;    ///< 是否启用偏移限制
   double output_offset = 0.1;      ///< 输出偏移量 [rad/s]
   double cutoff_freq = 1.5;        ///< 截止频率 [Hz]
