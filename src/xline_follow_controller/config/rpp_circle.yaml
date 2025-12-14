@@ -52,7 +52,7 @@ smoothing:
   lowpass:
     gain: 0.9                # 低通滤波增益 [0-1]
   moving_average:
-    window_size: 1           # 移动平均窗口大小
+    window_size: 5           # 移动平均窗口大小
   second_order:
     freq: 15.0               # 自然频率 [Hz]
     damping: 0.9             # 阻尼比 [-]
@@ -71,8 +71,8 @@ filter:
   angular:
     enabled: true
     lowpass_active: true     # 是否实际应用四阶低通滤波
-    use_offset_limit: true
-    output_offset: 0.1       # 输出偏移量 [rad/s]
+    lowpass_use_offset_limit: true   # 是否启用四阶低通滤波偏移限制
+    lowpass_output_offset: 0.1       # 四阶低通滤波输出偏移量 [rad/s]
     cutoff_freq: 1.5         # 截止频率 [Hz]
     sample_rate: 18.0        # 采样率 [Hz]
     output_limit_rate: 1.05

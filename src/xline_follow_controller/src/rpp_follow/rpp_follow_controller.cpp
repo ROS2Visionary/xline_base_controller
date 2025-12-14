@@ -191,8 +191,8 @@ void RPPController::loadParamsFromYaml(const xline::YamlParser::YamlParser& pars
   // =========================================================================
   params_.filter.angular.enabled = parser.getParameter<bool>("filter.angular.enabled");
   params_.filter.angular.lowpass_active = parser.getParameter<bool>("filter.angular.lowpass_active");
-  params_.filter.angular.use_offset_limit = parser.getParameter<bool>("filter.angular.use_offset_limit");
-  params_.filter.angular.output_offset = parser.getParameter<double>("filter.angular.output_offset");
+  params_.filter.angular.use_offset_limit = parser.getParameter<bool>("filter.angular.lowpass_use_offset_limit");
+  params_.filter.angular.output_offset = parser.getParameter<double>("filter.angular.lowpass_output_offset");
   params_.filter.angular.cutoff_freq = parser.getParameter<double>("filter.angular.cutoff_freq");
   params_.filter.angular.sample_rate = parser.getParameter<double>("filter.angular.sample_rate");
   params_.filter.angular.output_limit_rate = parser.getParameter<double>("filter.angular.output_limit_rate");
