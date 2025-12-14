@@ -62,10 +62,10 @@ smoothing:
 # -----------------------------------------------------------------------------
 filter:
   position:
-    pos_hampel_window: 5               # Hampel窗口大小
-    pos_hampel_k: 3.0                  # Hampel异常值阈值
-    pos_savgol_window: 7               # Savitzky-Golay窗口大小
-    pos_savgol_order: 3                # Savitzky-Golay多项式阶数
+    hampel_window: 5               # Hampel窗口大小
+    hampel_k: 3.0                  # Hampel异常值阈值
+    savgol_window: 7               # Savitzky-Golay窗口大小
+    savgol_order: 3                # Savitzky-Golay多项式阶数
   angular:
     lowpass_use_biquad_cascade: true # 是否使用双二阶级联
     lowpass_active: true     # 是否实际应用四阶低通滤波
