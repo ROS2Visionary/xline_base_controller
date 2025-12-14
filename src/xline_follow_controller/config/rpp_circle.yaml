@@ -104,19 +104,19 @@ circle_dynamics:
 
   # 速度计算配置: target_v = ref_v × (radius / ref_r)^γ
   velocity:
-    reference_velocity: 0.08       # 参考速度 [m/s]
-    reference_radius: 0.5          # 参考半径 [m]
+    reference_velocity: 0.05       # 参考速度 [m/s]
+    reference_radius: 0.3          # 参考半径 [m]
     radius_exponent: 0.5           # 半径指数 γ
     min_velocity: 0.03             # 最小速度 [m/s]
     max_velocity: 0.1             # 最大速度 [m/s]
 
   # 前瞻距离计算配置: L = ref_L × (target_v / ref_v)^α × (radius / ref_r)^β
   lookahead:
-    reference_lookahead: 0.18      # 参考前瞻距离 [m]
+    reference_lookahead: 0.2      # 参考前瞻距离 [m]
     velocity_exponent: 1.0         # 速度指数 α
     radius_exponent: 0.0           # 半径额外指数 β
-    min_dist: 0.18                 # 最小前瞻距离 [m]
-    max_dist: 0.2                 # 最大前瞻距离 [m]
+    min_dist: 0.2                 # 最小前瞻距离 [m]
+    max_dist: 0.22                 # 最大前瞻距离 [m]
 
 # 备用固定值配置（当 circle_dynamics.enabled: false 时使用）
 circle_fixed:

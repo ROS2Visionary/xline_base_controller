@@ -505,7 +505,7 @@ bool CirclePathStrategy::updateAccumulatedAngle(double current_yaw)
 
   last_yaw_ = current_yaw;
 
-  if (accumulated_angle_ > (params_.deviation.start_factor + 0.15) * M_PI)
+  if (accumulated_angle_ > (params_.deviation.start_factor + 0.25) * M_PI)
   {
     // 累计超过一定角度后，允许开始打印，
     // 在一圈开始的那一小段不打印，避免入口区域重复喷印。
@@ -513,7 +513,7 @@ bool CirclePathStrategy::updateAccumulatedAngle(double current_yaw)
     stop_print_ = false;
   }
 
-  if (accumulated_angle_ >= 2.35 * M_PI)
+  if (accumulated_angle_ >= 2.38 * M_PI)
   {
     start_print_ = false;
     stop_print_ = true;
