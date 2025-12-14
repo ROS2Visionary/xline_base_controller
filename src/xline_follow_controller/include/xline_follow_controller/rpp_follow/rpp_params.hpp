@@ -71,14 +71,14 @@ struct RPPLinearVelocityParams
   double base = 0.06;          ///< 基准线速度 [m/s]
   double min = 0.06;           ///< 最小线速度 [m/s]
   double max = 0.3;            ///< 最大线速度 [m/s]
-  double max_inc = 0.06;       ///< 最大加速度 [m/s²]
+  double max_acceleration = 0.06;       ///< 最大加速度 [m/s²]
 };
 
 struct RPPAngularVelocityParams
 {
   double min = 0.03;           ///< 最小角速度 [rad/s]
   double max = 1.0;            ///< 最大角速度 [rad/s]
-  double max_inc = 0.06;       ///< 最大角加速度 [rad/s²]
+  double max_acceleration = 0.06;       ///< 最大角加速度 [rad/s²]
 };
 
 struct RPPVelocityParams

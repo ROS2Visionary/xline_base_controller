@@ -147,14 +147,14 @@ void RPPController::loadParamsFromYaml(const xline::YamlParser::YamlParser& pars
   params_.velocity.linear.base = parser.getParameter<double>("velocity.linear.base");
   params_.velocity.linear.min = parser.getParameter<double>("velocity.linear.min");
   params_.velocity.linear.max = parser.getParameter<double>("velocity.linear.max");
-  params_.velocity.linear.max_inc = parser.getParameter<double>("velocity.linear.max_inc");
+  params_.velocity.linear.max_acceleration = parser.getParameter<double>("velocity.linear.max_acceleration");
 
   // =========================================================================
   // [4] 速度控制 - 角速度
   // =========================================================================
   params_.velocity.angular.min = parser.getParameter<double>("velocity.angular.min");
   params_.velocity.angular.max = parser.getParameter<double>("velocity.angular.max");
-  params_.velocity.angular.max_inc = parser.getParameter<double>("velocity.angular.max_inc");
+  params_.velocity.angular.max_acceleration = parser.getParameter<double>("velocity.angular.max_acceleration");
 
   // =========================================================================
   // [5] 路径跟踪约束
@@ -179,7 +179,7 @@ void RPPController::loadParamsFromYaml(const xline::YamlParser::YamlParser& pars
   // =========================================================================
   // [8] 滤波器配置 - 位置
   // =========================================================================
-  params_.filter.position.enabled = parser.getParameter<bool>("filter.position.enabled");
+  params_.filter.position.enabled = parser.getParameter<bool>("filter.position.lowpass_use_biquad_cascade");
   params_.filter.position.lowpass_active = parser.getParameter<bool>("filter.position.lowpass_active");
   params_.filter.position.cutoff_freq = parser.getParameter<double>("filter.position.cutoff_freq");
   params_.filter.position.sample_rate = parser.getParameter<double>("filter.position.sample_rate");
@@ -189,7 +189,7 @@ void RPPController::loadParamsFromYaml(const xline::YamlParser::YamlParser& pars
   // =========================================================================
   // [9] 滤波器配置 - 角速度
   // =========================================================================
-  params_.filter.angular.enabled = parser.getParameter<bool>("filter.angular.enabled");
+  params_.filter.angular.enabled = parser.getParameter<bool>("filter.angular.lowpass_use_biquad_cascade");
   params_.filter.angular.lowpass_active = parser.getParameter<bool>("filter.angular.lowpass_active");
   params_.filter.angular.use_offset_limit = parser.getParameter<bool>("filter.angular.lowpass_use_offset_limit");
   params_.filter.angular.output_offset = parser.getParameter<double>("filter.angular.lowpass_output_offset");

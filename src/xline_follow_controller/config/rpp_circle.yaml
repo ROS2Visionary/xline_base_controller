@@ -29,11 +29,11 @@ velocity:
     base: 0.06               # 基准线速度 [m/s]
     min: 0.05                # 最小线速度 [m/s]（曲线路径边界，圆形动态速度另有配置）
     max: 0.15                # 最大线速度 [m/s]（曲线路径边界，圆形动态速度另有配置）
-    max_inc: 0.06            # 最大加速度 [m/s²]
+    max_acceleration: 0.06            # 最大加速度 [m/s²]
   angular:
     min: 0.03                # 最小角速度 [rad/s]
     max: 1.0                 # 最大角速度 [rad/s]
-    max_inc: 0.06            # 最大角加速度 [rad/s²]
+    max_acceleration: 0.06            # 最大角加速度 [rad/s²]
 
 # -----------------------------------------------------------------------------
 # 路径跟踪约束
@@ -62,14 +62,14 @@ smoothing:
 # -----------------------------------------------------------------------------
 filter:
   position:
-    enabled: true
+    lowpass_use_biquad_cascade: true # 是否使用双二阶级联
     lowpass_active: false    # 是否实际应用四阶低通滤波
     cutoff_freq: 1.5         # 截止频率 [Hz]
     sample_rate: 18.0        # 采样率 [Hz]
     output_limit: 0.3        # 输出限幅 [m]
     rate_limit: 0.3          # 变化率限制 [m/s]
   angular:
-    enabled: true
+    lowpass_use_biquad_cascade: true # 是否使用双二阶级联
     lowpass_active: true     # 是否实际应用四阶低通滤波
     lowpass_use_offset_limit: true   # 是否启用四阶低通滤波偏移限制
     lowpass_output_offset: 0.1       # 四阶低通滤波输出偏移量 [rad/s]
