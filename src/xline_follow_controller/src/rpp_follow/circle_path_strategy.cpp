@@ -7,6 +7,7 @@
 #include "ament_index_cpp/get_package_share_directory.hpp"
 #include <tf2/utils.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+#include <algorithm>
 #include <cmath>
 #include <sstream>
 #include <iomanip>
@@ -100,7 +101,7 @@ void CirclePathStrategy::computeAngularVelocity(const PathStrategyContext& ctx,
   // 根据当前已经转过的角度，决定是否进入“严格控速”阶段。
   // 简单理解：前半段随 PP 的角速度走，后半段逐步向 baseline 收敛，
   // 避免末端过冲太多。
-  if (accumulated_angle_ >= ((params_.deviation.start_factor - 0.1) * M_PI))
+  if (accumulated_angle_ >= (params_.deviation.start_factor * M_PI))
   {
     desired_angular_velocity = constrainAngularVelocity(pp_angular_velocity);
     filter_reset = false;
@@ -112,7 +113,7 @@ void CirclePathStrategy::computeAngularVelocity(const PathStrategyContext& ctx,
   }
 
   result.angular_velocity = desired_angular_velocity;
-  result.linear_velocity = ctx.min_v;
+  result.linear_velocity = (circle_target_velocity_ > 1e-6) ? circle_target_velocity_ : ctx.desired_linear_velocity;
   result.goal_reached = goal_reached_;
   result.filter_reset = filter_reset;
 
@@ -161,11 +162,65 @@ void CirclePathStrategy::updateParameters(const std::string& config_path)
     // 偏差控制参数
     params_.deviation.start_factor = parser.getParameter<double>("deviation.start_factor");
     params_.deviation.end_factor = parser.getParameter<double>("deviation.end_factor");
-    params_.deviation.rate = parser.getParameter<double>("deviation.rate");
+    // 兼容旧字段 deviation.rate（历史上用于放宽区间的偏差比率）
+    if (parser.hasParameter("deviation.relaxed_ratio"))
+    {
+      params_.deviation.relaxed_ratio = parser.getParameter<double>("deviation.relaxed_ratio");
+    }
+    else if (parser.hasParameter("deviation.rate"))
+    {
+      params_.deviation.relaxed_ratio = parser.getParameter<double>("deviation.rate");
+    }
+
+    // 中间阶段严格约束比例（可选，未配置则沿用默认值）
+    if (parser.hasParameter("deviation.strict_ratio"))
+    {
+      params_.deviation.strict_ratio = parser.getParameter<double>("deviation.strict_ratio");
+    }
+
+    // 圆形路径动态参数（可选）
+    if (parser.hasParameter("circle_dynamics.enabled"))
+    {
+      auto& cd = params_.circle_dynamics;
+      cd.enabled = parser.getParameter<bool>("circle_dynamics.enabled");
+
+      // 速度参数
+      cd.velocity.reference_velocity =
+          parser.getParameter<double>("circle_dynamics.velocity.reference_velocity");
+      cd.velocity.reference_radius =
+          parser.getParameter<double>("circle_dynamics.velocity.reference_radius");
+      cd.velocity.radius_exponent =
+          parser.getParameter<double>("circle_dynamics.velocity.radius_exponent");
+      cd.velocity.min_velocity =
+          parser.getParameter<double>("circle_dynamics.velocity.min_velocity");
+      cd.velocity.max_velocity =
+          parser.getParameter<double>("circle_dynamics.velocity.max_velocity");
+
+      // 前瞻参数
+      cd.lookahead.reference_lookahead =
+          parser.getParameter<double>("circle_dynamics.lookahead.reference_lookahead");
+      cd.lookahead.velocity_exponent =
+          parser.getParameter<double>("circle_dynamics.lookahead.velocity_exponent");
+      cd.lookahead.radius_exponent =
+          parser.getParameter<double>("circle_dynamics.lookahead.radius_exponent");
+      cd.lookahead.min_dist =
+          parser.getParameter<double>("circle_dynamics.lookahead.min_dist");
+      cd.lookahead.max_dist =
+          parser.getParameter<double>("circle_dynamics.lookahead.max_dist");
+
+      // 固定参数（备用）
+      if (parser.hasParameter("circle_fixed.velocity"))
+      {
+        cd.fixed.velocity = parser.getParameter<double>("circle_fixed.velocity");
+        cd.fixed.lookahead = parser.getParameter<double>("circle_fixed.lookahead");
+      }
+    }
 
     RCLCPP_INFO(getLogger(),
-                "CirclePathStrategy 参数已更新: deviation_rate=%.2f, radius_offset=%.3f",
-                params_.deviation.rate, params_.smoothing.radius_offset);
+                "CirclePathStrategy 参数已更新: deviation(strict=%.3f, relaxed=%.3f), radius_offset=%.3f, circle_dynamics=%s",
+                params_.deviation.strict_ratio, params_.deviation.relaxed_ratio,
+                params_.smoothing.radius_offset,
+                params_.circle_dynamics.enabled ? "enabled" : "fixed");
   }
   catch (const std::exception& e)
   {
@@ -234,16 +289,40 @@ nav_msgs::msg::Path CirclePathStrategy::generateCirclePath(
 
   circle_path.poses.push_back(entry_pose);
 
-  int num_circle_points = 1500;
+  // 以“弧长间距”决定采样密度：点间距固定 0.003m（3mm）。
+  // 角度步进 dθ = ds / r。为了保证最后一个点能精确落在 circle_total_angle_ 终点，
+  // 实际使用的 dθ 会被调整为 <= spacing 对应的角度步进（即更密而不会更稀）。
+  constexpr double kPointSpacingMeters = 0.003;
   double start_angle = std::atan2(
       entry_pose.pose.position.y - center_y,
       entry_pose.pose.position.x - center_x);
 
-  // 从 start_angle 开始，沿着 circle_total_angle_ 均匀采样圆弧上的点。
-  // 这里从 i=20 起步，是为了避免前面太密集的点对控制没有实际意义。
-  for (int i = 20; i <= num_circle_points; ++i)
+  const double safe_radius = std::max(actual_radius, 1e-6);
+  const double max_step_angle = kPointSpacingMeters / safe_radius;
+
+  // 计算需要的分段数：分段越多，点越密；这里确保相邻点弧长间距不大于 0.003m。
+  size_t num_segments = static_cast<size_t>(std::ceil(circle_total_angle_ / max_step_angle));
+  num_segments = std::max<size_t>(num_segments, 1);
+
+  // 保护：极端大半径/大角度会导致点数过大，容易造成不必要的 CPU/内存开销。
+  // 真有需求可通过调整 spacing 或策略参数来控制。
+  constexpr size_t kMaxSegments = 20000;
+  if (num_segments > kMaxSegments)
   {
-    double angle = start_angle + i * (circle_total_angle_ / num_circle_points);
+    RCLCPP_WARN(getLogger(),
+                "圆弧采样点过多(%zu)，已限制到 %zu 段；可通过增大点间距降低负载",
+                num_segments, kMaxSegments);
+    num_segments = kMaxSegments;
+  }
+
+  const double step_angle = circle_total_angle_ / static_cast<double>(num_segments);
+
+  // 从 start_angle 开始，沿着 circle_total_angle_ 采样圆弧上的点。
+  // 这里从 idx=10 起步，相当于跳过起点后约 0.03m 的短弧段，减少“入口处”过密点对控制的干扰。
+  const size_t start_idx = (num_segments > 10) ? 10 : 1;
+  for (size_t idx = start_idx; idx <= num_segments; ++idx)
+  {
+    const double angle = start_angle + static_cast<double>(idx) * step_angle;
 
     geometry_msgs::msg::PoseStamped circle_pose;
     circle_pose.header = entry_pose.header;
@@ -267,9 +346,9 @@ nav_msgs::msg::Path CirclePathStrategy::generateCirclePath(
 
 void CirclePathStrategy::setAngleRange(double start_angle, double end_angle)
 {
-  // 这里在两端角度差的基础上加了一点冗余(0.8π)，
+  // 这里在两端角度差的基础上加了一点冗余(π)，
   // 让车辆有一定“缓冲区”来完成最终对齐。
-  circle_total_angle_ = std::abs(end_angle - start_angle) + 0.8 * M_PI;
+  circle_total_angle_ = std::abs(end_angle - start_angle) + (params_.deviation.start_factor + params_.deviation.end_factor + 0.2) * M_PI;
 
   RCLCPP_INFO(getLogger(), "设置角度范围: [%.2f, %.2f], 总角度: %.2f rad",
               start_angle, end_angle, circle_total_angle_);
@@ -286,38 +365,98 @@ void CirclePathStrategy::setCircleRadius(double radius)
   circle_radius_ = radius;
 }
 
-void CirclePathStrategy::adjustSpeedForRadius(double radius, double& min_v,
-                                               double& max_v, double& lookahead_dist) const
+void CirclePathStrategy::initializeDynamicParams()
 {
-  // 这里用比较直接的“分段表”来根据半径调速度：
-  // 半径越小，速度越保守，前瞻距离也更短，避免在小圆上过快导致抖动。
-  if (radius < 0.5)
+  if (!params_.circle_dynamics.enabled)
   {
-    lookahead_dist = 0.15;
-    max_v = 0.08;
-    min_v = 0.08;
-  }
-  else if (radius < 0.8)
-  {
-    lookahead_dist = 0.17;
-    max_v = 0.10;
-    min_v = 0.10;
-  }
-  else if (radius < 1.2)
-  {
-    lookahead_dist = 0.21;
-    max_v = 0.11;
-    min_v = 0.11;
+    // 使用固定参数
+    circle_target_velocity_ = params_.circle_dynamics.fixed.velocity;
+    circle_target_lookahead_ = params_.circle_dynamics.fixed.lookahead;
   }
   else
   {
-    lookahead_dist = 0.17;
-    max_v = 0.11;
-    min_v = 0.11;
+    // 动态计算
+    circle_target_velocity_ = computeTargetVelocity(circle_radius_);
+    circle_target_lookahead_ = computeTargetLookahead(circle_target_velocity_, circle_radius_);
   }
 
-  RCLCPP_DEBUG(getLogger(), "根据半径 %.2f 调整速度: v=[%.2f,%.2f], lookahead=%.2f",
-               radius, min_v, max_v, lookahead_dist);
+  // 计算目标角速度
+  if (circle_radius_ > 1e-6)
+  {
+    circle_target_angular_velocity_ = circle_target_velocity_ / circle_radius_;
+  }
+  else
+  {
+    circle_target_angular_velocity_ = 0.0;
+  }
+
+  // 同步更新基准角速度（用于角速度约束）
+  baseline_angular_velocity_ = circle_target_angular_velocity_;
+
+  RCLCPP_INFO(getLogger(),
+              "圆形路径动态参数初始化完成: radius=%.3f m, "
+              "target_v=%.3f m/s, target_lookahead=%.3f m, target_ω=%.3f rad/s",
+              circle_radius_, circle_target_velocity_,
+              circle_target_lookahead_, circle_target_angular_velocity_);
+}
+
+double CirclePathStrategy::computeTargetVelocity(double radius) const
+{
+  const auto& p = params_.circle_dynamics.velocity;
+
+  if (p.reference_velocity <= 0.0 || p.reference_radius <= 0.0)
+  {
+    static rclcpp::Clock steady_clock(RCL_STEADY_TIME);
+    RCLCPP_WARN_THROTTLE(getLogger(), steady_clock, 1000,
+                         "速度参考参数无效，使用默认值");
+    return p.reference_velocity > 0.0 ? p.reference_velocity : 0.08;
+  }
+
+  if (radius <= 0.0)
+  {
+    static rclcpp::Clock steady_clock(RCL_STEADY_TIME);
+    RCLCPP_WARN_THROTTLE(getLogger(), steady_clock, 1000,
+                         "半径无效，使用最小速度");
+    return p.min_velocity;
+  }
+
+  double velocity = p.reference_velocity *
+                    std::pow(radius / p.reference_radius, p.radius_exponent);
+  velocity = std::clamp(velocity, p.min_velocity, p.max_velocity);
+
+  RCLCPP_DEBUG(getLogger(),
+               "速度计算: radius=%.3f, ref_r=%.3f, γ=%.2f -> v=%.3f m/s",
+               radius, p.reference_radius, p.radius_exponent, velocity);
+
+  return velocity;
+}
+
+double CirclePathStrategy::computeTargetLookahead(double velocity, double radius) const
+{
+  const auto& pv = params_.circle_dynamics.velocity;
+  const auto& pl = params_.circle_dynamics.lookahead;
+
+  if (pv.reference_velocity <= 0.0 || pv.reference_radius <= 0.0 || pl.reference_lookahead <= 0.0)
+  {
+    static rclcpp::Clock steady_clock(RCL_STEADY_TIME);
+    RCLCPP_WARN_THROTTLE(getLogger(), steady_clock, 1000,
+                         "前瞻参考参数无效，使用默认值");
+    return pl.reference_lookahead > 0.0 ? pl.reference_lookahead : 0.15;
+  }
+
+  const double velocity_factor =
+      std::pow(velocity / pv.reference_velocity, pl.velocity_exponent);
+  const double radius_factor =
+      std::pow(radius / pv.reference_radius, pl.radius_exponent);
+
+  double lookahead = pl.reference_lookahead * velocity_factor * radius_factor;
+  lookahead = std::clamp(lookahead, pl.min_dist, pl.max_dist);
+
+  RCLCPP_DEBUG(getLogger(),
+               "前瞻计算: v=%.3f, r=%.3f -> L=%.3f m",
+               velocity, radius, lookahead);
+
+  return lookahead;
 }
 
 void CirclePathStrategy::setBaselineLinearVelocity(double min_v)
@@ -375,7 +514,7 @@ bool CirclePathStrategy::updateAccumulatedAngle(double current_yaw)
 
   last_yaw_ = current_yaw;
 
-  if (accumulated_angle_ > 0.2 * M_PI)
+  if (accumulated_angle_ > (params_.deviation.start_factor + 0.15) * M_PI)
   {
     // 累计超过一定角度后，允许开始打印，
     // 在一圈开始的那一小段不打印，避免入口区域重复喷印。
@@ -383,7 +522,7 @@ bool CirclePathStrategy::updateAccumulatedAngle(double current_yaw)
     stop_print_ = false;
   }
 
-  if (accumulated_angle_ >= (circle_total_angle_ - 0.4 * M_PI))
+  if (accumulated_angle_ >= (circle_total_angle_ - (params_.deviation.end_factor - 0.15) * M_PI))
   {
     return true;
   }
@@ -396,19 +535,27 @@ double CirclePathStrategy::constrainAngularVelocity(double base_omega)
   // 以 baseline_angular_velocity_ 为中心，允许在一定比例误差内调整，
   // 目的是既保留 PP 的修正能力，又不至于让角速度发散。
   double angular_velocity_delta = base_omega - baseline_angular_velocity_;
-  double error_ratio = 0.05;
+  // allowed_deviation_ratio：相对 baseline 的允许偏差比例（例如 0.05 表示 ±5%）
+  double allowed_deviation_ratio = params_.deviation.strict_ratio;
 
   if (accumulated_angle_ < (params_.deviation.start_factor * M_PI))
   {
-    error_ratio = params_.deviation.rate;
+    allowed_deviation_ratio = params_.deviation.relaxed_ratio;
   }
 
   if (accumulated_angle_ > (circle_total_angle_ - params_.deviation.end_factor * M_PI))
   {
-    error_ratio = params_.deviation.rate;
+    allowed_deviation_ratio = params_.deviation.relaxed_ratio;
   }
 
-  double max_angular_delta = baseline_angular_velocity_ * error_ratio;
+  // 防御：参数异常时避免产生 NaN/负限幅
+  if (!std::isfinite(allowed_deviation_ratio) || allowed_deviation_ratio < 0.0)
+  {
+    allowed_deviation_ratio = 0.0;
+  }
+
+  // 最大允许偏差（幅值）：|baseline| * ratio
+  const double max_angular_delta = std::abs(baseline_angular_velocity_) * allowed_deviation_ratio;
   if (std::abs(angular_velocity_delta) > max_angular_delta)
   {
     angular_velocity_delta = std::copysign(max_angular_delta, angular_velocity_delta);

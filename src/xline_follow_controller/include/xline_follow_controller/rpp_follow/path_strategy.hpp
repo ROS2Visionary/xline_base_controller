@@ -4,6 +4,8 @@
 #include <geometry_msgs/msg/twist_stamped.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <cmath>
+#include <limits>
 #include <memory>
 #include <string>
 
@@ -37,12 +39,11 @@ struct PathStrategyContext
   double traversed_distance;                       ///< 已行驶距离
 };
 
-
 // 路径策略结果,策略计算返回的结果数据
 struct PathStrategyResult
 {
-  double angular_velocity;                         ///< 期望角速度
-  double linear_velocity;                          ///< 期望线速度
+  double angular_velocity;                         ///< 角速度
+  double linear_velocity;                          ///< 线速度
   bool goal_reached;                               ///< 是否到达目标
   bool filter_reset;                               ///< 是否需要重置滤波器
   std::string status_message;                      ///< 状态信息（用于日志）
@@ -71,6 +72,39 @@ public:
                                        PathStrategyResult& result) = 0;
   virtual void reset() = 0;
   virtual void updateParameters(const std::string& config_path) = 0;
+
+  // ========================================
+  // 动态参数接口（带默认实现）
+  // ========================================
+
+  /// 是否提供“恒定目标速度/前瞻”等参数（圆形路径使用）
+  virtual bool hasDynamicVelocity() const
+  {
+    return false;
+  }
+
+  /// 获取目标线速度（恒定值）
+  virtual double getTargetVelocity() const
+  {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+
+  /// 获取目标前瞻距离（恒定值）
+  virtual double getTargetLookahead() const
+  {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+
+  /// 获取目标角速度（恒定值，v/r）
+  virtual double getTargetAngularVelocity() const
+  {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+
+  /// 初始化动态参数（在设置圆参数后调用）
+  virtual void initializeDynamicParams()
+  {
+  }
 
   // 可选接口（带默认实现）
   virtual double getTargetYaw() const

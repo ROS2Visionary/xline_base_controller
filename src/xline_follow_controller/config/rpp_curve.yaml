@@ -97,4 +97,5 @@ debug:
 deviation:
   start_factor: 0.5          # 起始阶段偏差因子
   end_factor: 0.5            # 结束阶段偏差因子
-  rate: 0.1                  # 允许偏差比率
+  strict_ratio: 0.05         # 中间阶段的严格偏差比例（相对基准角速度 v/r）
+  relaxed_ratio: 0.1         # 起始/结束放宽区间的偏差比例

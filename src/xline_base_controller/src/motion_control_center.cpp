@@ -767,6 +767,7 @@ namespace xline
         geometry_msgs::msg::Twist twist_msg;
         twist_msg.linear = cmd_vel.twist.linear;
         twist_msg.angular = cmd_vel.twist.angular;
+        current_velocity = twist_msg;
         cmd_vel_publisher_->publish(twist_msg);
       }
 

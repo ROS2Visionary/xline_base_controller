@@ -14,6 +14,42 @@ namespace xline
 namespace follow_controller
 {
 
+/// 圆形路径动态速度参数
+struct RPPCircleVelocityParams
+{
+  double reference_velocity = 0.08;  ///< 参考速度 [m/s]
+  double reference_radius = 0.5;     ///< 参考半径 [m]
+  double radius_exponent = 0.5;      ///< 半径指数 γ
+  double min_velocity = 0.05;        ///< 最小速度 [m/s]
+  double max_velocity = 0.15;        ///< 最大速度 [m/s]
+};
+
+/// 圆形路径动态前瞻参数
+struct RPPCircleLookaheadParams
+{
+  double reference_lookahead = 0.15; ///< 参考前瞻距离 [m]
+  double velocity_exponent = 1.0;    ///< 速度指数 α
+  double radius_exponent = 0.0;      ///< 半径额外指数 β
+  double min_dist = 0.08;            ///< 最小前瞻距离 [m]
+  double max_dist = 0.25;            ///< 最大前瞻距离 [m]
+};
+
+/// 圆形路径固定参数（备用）
+struct RPPCircleFixedParams
+{
+  double velocity = 0.08;            ///< 固定线速度 [m/s]
+  double lookahead = 0.15;           ///< 固定前瞻距离 [m]
+};
+
+/// 圆形路径动态参数总配置
+struct RPPCircleDynamicsParams
+{
+  bool enabled = true;               ///< 是否启用动态计算
+  RPPCircleVelocityParams velocity;  ///< 速度参数
+  RPPCircleLookaheadParams lookahead;///< 前瞻参数
+  RPPCircleFixedParams fixed;        ///< 固定参数（备用）
+};
+
 // 目标到达判定参数
 struct RPPGoalParams
 {
@@ -135,9 +171,14 @@ struct RPPDebugParams
 // 偏差控制参数
 struct RPPDeviationParams
 {
-  double start_factor = 0.5;   ///< 起始阶段偏差因子
-  double end_factor = 0.5;     ///< 结束阶段偏差因子
-  double rate = 0.1;           ///< 允许偏差比率
+  double start_factor = 0.5;   ///< 起始阶段放宽区间系数：start_factor × π [rad]
+  double end_factor = 0.5;     ///< 结束阶段放宽区间系数：end_factor × π [rad]
+
+  // 角速度偏差比例（相对 baseline_angular_velocity_ 的允许偏差）
+  // - strict_ratio: 中间阶段的“严格约束”比例（越小越贴近 v/r）
+  // - relaxed_ratio: 起始/结束放宽区间的“放宽约束”比例（通常大于 strict_ratio）
+  double strict_ratio = 0.05;
+  double relaxed_ratio = 0.1;
 };
 
 // RPP控制器完整参数结构体
@@ -161,6 +202,7 @@ struct RPPPathStrategyParams
   RPPTrackingParams tracking;
   RPPSmoothingParams smoothing;
   RPPDeviationParams deviation;
+  RPPCircleDynamicsParams circle_dynamics;
 };
 
 }  // namespace follow_controller

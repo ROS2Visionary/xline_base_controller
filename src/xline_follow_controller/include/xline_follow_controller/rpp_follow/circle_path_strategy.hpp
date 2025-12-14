@@ -43,6 +43,32 @@ public:
   void computeAngularVelocity(const PathStrategyContext& ctx,
                                PathStrategyResult& result) override;
 
+  // ========================================
+  // 动态参数接口实现（圆形路径恒定参数）
+  // ========================================
+
+  bool hasDynamicVelocity() const override
+  {
+    return true;
+  }
+
+  double getTargetVelocity() const override
+  {
+    return circle_target_velocity_;
+  }
+
+  double getTargetLookahead() const override
+  {
+    return circle_target_lookahead_;
+  }
+
+  double getTargetAngularVelocity() const override
+  {
+    return circle_target_angular_velocity_;
+  }
+
+  void initializeDynamicParams() override;
+
   /// 将内部状态重置到初始状态，但不改参数
   void reset() override;
 
@@ -91,13 +117,8 @@ public:
   /// 获取基准角速度（基于最小线速度和半径计算）
   double getBaselineAngularVelocity() const { return baseline_angular_velocity_; }
 
-  /**
-   * @brief 根据半径调整速度和前瞻距离
-   *
-   * 半径越小，线速度和前瞻距离越保守；半径越大，可以适当提高速度。
-   */
-  void adjustSpeedForRadius(double radius, double& min_v, double& max_v,
-                             double& lookahead_dist) const;
+  /// 获取当前圆半径（供外部查询）
+  double getCircleRadius() const { return circle_radius_; }
 
   /**
    * @brief 设置基准线速度，并同步出一个对应的基准角速度
@@ -122,6 +143,11 @@ private:
   double circle_radius_;
   double circle_total_angle_;
   double baseline_angular_velocity_;
+
+  // 动态计算的恒定参数（在 setPlanForCircle 时初始化）
+  double circle_target_velocity_ = 0.0;         ///< 目标线速度
+  double circle_target_lookahead_ = 0.0;        ///< 目标前瞻距离
+  double circle_target_angular_velocity_ = 0.0; ///< 目标角速度 (v/r)
 
   // 角度累计相关
   bool last_yaw_initialized_;
@@ -151,6 +177,12 @@ private:
 
   /// 在基准角速度附近做限幅，避免角速度过大或震荡
   double constrainAngularVelocity(double base_omega);
+
+  /// 计算目标速度（动态或固定）
+  double computeTargetVelocity(double radius) const;
+
+  /// 计算目标前瞻距离（使用目标速度而非实时速度）
+  double computeTargetLookahead(double velocity, double radius) const;
 };
 
 }  // namespace follow_controller

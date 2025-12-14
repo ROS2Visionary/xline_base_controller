@@ -6,6 +6,7 @@
 #include <vector>
 #include <stdexcept>
 #include <algorithm>
+#include <cctype>
 #include <type_traits>
 #include <rclcpp/rclcpp.hpp>
 
@@ -74,16 +75,40 @@ public:
       throw std::runtime_error("Parameter " + key + " not found in the YAML file.");
     }
 
-    std::istringstream iss(it->second);
-    T value;
-    iss >> value;
-
-    if (iss.fail())
+    if constexpr (std::is_same_v<T, bool>)
     {
-      throw std::runtime_error("Failed to convert parameter " + key + " to the requested type.");
-    }
+      std::string value_str = trim(it->second);
+      std::transform(value_str.begin(), value_str.end(), value_str.begin(),
+                     [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 
-    return value;
+      if (value_str == "true" || value_str == "1")
+      {
+        return true;
+      }
+      if (value_str == "false" || value_str == "0")
+      {
+        return false;
+      }
+
+      throw std::runtime_error("Failed to convert parameter " + key + " to bool.");
+    }
+    else if constexpr (std::is_same_v<T, std::string>)
+    {
+      return trim(it->second);
+    }
+    else
+    {
+      std::istringstream iss(it->second);
+      T value;
+      iss >> value;
+
+      if (iss.fail())
+      {
+        throw std::runtime_error("Failed to convert parameter " + key + " to the requested type.");
+      }
+
+      return value;
+    }
   }
 
   // 检查参数是否存在

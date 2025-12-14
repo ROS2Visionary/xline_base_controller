@@ -253,7 +253,7 @@ private:
                                 double desired_velocity, double desired_angular_velocity);
 
   // 角速度平滑：在期望角速度的基础上做一层动态滤波
-  double smoothAngularVelocity(double current_angular_vel, double desired_angular_vel,
+  double smoothAngularVelocity(double desired_angular_vel,
                                double lookahead_dist, double angle_to_path, double dt, bool is_reset);
 
   // 栅格图

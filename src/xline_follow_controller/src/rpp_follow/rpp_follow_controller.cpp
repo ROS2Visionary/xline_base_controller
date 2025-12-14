@@ -218,7 +218,21 @@ void RPPController::loadParamsFromYaml(const xline::YamlParser::YamlParser& pars
   // =========================================================================
   params_.deviation.start_factor = parser.getParameter<double>("deviation.start_factor");
   params_.deviation.end_factor = parser.getParameter<double>("deviation.end_factor");
-  params_.deviation.rate = parser.getParameter<double>("deviation.rate");
+  // 兼容旧字段 deviation.rate（历史上用于放宽区间的偏差比率）
+  if (parser.hasParameter("deviation.relaxed_ratio"))
+  {
+    params_.deviation.relaxed_ratio = parser.getParameter<double>("deviation.relaxed_ratio");
+  }
+  else if (parser.hasParameter("deviation.rate"))
+  {
+    params_.deviation.relaxed_ratio = parser.getParameter<double>("deviation.rate");
+  }
+
+  // 中间阶段严格约束比例（可选，未配置则沿用默认值）
+  if (parser.hasParameter("deviation.strict_ratio"))
+  {
+    params_.deviation.strict_ratio = parser.getParameter<double>("deviation.strict_ratio");
+  }
 }
 
 void RPPController::updateParameters(std::string file_path)
@@ -292,25 +306,11 @@ bool RPPController::setPlanForCircle(double circle_center_x, double circle_cente
     return false;
   }
 
-  // 根据半径调整速度参数（非低速模式时）
-  if (!params_.mode.low_speed)
-  {
-    double min_v = params_.velocity.linear.min;
-    double max_v = params_.velocity.linear.max;
-    double lookahead = params_.lookahead.min_dist;
-    circle_strategy->adjustSpeedForRadius(circle_radius, min_v, max_v, lookahead);
-    params_.velocity.linear.min = min_v;
-    params_.velocity.linear.max = max_v;
-    params_.lookahead.min_dist = lookahead;
-    params_.lookahead.max_dist = lookahead;
-    params_.velocity.linear.base = min_v;
-  }
-
   // 设置圆形参数
   double actual_radius = circle_radius + params_.smoothing.radius_offset;
   circle_strategy->setCircleCenter(circle_center_x, circle_center_y);
   circle_strategy->setCircleRadius(actual_radius);
-  circle_strategy->setBaselineLinearVelocity(params_.velocity.linear.min);
+  circle_strategy->initializeDynamicParams();
 
   // 重置控制器状态
   resetControllerState();
@@ -559,7 +559,22 @@ bool RPPController::computeVelocityCommands(const geometry_msgs::msg::PoseStampe
     }
 
     // 获取前瞻点
-    double lookahead_distance = getLookAheadDistance(current_velocity.linear.x);
+    // 这里的 current_velocity 通常来自上一次输出的 cmd_vel（或底盘回传的等效速度）。
+    // 启动/切换策略后的第一拍可能是 0，此时如果直接用 0 参与前瞻距离计算，
+    // 在某些参数组合下会导致前瞻距离过小甚至为 0（进而让曲率/误差计算退化）。
+    // 因此：当线速度为 0（或无效）时，使用最小线速度作为前瞻距离计算输入。
+    double speed_for_lookahead = current_velocity.linear.x;
+    if (!std::isfinite(speed_for_lookahead))
+    {
+      speed_for_lookahead = 0.0;
+    }
+    if (std::abs(speed_for_lookahead) < 1e-6)
+    {
+      // 保底：若最小速度配置异常(<=0)，用一个很小的正值避免前瞻距离为 0。
+      speed_for_lookahead = std::max(params_.velocity.linear.min, 1e-3);
+    }
+
+    double lookahead_distance = getLookAheadDistance(speed_for_lookahead);
     geometry_msgs::msg::PoseStamped lookahead_pose = getLookAheadPoint(lookahead_distance, pruned_plan, true);
 
     if (!isValidPose(lookahead_pose))
@@ -580,9 +595,27 @@ bool RPPController::computeVelocityCommands(const geometry_msgs::msg::PoseStampe
     updateErrorStatistics();
 
     // 计算期望速度
-    double desired_velocity = applyCurvatureConstraint(params_.velocity.linear.base, current_curvature_);
+    double desired_velocity = 0.0;
+    if (path_strategy_ && path_strategy_->hasDynamicVelocity())
+    {
+      desired_velocity = path_strategy_->getTargetVelocity();
+      if (!std::isfinite(desired_velocity) || desired_velocity <= 0.0)
+      {
+        desired_velocity = params_.velocity.linear.base;
+      }
+    }
+    else
+    {
+      desired_velocity = applyCurvatureConstraint(params_.velocity.linear.base, current_curvature_);
+    }
 
     // 更新策略上下文
+    if (path_strategy_ && path_strategy_->hasDynamicVelocity())
+    {
+      ctx.min_v = desired_velocity;
+      ctx.max_v = desired_velocity;
+    }
+
     ctx.angle_to_lookahead = angle_to_lookahead;
     ctx.lookahead_distance = lookahead_distance;
     ctx.curvature = current_curvature_;
@@ -606,8 +639,7 @@ bool RPPController::computeVelocityCommands(const geometry_msgs::msg::PoseStampe
     }
 
     // 应用角速度平滑
-    double smoothed_angular_velocity = smoothAngularVelocity(
-        current_velocity.angular.z, result.angular_velocity,
+    double smoothed_angular_velocity = smoothAngularVelocity(result.angular_velocity,
         lookahead_distance, angle_to_lookahead, d_t_, result.filter_reset);
 
     // 生成速度命令
@@ -725,7 +757,19 @@ geometry_msgs::msg::PoseStamped RPPController::getLookAheadPoint(
 
 double RPPController::getLookAheadDistance(double speed)
 {
-  double lookahead_dist = std::abs(speed) * params_.lookahead.time;
+  // 圆形路径：使用预计算的恒定前瞻距离（与实时速度无关）
+  if (path_strategy_ && path_strategy_->hasDynamicVelocity())
+  {
+    const double target_lookahead = path_strategy_->getTargetLookahead();
+    if (std::isfinite(target_lookahead) && target_lookahead > 0.0)
+    {
+      return target_lookahead;
+    }
+  }
+
+  // 默认逻辑：时间-速度模型（用于曲线路径）
+  const double abs_speed = std::abs(speed);
+  const double lookahead_dist = abs_speed * params_.lookahead.time;
   return std::clamp(lookahead_dist, params_.lookahead.min_dist, params_.lookahead.max_dist);
 }
 
@@ -856,7 +900,7 @@ double RPPController::calculateRotationVelocity(const double& angle_diff)
 // 第十部分：角速度平滑
 // ============================================================================
 
-double RPPController::smoothAngularVelocity(double current_angular_vel, double desired_angular_vel,
+double RPPController::smoothAngularVelocity(double desired_angular_vel,
                                             double lookahead_dist, double angle_to_path,
                                             double dt, bool is_reset)
 {
@@ -1236,10 +1280,23 @@ void RPPController::generateVelocityCommand(geometry_msgs::msg::TwistStamped& cm
                                              const geometry_msgs::msg::Twist& current_velocity,
                                              double desired_velocity, double desired_angular_velocity)
 {
-  cmd_vel.twist.linear.x = params_.velocity.linear.min;
   desired_velocity_ = desired_velocity;
 
   cmd_vel.twist.angular.z = desired_angular_velocity;
+
+  double cmd_linear = desired_velocity;
+  if (!std::isfinite(cmd_linear))
+  {
+    cmd_linear = 0.0;
+  }
+
+  // 曲线路径：按控制器速度边界做一次约束；圆形路径速度已在策略内完成约束
+  if (current_strategy_type_ != PathStrategyType::CIRCLE)
+  {
+    cmd_linear = std::clamp(cmd_linear, params_.velocity.linear.min, params_.velocity.linear.max);
+  }
+
+  cmd_vel.twist.linear.x = cmd_linear;
 
   // 圆形路径的日志
   if (current_strategy_type_ == PathStrategyType::CIRCLE)
