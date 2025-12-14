@@ -128,17 +128,15 @@ struct RPPSmoothingParams
 // 滤波器参数
 struct RPPPositionFilterParams
 {
-  bool enabled = true;         ///< 是否启用滤波器结构
-  bool lowpass_active = false;         ///< 是否实际应用滤波
-  double cutoff_freq = 1.5;    ///< 截止频率 [Hz]
-  double sample_rate = 18.0;   ///< 采样率 [Hz]
-  double output_limit = 0.3;   ///< 输出限幅 [m]
-  double rate_limit = 0.3;     ///< 变化率限制 [m/s]
+  int hampel_window = 5;            ///< Hampel窗口大小
+  double hampel_k = 3.0;               ///< Hampel异常值阈值
+  int savgol_window = 7;               ///< Savitzky-Golay窗口大小
+  int savgol_order = 3;                ///< Savitzky-Golay多项式阶数
 };
 
 struct RPPAngularFilterParams
 {
-  bool enabled = true;             ///< 是否启用滤波器结构
+  bool lowpass_use_biquad_cascade = true;             ///< 是否使用双二阶级联
   bool lowpass_active = true;              ///< 是否实际应用滤波
   bool use_offset_limit = true;    ///< 是否启用偏移限制
   double output_offset = 0.1;      ///< 输出偏移量 [rad/s]

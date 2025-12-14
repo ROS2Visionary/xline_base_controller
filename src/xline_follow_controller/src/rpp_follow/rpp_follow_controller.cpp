@@ -179,17 +179,15 @@ void RPPController::loadParamsFromYaml(const xline::YamlParser::YamlParser& pars
   // =========================================================================
   // [8] 滤波器配置 - 位置
   // =========================================================================
-  params_.filter.position.enabled = parser.getParameter<bool>("filter.position.lowpass_use_biquad_cascade");
-  params_.filter.position.lowpass_active = parser.getParameter<bool>("filter.position.lowpass_active");
-  params_.filter.position.cutoff_freq = parser.getParameter<double>("filter.position.cutoff_freq");
-  params_.filter.position.sample_rate = parser.getParameter<double>("filter.position.sample_rate");
-  params_.filter.position.output_limit = parser.getParameter<double>("filter.position.output_limit");
-  params_.filter.position.rate_limit = parser.getParameter<double>("filter.position.rate_limit");
+  params_.filter.position.hampel_window = parser.getParameter<int>("filter.position.hampel_window");
+  params_.filter.position.hampel_k = parser.getParameter<double>("filter.position.hampel_k");
+  params_.filter.position.savgol_window = parser.getParameter<int>("filter.position.savgol_window");
+  params_.filter.position.savgol_order = parser.getParameter<int>("filter.position.savgol_order");
 
   // =========================================================================
   // [9] 滤波器配置 - 角速度
   // =========================================================================
-  params_.filter.angular.enabled = parser.getParameter<bool>("filter.angular.lowpass_use_biquad_cascade");
+  params_.filter.angular.lowpass_use_biquad_cascade = parser.getParameter<bool>("filter.angular.lowpass_use_biquad_cascade");
   params_.filter.angular.lowpass_active = parser.getParameter<bool>("filter.angular.lowpass_active");
   params_.filter.angular.use_offset_limit = parser.getParameter<bool>("filter.angular.lowpass_use_offset_limit");
   params_.filter.angular.output_offset = parser.getParameter<double>("filter.angular.lowpass_output_offset");
@@ -978,10 +976,10 @@ void RPPController::resetControllerState()
   previous_angular_vel_ = 0.0;
   angular_vel_history_.clear();
 
-  sg_x_filter_.reset(5, 2);
-  sg_y_filter_.reset(5, 2);
-  h_x_filter.reset(5, 3.0);
-  h_y_filter.reset(5, 3.0);
+  sg_x_filter_.reset(params_.filter.position.savgol_window, params_.filter.position.savgol_order);
+  sg_y_filter_.reset(params_.filter.position.savgol_window, params_.filter.position.savgol_order);
+  h_x_filter.reset(params_.filter.position.hampel_window, params_.filter.position.hampel_k);
+  h_y_filter.reset(params_.filter.position.hampel_window, params_.filter.position.hampel_k);
 
   // 获取基准角速度（如果是圆形路径）
   double baseline_angular_vel = 0.0;
@@ -994,21 +992,6 @@ void RPPController::resetControllerState()
     }
   }
 
-  pos_x_lowpass_filter_.reset();
-  pos_x_lowpass_filter_.initialize(params_.filter.position.cutoff_freq, 
-                            params_.filter.position.sample_rate, 
-                            params_.filter.position.output_limit);
-  pos_x_lowpass_filter_.setLimits(params_.filter.position.output_limit, 
-                           params_.filter.position.rate_limit, true);
-  pos_x_lowpass_filter_.use_biquad_cascade_ = params_.filter.position.enabled;
-
-  pos_y_lowpass_filter_.reset();
-  pos_y_lowpass_filter_.initialize(params_.filter.position.cutoff_freq, 
-                            params_.filter.position.sample_rate, 
-                            params_.filter.position.output_limit);
-  pos_y_lowpass_filter_.setLimits(params_.filter.position.output_limit, 
-                           params_.filter.position.rate_limit, true);
-  pos_y_lowpass_filter_.use_biquad_cascade_ = params_.filter.position.enabled;
 
   double angle_limit = (baseline_angular_vel > 0) ?
       params_.filter.angular.output_limit_rate * baseline_angular_vel : 
@@ -1020,7 +1003,7 @@ void RPPController::resetControllerState()
   angle_vel_lowpass_filter_.setLimits(angle_limit, params_.filter.angular.rate_limit, true);
   angle_vel_lowpass_filter_.setOffsetLimit(params_.filter.angular.output_offset, 
                                     params_.filter.angular.use_offset_limit);
-  angle_vel_lowpass_filter_.use_biquad_cascade_ = params_.filter.angular.enabled;
+  angle_vel_lowpass_filter_.use_biquad_cascade_ = params_.filter.angular.lowpass_use_biquad_cascade;
 
   last_closest_idx = 0;
 
@@ -1152,13 +1135,6 @@ geometry_msgs::msg::PoseStamped RPPController::filterRobotPose(const geometry_ms
 
   filtered_x = sg_x_filter_.filter(filtered_x);
   filtered_y = sg_y_filter_.filter(filtered_y);
-
-  // 四阶低通滤波
-  if (params_.filter.position.lowpass_active)
-  {
-    filtered_x = pos_x_lowpass_filter_.filter(filtered_x);
-    filtered_y = pos_y_lowpass_filter_.filter(filtered_y);
-  }
 
   current_pose.pose.position.x = filtered_x;
   current_pose.pose.position.y = filtered_y;

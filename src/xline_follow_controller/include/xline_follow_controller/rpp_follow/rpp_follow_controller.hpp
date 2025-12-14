@@ -195,8 +195,6 @@ private:
   HampelFilter h_x_filter = HampelFilter(5, 3.0);
   HampelFilter h_y_filter = HampelFilter(5, 3.0);
 
-  FourthOrderLowpassFilter pos_x_lowpass_filter_;
-  FourthOrderLowpassFilter pos_y_lowpass_filter_;
   FourthOrderLowpassFilter angle_vel_lowpass_filter_;
 
   // 角速度平滑状态
