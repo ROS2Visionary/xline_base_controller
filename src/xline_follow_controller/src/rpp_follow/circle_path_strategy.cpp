@@ -339,7 +339,7 @@ void CirclePathStrategy::setAngleRange(double start_angle, double end_angle)
 {
   // 这里在两端角度差的基础上加了一点冗余(π)，
   // 让车辆有一定“缓冲区”来完成最终对齐。
-  circle_total_angle_ = std::abs(end_angle - start_angle) + (params_.deviation.start_factor + params_.deviation.end_factor + 0.5) * M_PI;
+  circle_total_angle_ = std::abs(end_angle - start_angle) + (params_.deviation.start_factor + params_.deviation.end_factor + 1.5) * M_PI;
 
   RCLCPP_INFO(getLogger(), "设置角度范围: [%.2f, %.2f], 总角度: %.2f rad",
               start_angle, end_angle, circle_total_angle_);
@@ -505,7 +505,7 @@ bool CirclePathStrategy::updateAccumulatedAngle(double current_yaw)
 
   last_yaw_ = current_yaw;
 
-  if (accumulated_angle_ > (params_.deviation.start_factor + 0.3) * M_PI)
+  if (accumulated_angle_ > (params_.deviation.start_factor + 0.15) * M_PI)
   {
     // 累计超过一定角度后，允许开始打印，
     // 在一圈开始的那一小段不打印，避免入口区域重复喷印。
@@ -513,7 +513,7 @@ bool CirclePathStrategy::updateAccumulatedAngle(double current_yaw)
     stop_print_ = false;
   }
 
-  if (accumulated_angle_ >= (circle_total_angle_ - (params_.deviation.start_factor + params_.deviation.end_factor) * M_PI))
+  if (accumulated_angle_ >= 2.35 * M_PI)
   {
     start_print_ = false;
     stop_print_ = true;

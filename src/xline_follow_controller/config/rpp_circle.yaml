@@ -50,12 +50,12 @@ tracking:
 smoothing:
   type: 'lowpass'            # 'lowpass' | 'movingAverage' | 'none'
   lowpass:
-    gain: 0.9                # 低通滤波增益 [0-1]
+    gain: 0.95                # 低通滤波增益 [0-1]
   moving_average:
     window_size: 5           # 移动平均窗口大小
   second_order:
     freq: 15.0               # 自然频率 [Hz]
-    damping: 0.9             # 阻尼比 [-]
+    damping: 0.95             # 阻尼比 [-]
 
 # -----------------------------------------------------------------------------
 # 滤波器配置
@@ -68,7 +68,7 @@ filter:
     savgol_order: 3                # Savitzky-Golay多项式阶数
   angular:
     lowpass_use_biquad_cascade: true # 是否使用双二阶级联
-    lowpass_active: true     # 是否实际应用四阶低通滤波
+    lowpass_active: false     # 是否实际应用四阶低通滤波
     lowpass_use_offset_limit: true   # 是否启用四阶低通滤波偏移限制
     lowpass_output_offset: 0.1       # 四阶低通滤波输出偏移量 [rad/s]
     cutoff_freq: 1.5         # 截止频率 [Hz]
@@ -91,8 +91,8 @@ debug:
 # - 起始/结束阶段：允许较大偏差，便于切入和切出
 # - 中间阶段：严格约束在基准角速度(v/r)附近
 deviation:
-  start_factor: 0.1          # 起始放宽区间 = factor × π [rad]
-  end_factor: 0.1            # 结束放宽区间 = factor × π [rad]
+  start_factor: 0.0          # 起始放宽区间 = factor × π [rad]
+  end_factor: 0.0            # 结束放宽区间 = factor × π [rad]
   strict_ratio: 0.05         # 中间阶段的严格偏差比例（相对基准角速度 v/r）
   relaxed_ratio: 0.05         # 起始/结束放宽区间的偏差比例
 
@@ -115,7 +115,7 @@ circle_dynamics:
     reference_lookahead: 0.18      # 参考前瞻距离 [m]
     velocity_exponent: 1.0         # 速度指数 α
     radius_exponent: 0.0           # 半径额外指数 β
-    min_dist: 0.15                 # 最小前瞻距离 [m]
+    min_dist: 0.18                 # 最小前瞻距离 [m]
     max_dist: 0.2                 # 最大前瞻距离 [m]
 
 # 备用固定值配置（当 circle_dynamics.enabled: false 时使用）
