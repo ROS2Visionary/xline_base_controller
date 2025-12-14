@@ -99,10 +99,10 @@ debug:
 # - 起始/结束阶段：允许较大偏差，便于切入和切出
 # - 中间阶段：严格约束在基准角速度(v/r)附近
 deviation:
-  start_factor: 0.5          # 起始放宽区间 = factor × π [rad]
-  end_factor: 0.5            # 结束放宽区间 = factor × π [rad]
+  start_factor: 0.1          # 起始放宽区间 = factor × π [rad]
+  end_factor: 0.1            # 结束放宽区间 = factor × π [rad]
   strict_ratio: 0.05         # 中间阶段的严格偏差比例（相对基准角速度 v/r）
-  relaxed_ratio: 0.1         # 起始/结束放宽区间的偏差比例
+  relaxed_ratio: 0.05         # 起始/结束放宽区间的偏差比例
 
 # =============================================================================
 # 圆形路径动态参数配置（在 setPlanForCircle 时计算一次并保持恒定）
@@ -120,11 +120,11 @@ circle_dynamics:
 
   # 前瞻距离计算配置: L = ref_L × (target_v / ref_v)^α × (radius / ref_r)^β
   lookahead:
-    reference_lookahead: 0.05      # 参考前瞻距离 [m]
+    reference_lookahead: 0.18      # 参考前瞻距离 [m]
     velocity_exponent: 1.0         # 速度指数 α
     radius_exponent: 0.0           # 半径额外指数 β
-    min_dist: 0.03                 # 最小前瞻距离 [m]
-    max_dist: 0.1                 # 最大前瞻距离 [m]
+    min_dist: 0.15                 # 最小前瞻距离 [m]
+    max_dist: 0.2                 # 最大前瞻距离 [m]
 
 # 备用固定值配置（当 circle_dynamics.enabled: false 时使用）
 circle_fixed:

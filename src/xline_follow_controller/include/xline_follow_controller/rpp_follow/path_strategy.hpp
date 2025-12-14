@@ -26,7 +26,7 @@ struct PathStrategyContext
   double angle_to_lookahead;                       ///< 到前瞻点的角度误差
   double lookahead_distance;                       ///< 前瞻距离
   double curvature;                                ///< 当前曲率
-  double base_angular_velocity;                    ///< 基础角速度 (v * curvature)
+  double pp_angular_velocity;                      ///< PP 基础角速度 (v * curvature)
   double desired_linear_velocity;                  ///< 期望线速度
 
   // 控制参数
@@ -42,8 +42,9 @@ struct PathStrategyContext
 // 路径策略结果,策略计算返回的结果数据
 struct PathStrategyResult
 {
-  double angular_velocity;                         ///< 角速度
-  double linear_velocity;                          ///< 线速度
+  // 策略输出的“期望值”（控制器后续还可能做滤波/限幅）
+  double desired_angular_velocity;                 ///< 期望角速度
+  double desired_linear_velocity;                  ///< 期望线速度
   bool goal_reached;                               ///< 是否到达目标
   bool filter_reset;                               ///< 是否需要重置滤波器
   std::string status_message;                      ///< 状态信息（用于日志）

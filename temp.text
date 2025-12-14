@@ -1,0 +1,234 @@
+[INFO] [1765678531.779504691] [rpp_follow_controller]: 切换到 圆形 路径策略
+[INFO] [1765678531.779549713] [rpp_follow_controller]: 设置角度范围: [6.28, 0.00], 总角度: 10.05 rad
+[INFO] [1765678531.780567213] [rpp_follow_controller]: CirclePathStrategy 参数已更新: deviation(strict=0.050, relaxed=0.100), radius_offset=0.000, circle_dynamics=enabled
+[INFO] [1765678531.780631889] [rpp_follow_controller]: 参数已更新: 前瞻距离[0.18-0.18]m, 速度[0.05-0.15]m/s, 角速度[0.03-1.00]rad/s
+[INFO] [1765678531.780693202] [rpp_follow_controller]: 圆形路径动态参数初始化完成: radius=0.707 m, target_v=0.095 m/s, target_lookahead=0.059 m, target_ω=0.135 rad/s
+[INFO] [1765678531.782684752] [rpp_follow_controller]: 生成圆形路径: center=(-0.283,2.720), radius=0.707, points=2362
+[INFO] [1765678531.782782742] [rpp_follow_controller]: 圆形路径已生成 - 圆心: (-0.283, 2.720), 半径: 0.707 m, 点数: 2362
+[INFO] [1765678531.782818225] [rpp_follow_controller]: 设置新计划，包含 2362 个点
+[INFO] [1765678531.784045487] [rpp_follow_controller]: 路径优化完成: 原始点数=2362, 优化后点数=2376
+[INFO] [1765678531.784444058] [rpp_follow_controller]: 路径长度: 7.109m, 目标: (-0.855, 2.304, -0.942)
+[INFO] [1765678531.784645846] [rpp_follow_controller]: 圆形路径设置完成 - 点数: 2376, 总角度: 10.05 rad (576.0°)
+[INFO] [1765678531.788485954] [rpp_follow_controller]: 初始化栅格图 大小: 3.41 x 3.41 m, 尺寸: 341 x 341 像素
+[INFO] [1765678531.788552939] [rpp_follow_controller]: 设置后退模式: 禁用
+[INFO] [1765678531.844471921] [rpp_follow_controller]: 航向预对准中... 目标: 1.571, 当前: -1.018, 误差: 2.589, 角速度: 0.930
+[INFO] [1765678532.399999383] [rpp_follow_controller]: 航向预对准中... 目标: 1.571, 当前: -0.683, 误差: 2.254, 角速度: 0.905
+[INFO] [1765678532.900044805] [rpp_follow_controller]: 航向预对准中... 目标: 1.571, 当前: -0.238, 误差: 1.809, 角速度: 0.859
+[INFO] [1765678533.400060298] [rpp_follow_controller]: 航向预对准中... 目标: 1.571, 当前: 0.133, 误差: 1.438, 角速度: 0.808
+[INFO] [1765678533.900075114] [rpp_follow_controller]: 航向预对准中... 目标: 1.571, 当前: 0.520, 误差: 1.051, 角速度: 0.741
+[INFO] [1765678534.455558115] [rpp_follow_controller]: 航向预对准中... 目标: 1.571, 当前: 0.913, 误差: 0.657, 角速度: 0.659
+[INFO] [1765678535.011126483] [rpp_follow_controller]: 航向预对准中... 目标: 1.571, 当前: 1.248, 误差: 0.323, 角速度: 0.418
+[INFO] [1765678535.566682940] [rpp_follow_controller]: 航向预对准中... 目标: 1.571, 当前: 1.460, 误差: 0.111, 角速度: 0.200
+[INFO] [1765678535.844433737] [rpp_follow_controller]: 航向预对准完成！角度误差: 0.045 rad (2.6°)
+[INFO] [1765678535.844546117] [rpp_follow_controller]: 航向预对准完成
+[INFO] [1765678535.844562747] [rpp_follow_controller]: 航向预对准完成，开始路径跟随
+[INFO] [1765678536.511203281] [rpp_follow_controller]: 圆形路径跟踪开始，初始航向角: 1.57
+[INFO] [1765678536.511722002] [rpp_follow_controller]: raw=0.030, gain=0.030, base=0.135
+[INFO] [1765678536.566920282] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678536.622218333] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678536.677806764] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678536.733628457] [rpp_follow_controller]: raw=0.045, gain=0.045, base=0.135
+[INFO] [1765678536.789031551] [rpp_follow_controller]: raw=0.051, gain=0.051, base=0.135
+[INFO] [1765678536.844591505] [rpp_follow_controller]: raw=0.053, gain=0.053, base=0.135
+[INFO] [1765678536.899954535] [rpp_follow_controller]: raw=0.051, gain=0.051, base=0.135
+[INFO] [1765678536.955863616] [rpp_follow_controller]: raw=0.048, gain=0.048, base=0.135
+[INFO] [1765678537.011254298] [rpp_follow_controller]: raw=0.044, gain=0.044, base=0.135
+[INFO] [1765678537.066978371] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678537.122400167] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678537.178037064] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678537.233563727] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678537.289295524] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678537.344945328] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678537.400319707] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678537.455777863] [rpp_follow_controller]: raw=0.042, gain=0.042, base=0.135
+[INFO] [1765678537.511313521] [rpp_follow_controller]: raw=0.042, gain=0.042, base=0.135
+[INFO] [1765678537.566715596] [rpp_follow_controller]: raw=0.042, gain=0.042, base=0.135
+[INFO] [1765678537.622471636] [rpp_follow_controller]: raw=0.044, gain=0.044, base=0.135
+[INFO] [1765678537.678029628] [rpp_follow_controller]: raw=0.051, gain=0.051, base=0.135
+[INFO] [1765678537.733746572] [rpp_follow_controller]: raw=0.068, gain=0.068, base=0.135
+[INFO] [1765678537.789037184] [rpp_follow_controller]: raw=0.095, gain=0.095, base=0.135
+[INFO] [1765678537.844727071] [rpp_follow_controller]: raw=0.125, gain=0.125, base=0.135
+[INFO] [1765678537.900325900] [rpp_follow_controller]: raw=0.155, gain=0.155, base=0.135
+[INFO] [1765678537.955541216] [rpp_follow_controller]: raw=0.185, gain=0.185, base=0.135
+[INFO] [1765678538.011228525] [rpp_follow_controller]: raw=0.215, gain=0.215, base=0.135
+[INFO] [1765678538.066942212] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678538.122327839] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678538.178010204] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678538.233644777] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678538.288884053] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678538.344683138] [rpp_follow_controller]: raw=0.233, gain=0.233, base=0.135
+[INFO] [1765678538.400274600] [rpp_follow_controller]: raw=0.224, gain=0.224, base=0.135
+[INFO] [1765678538.455534552] [rpp_follow_controller]: raw=0.221, gain=0.221, base=0.135
+[INFO] [1765678538.511334840] [rpp_follow_controller]: raw=0.224, gain=0.224, base=0.135
+[INFO] [1765678538.566905108] [rpp_follow_controller]: raw=0.230, gain=0.230, base=0.135
+[INFO] [1765678538.622255485] [rpp_follow_controller]: raw=0.236, gain=0.236, base=0.135
+[INFO] [1765678538.677942595] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678538.733769274] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678538.788951193] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678538.844630858] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678538.900218658] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678538.955737163] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678539.011303304] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678539.066982930] [rpp_follow_controller]: raw=0.240, gain=0.240, base=0.135
+[INFO] [1765678539.122232829] [rpp_follow_controller]: raw=0.240, gain=0.240, base=0.135
+[INFO] [1765678539.178042604] [rpp_follow_controller]: raw=0.240, gain=0.240, base=0.135
+[INFO] [1765678539.233624506] [rpp_follow_controller]: raw=0.240, gain=0.240, base=0.135
+[INFO] [1765678539.289226939] [rpp_follow_controller]: raw=0.240, gain=0.240, base=0.135
+[INFO] [1765678539.344782451] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678539.400089638] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678539.455502124] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678539.511115066] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678539.566931168] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678539.622378714] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678539.677821219] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678539.733682957] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678539.789127385] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678539.844514011] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678539.900098615] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678539.955547720] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678540.011235010] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678540.066991714] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678540.122550508] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678540.177987797] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678540.233546716] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678540.289152611] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678540.344668605] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678540.400336132] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678540.455710182] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678540.511100985] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678540.566574436] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678540.622263950] [rpp_follow_controller]: raw=0.239, gain=0.239, base=0.135
+[INFO] [1765678540.677978926] [rpp_follow_controller]: raw=0.233, gain=0.233, base=0.135
+[INFO] [1765678540.733592591] [rpp_follow_controller]: raw=0.221, gain=0.221, base=0.135
+[INFO] [1765678540.789110521] [rpp_follow_controller]: raw=0.198, gain=0.198, base=0.135
+[INFO] [1765678540.844704308] [rpp_follow_controller]: raw=0.168, gain=0.168, base=0.135
+[INFO] [1765678540.900362290] [rpp_follow_controller]: raw=0.138, gain=0.138, base=0.135
+[INFO] [1765678540.955798223] [rpp_follow_controller]: raw=0.108, gain=0.108, base=0.135
+[INFO] [1765678541.011102435] [rpp_follow_controller]: raw=0.078, gain=0.078, base=0.135
+[INFO] [1765678541.066691703] [rpp_follow_controller]: raw=0.048, gain=0.048, base=0.135
+[INFO] [1765678541.122228839] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678541.177838924] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678541.233537629] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678541.289190862] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678541.344512172] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678541.400454287] [rpp_follow_controller]: raw=0.049, gain=0.049, base=0.135
+[INFO] [1765678541.455651549] [rpp_follow_controller]: raw=0.053, gain=0.053, base=0.135
+[INFO] [1765678541.511178889] [rpp_follow_controller]: raw=0.053, gain=0.053, base=0.135
+[INFO] [1765678541.567020052] [rpp_follow_controller]: raw=0.051, gain=0.051, base=0.135
+[INFO] [1765678541.622274253] [rpp_follow_controller]: raw=0.047, gain=0.047, base=0.135
+[INFO] [1765678541.677804853] [rpp_follow_controller]: raw=0.043, gain=0.043, base=0.135
+[INFO] [1765678541.733460956] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678541.789002289] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678541.844781112] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678541.900070316] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678541.955559276] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678542.011277424] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678542.066915359] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678542.122286215] [rpp_follow_controller]: raw=0.042, gain=0.042, base=0.135
+[INFO] [1765678542.177838996] [rpp_follow_controller]: raw=0.042, gain=0.042, base=0.135
+[INFO] [1765678542.233485230] [rpp_follow_controller]: raw=0.042, gain=0.042, base=0.135
+[INFO] [1765678542.289125133] [rpp_follow_controller]: raw=0.042, gain=0.042, base=0.135
+[INFO] [1765678542.344616253] [rpp_follow_controller]: raw=0.042, gain=0.042, base=0.135
+[INFO] [1765678542.400066429] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678542.455712935] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678542.511477801] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678542.566635736] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678542.622303634] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678542.677865248] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678542.733613802] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678542.789098688] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678542.844563095] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678542.900203451] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678542.955782011] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678543.011189799] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678543.066682053] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678543.122216752] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678543.177893096] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678543.233518401] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678543.289188589] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678543.344643738] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678543.400284596] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678543.455746749] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678543.511309568] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678543.566884845] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678543.622443232] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678543.678176886] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678543.733668946] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678543.788909587] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678543.844809208] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678543.900194005] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678543.955622146] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678544.011396036] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678544.066955504] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678544.122520725] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678544.177853990] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678544.233669746] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678544.289044282] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678544.344789375] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678544.400221607] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678544.455665983] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678544.511436920] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678544.566890219] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678544.622266900] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678544.677631080] [rpp_follow_controller]: raw=0.041, gain=0.041, base=0.135
+[INFO] [1765678544.733633815] [rpp_follow_controller]: raw=0.043, gain=0.043, base=0.135
+[INFO] [1765678544.789033012] [rpp_follow_controller]: raw=0.053, gain=0.053, base=0.135
+[INFO] [1765678544.844611129] [rpp_follow_controller]: raw=0.076, gain=0.076, base=0.135
+[INFO] [1765678544.900116331] [rpp_follow_controller]: raw=0.106, gain=0.106, base=0.135
+[INFO] [1765678544.955637381] [rpp_follow_controller]: raw=0.136, gain=0.136, base=0.135
+[INFO] [1765678545.011196777] [rpp_follow_controller]: raw=0.166, gain=0.166, base=0.135
+[INFO] [1765678545.066890247] [rpp_follow_controller]: raw=0.196, gain=0.196, base=0.135
+[INFO] [1765678545.122177621] [rpp_follow_controller]: raw=0.226, gain=0.226, base=0.135
+[INFO] [1765678545.177738160] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678545.233652956] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678545.289263648] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678545.344779408] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678545.400208422] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678545.455769396] [rpp_follow_controller]: raw=0.234, gain=0.234, base=0.135
+[INFO] [1765678545.511193508] [rpp_follow_controller]: raw=0.230, gain=0.230, base=0.135
+[INFO] [1765678545.566970636] [rpp_follow_controller]: raw=0.229, gain=0.229, base=0.135
+[INFO] [1765678545.622348179] [rpp_follow_controller]: raw=0.231, gain=0.231, base=0.135
+[INFO] [1765678545.677827842] [rpp_follow_controller]: raw=0.235, gain=0.235, base=0.135
+[INFO] [1765678545.733785286] [rpp_follow_controller]: raw=0.239, gain=0.239, base=0.135
+[INFO] [1765678545.789070688] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678545.844716589] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678545.900223605] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678545.955743588] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678546.011434065] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678546.066672904] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678546.122592422] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678546.177915519] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678546.233511579] [rpp_follow_controller]: raw=0.240, gain=0.240, base=0.135
+[INFO] [1765678546.288998261] [rpp_follow_controller]: raw=0.240, gain=0.240, base=0.135
+[INFO] [1765678546.344703655] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678546.400172012] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678546.455692226] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678546.511292186] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678546.566867023] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678546.622381932] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678546.677848081] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678546.733445682] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678546.789282084] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678546.844728880] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678546.900329362] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678546.955673560] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678547.011258182] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678547.066838523] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678547.122439268] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678547.177721782] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678547.233225899] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678547.289075539] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678547.344734172] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678547.400426390] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678547.455576518] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678547.511326143] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678547.566831939] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678547.622458032] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678547.677935730] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678547.733701256] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678547.789057654] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678547.844651125] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678547.900045722] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678547.955744809] [rpp_follow_controller]: raw=0.241, gain=0.241, base=0.135
+[INFO] [1765678548.011182484] [rpp_follow_controller]: raw=0.240, gain=0.240, base=0.135
+[INFO] [1765678548.066726720] [rpp_follow_controller]: raw=0.233, gain=0.233, base=0.135

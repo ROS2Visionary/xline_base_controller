@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <cstdlib>
 
@@ -619,7 +620,7 @@ bool RPPController::computeVelocityCommands(const geometry_msgs::msg::PoseStampe
     ctx.angle_to_lookahead = angle_to_lookahead;
     ctx.lookahead_distance = lookahead_distance;
     ctx.curvature = current_curvature_;
-    ctx.base_angular_velocity = desired_velocity * current_curvature_;
+    ctx.pp_angular_velocity = desired_velocity * current_curvature_;
     ctx.desired_linear_velocity = desired_velocity;
     ctx.remaining_distance = remaining_distance_;
     ctx.traversed_distance = traversed_distance_;
@@ -633,17 +634,17 @@ bool RPPController::computeVelocityCommands(const geometry_msgs::msg::PoseStampe
     else
     {
       // 回退到标准 PP
-      result.angular_velocity = ctx.base_angular_velocity;
-      result.linear_velocity = desired_velocity;
+      result.desired_angular_velocity = ctx.pp_angular_velocity;
+      result.desired_linear_velocity = desired_velocity;
       result.filter_reset = false;
     }
 
     // 应用角速度平滑
-    double smoothed_angular_velocity = smoothAngularVelocity(result.angular_velocity,
+    double smoothed_angular_velocity = smoothAngularVelocity(result.desired_angular_velocity,
         lookahead_distance, angle_to_lookahead, d_t_, result.filter_reset);
 
     // 生成速度命令
-    generateVelocityCommand(cmd_vel, current_velocity, result.linear_velocity, smoothed_angular_velocity);
+    generateVelocityCommand(cmd_vel, current_velocity, result.desired_linear_velocity, smoothed_angular_velocity);
 
     // 同步打印标志（圆形路径特有）
     if (current_strategy_type_ == PathStrategyType::CIRCLE)
@@ -654,6 +655,15 @@ bool RPPController::computeVelocityCommands(const geometry_msgs::msg::PoseStampe
         start_print = circle_strategy->shouldStartPrint();
         stop_print = circle_strategy->shouldStopPrint();
       }
+
+      RCLCPP_INFO(get_logger(), "基准角速度: %.5f, pp角速度: %.5f, 期望角速度: %.5f, 平滑角速度: %.5f, 前瞻距离: %.3f, 线速度: %.3f \n",
+                  circle_strategy ? circle_strategy->getBaselineAngularVelocity()
+                                  : std::numeric_limits<double>::quiet_NaN(),
+                  ctx.pp_angular_velocity,
+                  result.desired_angular_velocity,
+                  smoothed_angular_velocity,
+                  lookahead_distance,
+                  result.desired_linear_velocity);
     }
 
     // 更新栅格图
@@ -1297,18 +1307,6 @@ void RPPController::generateVelocityCommand(geometry_msgs::msg::TwistStamped& cm
   }
 
   cmd_vel.twist.linear.x = cmd_linear;
-
-  // 圆形路径的日志
-  if (current_strategy_type_ == PathStrategyType::CIRCLE)
-  {
-    auto* circle_strategy = dynamic_cast<CirclePathStrategy*>(path_strategy_.get());
-    if (circle_strategy)
-    {
-      RCLCPP_INFO(get_logger(), "raw=%.3f, gain=%.3f, base=%.3f",
-                  desired_angular_velocity, cmd_vel.twist.angular.z,
-                  circle_strategy->getBaselineAngularVelocity());
-    }
-  }
 
   if (back_follow_ && current_strategy_type_ != PathStrategyType::CIRCLE)
   {

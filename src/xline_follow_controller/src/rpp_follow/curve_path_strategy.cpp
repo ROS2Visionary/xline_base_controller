@@ -79,7 +79,7 @@ void CurvePathStrategy::computeAngularVelocity(const PathStrategyContext& ctx,
                                                 PathStrategyResult& result)
 {
   // 曲线策略对角速度不做特别处理，直接沿用 RPP 计算出的基础角速度
-  double desired_angular_velocity = ctx.base_angular_velocity;
+  double desired_angular_velocity = ctx.pp_angular_velocity;
 
   double distance_to_goal = std::hypot(
       ctx.current_pose.pose.position.x - goal_x_,
@@ -90,8 +90,8 @@ void CurvePathStrategy::computeAngularVelocity(const PathStrategyContext& ctx,
   double adjusted_linear_velocity = applyApproachConstraint(
       ctx.desired_linear_velocity, distance_to_goal);
 
-  result.angular_velocity = desired_angular_velocity;
-  result.linear_velocity = adjusted_linear_velocity;
+  result.desired_angular_velocity = desired_angular_velocity;
+  result.desired_linear_velocity = adjusted_linear_velocity;
   result.goal_reached = goal_reached_;
   result.filter_reset = false;
 
