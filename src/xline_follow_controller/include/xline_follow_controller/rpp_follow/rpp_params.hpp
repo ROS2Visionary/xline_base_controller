@@ -120,7 +120,6 @@ struct RPPSecondOrderSmoothingParams
 struct RPPSmoothingParams
 {
   std::string type = "lowpass";            ///< 平滑类型
-  double radius_offset = 0.0;              ///< 半径偏移量 [m]
   RPPLowpassSmoothingParams lowpass;
   RPPMovingAverageSmoothingParams moving_average;
   RPPSecondOrderSmoothingParams second_order;
@@ -155,11 +154,6 @@ struct RPPFilterParams
   RPPAngularFilterParams angular;
 };
 
-// 运行模式参数
-struct RPPModeParams
-{
-  bool low_speed = true;       ///< 低速模式开关
-};
 
 // 调试参数
 struct RPPDebugParams
@@ -190,7 +184,6 @@ struct RPPParams
   RPPTrackingParams tracking;
   RPPSmoothingParams smoothing;
   RPPFilterParams filter;
-  RPPModeParams mode;
   RPPDebugParams debug;
   RPPDeviationParams deviation;
 };

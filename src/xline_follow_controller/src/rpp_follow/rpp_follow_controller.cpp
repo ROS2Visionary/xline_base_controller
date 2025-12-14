@@ -166,7 +166,6 @@ void RPPController::loadParamsFromYaml(const xline::YamlParser::YamlParser& pars
   // =========================================================================
   // [6] 角速度平滑 - 基础参数
   // =========================================================================
-  params_.smoothing.radius_offset = parser.getParameter<double>("smoothing.radius_offset");
   params_.smoothing.type = parser.getParameter<std::string>("smoothing.type");
   params_.smoothing.lowpass.gain = parser.getParameter<double>("smoothing.lowpass.gain");
   params_.smoothing.moving_average.window_size = parser.getParameter<int>("smoothing.moving_average.window_size");
@@ -199,10 +198,6 @@ void RPPController::loadParamsFromYaml(const xline::YamlParser::YamlParser& pars
   params_.filter.angular.output_limit_rate = parser.getParameter<double>("filter.angular.output_limit_rate");
   params_.filter.angular.rate_limit = parser.getParameter<double>("filter.angular.rate_limit");
 
-  // =========================================================================
-  // [10] 运行模式
-  // =========================================================================
-  params_.mode.low_speed = parser.getParameter<bool>("mode.low_speed");
 
   // =========================================================================
   // [11] 调试与可视化
@@ -308,7 +303,7 @@ bool RPPController::setPlanForCircle(double circle_center_x, double circle_cente
   }
 
   // 设置圆形参数
-  double actual_radius = circle_radius + params_.smoothing.radius_offset;
+  double actual_radius = circle_radius;
   circle_strategy->setCircleCenter(circle_center_x, circle_center_y);
   circle_strategy->setCircleRadius(actual_radius);
   circle_strategy->initializeDynamicParams();
@@ -669,8 +664,7 @@ bool RPPController::computeVelocityCommands(const geometry_msgs::msg::PoseStampe
     // 更新栅格图
     updateGridMapIfNeeded(current_pose, lookahead_pose);
 
-    // 性能监控
-    checkComputationTime(start_time);
+
 
     return true;
   }
@@ -1507,14 +1501,7 @@ bool RPPController::isPointInGrid(const cv::Point& pt)
   return pt.x >= 0 && pt.x < grid_map_.cols && pt.y >= 0 && pt.y < grid_map_.rows;
 }
 
-void RPPController::checkComputationTime(const rclcpp::Time& start_time)
-{
-  auto duration = this->now() - start_time;
-  if (duration.seconds() > d_t_ * 0.9)
-  {
-    RCLCPP_WARN(get_logger(), "控制循环耗时过长: %.3f ms", duration.seconds() * 1000.0);
-  }
-}
+
 
 }  // namespace follow_controller
 }  // namespace xline

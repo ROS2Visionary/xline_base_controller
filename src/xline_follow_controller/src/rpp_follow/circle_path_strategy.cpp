@@ -149,8 +149,7 @@ void CirclePathStrategy::updateParameters(const std::string& config_path)
     params_.goal.dist_tol = parser.getParameter<double>("goal.dist_tol");
     params_.goal.rotate_tol = parser.getParameter<double>("goal.rotate_tol");
     
-    // 圆形路径特有参数
-    params_.smoothing.radius_offset = parser.getParameter<double>("smoothing.radius_offset");
+
     
     // 偏差控制参数
     params_.deviation.start_factor = parser.getParameter<double>("deviation.start_factor");
@@ -210,9 +209,8 @@ void CirclePathStrategy::updateParameters(const std::string& config_path)
     }
 
     RCLCPP_INFO(getLogger(),
-                "CirclePathStrategy 参数已更新: deviation(strict=%.3f, relaxed=%.3f), radius_offset=%.3f, circle_dynamics=%s",
+                "CirclePathStrategy 参数已更新: deviation(strict=%.3f, relaxed=%.3f), circle_dynamics=%s",
                 params_.deviation.strict_ratio, params_.deviation.relaxed_ratio,
-                params_.smoothing.radius_offset,
                 params_.circle_dynamics.enabled ? "enabled" : "fixed");
   }
   catch (const std::exception& e)
@@ -257,7 +255,7 @@ nav_msgs::msg::Path CirclePathStrategy::generateCirclePath(
   circle_path.header.frame_id = "world";
   circle_path.header.stamp = rclcpp::Clock().now();
 
-  double actual_radius = radius + params_.smoothing.radius_offset;
+  double actual_radius = radius;
 
   geometry_msgs::msg::PoseStamped entry_pose = start_pose;
 

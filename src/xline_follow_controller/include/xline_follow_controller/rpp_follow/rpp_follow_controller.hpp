@@ -268,8 +268,7 @@ private:
                               const geometry_msgs::msg::PoseStamped& lookahead_pose);
   bool isPointInGrid(const cv::Point& pt);
 
-  // 性能监控
-  void checkComputationTime(const rclcpp::Time& start_time);
+
 };
 
 }  // namespace follow_controller
