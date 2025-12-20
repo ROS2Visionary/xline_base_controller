@@ -100,6 +100,7 @@ namespace xline
       std::mutex service_mutex_;  // 保护暂停/恢复服务
       
       uint32_t current_layer_id; // 当前路径id
+      std::string current_layer_type; // 当前路径所属图层类型
 
       // 姿态校正计时相关
       std::mutex calibration_mutex_;
@@ -117,10 +118,6 @@ namespace xline
       bool use_stepper_for_current_path_{false};
       int current_stepper_motor_id_{0};
 
-      // 行驶距离追踪（用于虚线模式）
-      double traveled_distance_mm_ = 0.0;
-      geometry_msgs::msg::PoseStamped last_pose_;
-      bool has_last_pose_ = false;
 
       /**
        * 目标处理回调：决定是否接受/拒绝目标

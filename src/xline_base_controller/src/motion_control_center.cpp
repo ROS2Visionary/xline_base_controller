@@ -215,9 +215,10 @@ namespace xline
         return;
       }
 
-      std::string type = line["type"].asString();
+      current_layer_type = line["type"].asString();
       uint32_t path_id = line["id"].asUInt();
       current_layer_id = line["layer_id"].asUInt();
+      bool is_backward = line["backward"].asBool();
 
       bool is_start_from_robot = current_layer_id == 1000000 ? true : false;
 
@@ -409,12 +410,12 @@ namespace xline
       }
 
       // 根据类型提取数据
-      if (type == "line" || type == "text")
+      if (current_layer_type == "line" || current_layer_type == "text")
       {
         // text 类型与 line 类型使用相同的数据结构（都有 start/end）
         LineData line_data = extractLineData(line);
         
-        if (type == "text")
+        if (current_layer_type == "text")
         {
           // 获取文字内容
           std::string text_content = "";
@@ -438,13 +439,13 @@ namespace xline
         if(is_start_from_robot){ // 是否使用机器人位置作为路径的起点
           
           line_follow_controller_->setPlan(robot_pose.pose.position.x, robot_pose.pose.position.y, line_data.end_x, line_data.end_y);
-          line_follow_controller_->setBackFollow(true);
+          line_follow_controller_->setBackFollow(is_backward);
         }else{
           line_follow_controller_->setPlan(line_data.start_x, line_data.start_y, line_data.end_x, line_data.end_y);
         }
         base_follow_controller_ = line_follow_controller_;
       }
-      else if (type == "circle")
+      else if (current_layer_type == "circle")
       {
         CircleData circle_data = extractCircleData(line);
         RCLCPP_INFO(get_logger(), "[circle, id=%u]: 圆心(%.2f, %.2f), 半径%.2f", path_id, circle_data.center_x,
@@ -458,7 +459,7 @@ namespace xline
         rpp_follow_controller_->setBackFollow(false);
         base_follow_controller_ = rpp_follow_controller_;
       }
-      else if (type == "arc")
+      else if (current_layer_type == "arc")
       {
         ArcData arc_data = extractArcData(line);
         RCLCPP_INFO(get_logger(), "[arc, id=%u]: 圆心(%.2f, %.2f), 半径%.2f, 角度[%.2f, %.2f] rad", path_id,
@@ -472,11 +473,11 @@ namespace xline
       }
       else
       {
-        RCLCPP_WARN(get_logger(), "[id=%u]: 未知类型 %s，跳过", path_id, type.c_str());
+        RCLCPP_WARN(get_logger(), "[id=%u]: 未知类型 %s，跳过", path_id, current_layer_type.c_str());
       }
 
       // type 为 text 时，不执行路径跟随，直接返回成功
-      if (type == "text")
+      if (current_layer_type == "text")
       {
         result->success = true;
         result->error_message.clear();
@@ -511,11 +512,6 @@ namespace xline
         RCLCPP_INFO(get_logger(), "目标已取消：plan_uid=%s", goal->plan_uid.c_str());
         return;
       }
-
-
-      // 重置行驶距离追踪
-      traveled_distance_mm_ = 0.0;
-      has_last_pose_ = false;
 
       compute_velocity(goal_handle, result);
 
@@ -568,11 +564,9 @@ namespace xline
       geometry_msgs::msg::Twist current_velocity; // 当前里程计速度，暂无则默认0
       geometry_msgs::msg::TwistStamped cmd_vel;
 
-      bool has_warned_no_pose = false;
-
       bool is_inkjet_printing = false; // 标记喷码机是否在工作
 
-      int stop_count = 0;
+      int positon_invalid_count = 0;
 
       // 检查节点关闭标志，确保节点销毁时执行线程能及时退出
       while (rclcpp::ok() && !shutdown_.load())
@@ -609,55 +603,36 @@ namespace xline
 
         // 获取最新位姿，检查返回值确保位姿数据有效
         geometry_msgs::msg::PoseStamped robot_pose;
-        if (!getLatestPose(robot_pose))
+        if (!getLatestPose(robot_pose) && positon_invalid_count++ > 5)
         {
-          // 未收到位姿数据，打印警告并等待
-          if (!has_warned_no_pose)
-          {
-            RCLCPP_WARN(get_logger(), "未收到位姿数据，等待定位系统初始化...");
-            has_warned_no_pose = true;
-          }
+          geometry_msgs::msg::Twist stop;
+          cmd_vel_publisher_->publish(stop);
           continue; // 跳过本次循环，等待位姿数据
         }
 
-        // if(robot_pose.pose.position.x == 0.0 || robot_pose.pose.position.x == 0.0){
-        //   RCLCPP_WARN(get_logger(), "收到无效定位数据，跳过本次循环");
-        //   continue; 
-        // }
-
-        // 收到位姿后重置警告标志
-        if (has_warned_no_pose)
-        {
-          RCLCPP_INFO(get_logger(), "已收到位姿数据，继续执行");
-          has_warned_no_pose = false;
-        }
-
-
-        last_pose_ = robot_pose;
-        has_last_pose_ = true;
+        positon_invalid_count = 0; // 重置位置无效次数
 
         // 到达检测
         if (base_follow_controller_->isGoalReached())
         {
           geometry_msgs::msg::Twist stop;
           cmd_vel_publisher_->publish(stop);
-          if (stop_count++ > 5) {
-            // 路径执行完成：如果当前路径使用左右喷码机，对应步进电机执行 reverse
-            if (use_stepper_for_current_path_ && current_stepper_motor_id_ > 0)
-            {
-              RCLCPP_INFO(get_logger(),
-                          "路径到达目标，步进电机反转: motor_id=%d, command=reverse",
-                          current_stepper_motor_id_);
-              controlStepperMotor(current_stepper_motor_id_, "reverse");
-            }
-
-            if (result)
-            {
-              result->success = true;
-              result->error_message.clear();
-            }
-            return true;
+          // 路径执行完成：如果当前路径使用左右喷码机，对应步进电机执行 reverse
+          if (use_stepper_for_current_path_ && current_stepper_motor_id_ > 0)
+          {
+            RCLCPP_INFO(get_logger(),
+                        "路径到达目标，步进电机反转: motor_id=%d, command=reverse",
+                        current_stepper_motor_id_);
+            controlStepperMotor(current_stepper_motor_id_, "reverse");
           }
+
+          if (result)
+          {
+            result->success = true;
+            result->error_message.clear();
+          }
+          return true;
+          
         }
 
         // 计算控制指令
@@ -747,19 +722,29 @@ namespace xline
           }
           else
           {
-            std::thread([inkjet_client, printer_name]() {
-                          // 延迟1秒
-                          std::this_thread::sleep_for(std::chrono::seconds(1));
+            if(current_layer_type == "line"){
+              std::thread([inkjet_client, printer_name]() {
+                          // 延迟3.1秒
+                          std::this_thread::sleep_for(std::chrono::milliseconds(3100));
                           inkjet_client->start_print(printer_name);
                         }).detach();
+            }else{
+              std::thread([inkjet_client, printer_name]() {
+                          inkjet_client->start_print(printer_name);
+                        }).detach();
+            }
+            
           }
         }
 
         // 停止打印条件
         if(base_follow_controller_->stop_print && is_inkjet_printing && current_layer_id != 1000000)
         {
-            is_inkjet_printing = false;
-            inkjet_client_->stop_print(current_ink_printer_);
+            std::string printer_name = current_ink_printer_;
+            auto inkjet_client = inkjet_client_;
+            std::thread([inkjet_client, printer_name]() {
+                        inkjet_client->stop_print(printer_name);
+                      }).detach();
             RCLCPP_INFO(get_logger(), "停止打印: printer=%s", current_ink_printer_.c_str());
         }
 
@@ -914,6 +899,7 @@ namespace xline
       {
         return false;
       }
+      // has_latest_pose_.store(false);
       pose = latest_pose_;
       return true;
     }

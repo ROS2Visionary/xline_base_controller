@@ -1037,6 +1037,12 @@ void LineFollowController::handlePathFollowing(double robot_x, double robot_y,
     final_target_yaw = path_ideal_yaw;
   }
 
+  if (distance_to_original_target < 0.03)
+  {
+    start_print = false;
+    stop_print = true;
+  }
+  
   double linear_speed = computeLinearSpeed(distance_to_original_target, distance_to_start);
 
   current_pose_.pose.position.x = robot_x;
