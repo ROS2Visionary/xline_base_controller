@@ -138,6 +138,7 @@ private:
   geometry_msgs::msg::PoseStamped end_pose_;              ///< 终点位姿
   geometry_msgs::msg::PoseStamped current_pose_;          ///< 当前位姿
   geometry_msgs::msg::PoseStamped original_target_pose_;  ///< 原始目标位姿（延长前）
+  geometry_msgs::msg::PoseStamped original_start_pose_;  ///< 原始起点位姿
 
   size_t current_waypoint_index_;     ///< 当前路径点索引
   double path_length_;                ///< 路径长度

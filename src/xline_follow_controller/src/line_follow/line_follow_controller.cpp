@@ -286,6 +286,7 @@ bool LineFollowController::setPlan(const nav_msgs::msg::Path& orig_global_plan)
   global_plan_ = orig_global_plan;
   start_pose_ = global_plan_.poses.front();
   original_target_pose_ = global_plan_.poses.back();
+  original_start_pose_ = global_plan_.poses.front();
   target_pose_ = global_plan_.poses.back();
   end_pose_ = target_pose_;
 
@@ -975,9 +976,13 @@ bool LineFollowController::handleStateAlignment(double robot_yaw,
 void LineFollowController::handlePathFollowing(double robot_x, double robot_y,
                                                geometry_msgs::msg::TwistStamped& cmd_vel)
 {
-  double original_dx = original_target_pose_.pose.position.x - robot_x;
-  double original_dy = original_target_pose_.pose.position.y - robot_y;
-  double distance_to_original_target = std::sqrt(original_dx * original_dx + original_dy * original_dy);
+  double original_target_dx = original_target_pose_.pose.position.x - robot_x;
+  double original_target_dy = original_target_pose_.pose.position.y - robot_y;
+  double distance_to_original_target = std::sqrt(original_target_dx * original_target_dx + original_target_dy * original_target_dy);
+
+  double original_start_dx = original_start_pose_.pose.position.x - robot_x;
+  double original_start_dy = original_start_pose_.pose.position.y - robot_y;
+  double distance_to_original_start = std::sqrt(original_start_dx * original_start_dx + original_start_dy * original_start_dy);
 
   double start_dx = start_pose_.pose.position.x - robot_x;
   double start_dy = start_pose_.pose.position.y - robot_y;
@@ -1037,7 +1042,12 @@ void LineFollowController::handlePathFollowing(double robot_x, double robot_y,
     final_target_yaw = path_ideal_yaw;
   }
 
-  if (distance_to_original_target < 0.03)
+  if(distance_to_original_start > 0.1375){
+    start_print = true;
+    stop_print = false;
+  }
+
+  if (distance_to_original_target < 0.0325)
   {
     start_print = false;
     stop_print = true;
@@ -1183,8 +1193,8 @@ bool LineFollowController::computeVelocityCommands(const geometry_msgs::msg::Pos
 
     case ControlState::FOLLOWING_PATH:
     {
-      start_print = true;
-      stop_print = false;
+      // start_print = true;
+      // stop_print = false;
 
       if (isBeyondGoal(control_x, control_y))
       {

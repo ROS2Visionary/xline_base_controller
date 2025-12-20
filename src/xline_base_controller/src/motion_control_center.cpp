@@ -723,9 +723,12 @@ namespace xline
           else
           {
             if(current_layer_type == "line"){
+              // std::thread([inkjet_client, printer_name]() {
+              //             // 延迟3.1秒
+              //             std::this_thread::sleep_for(std::chrono::milliseconds(3100));
+              //             inkjet_client->start_print(printer_name);
+              //           }).detach();
               std::thread([inkjet_client, printer_name]() {
-                          // 延迟3.1秒
-                          std::this_thread::sleep_for(std::chrono::milliseconds(3100));
                           inkjet_client->start_print(printer_name);
                         }).detach();
             }else{
