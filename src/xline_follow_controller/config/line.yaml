@@ -9,9 +9,9 @@ debug:
 # 航向PID控制
 heading_pid:
   alignment:                         # 对齐阶段
-    kp: 1.0
+    kp: 1.05
     ki: 0.0
-    kd: 0.1
+    kd: 0.2
   following:                         # 跟随阶段
     kp: 1.0
     ki: 0.0
@@ -30,29 +30,20 @@ velocity:
   # 调速参数
   acce_factor: 0.0005                # 加速因子
   accel_sigmoid_k: 6.0               # 加速sigmoid系数
-  decel_sigmoid_k: 10.0              # 减速sigmoid系数
+  decel_sigmoid_k: 4.0              # 减速sigmoid系数
   accel_sigmoid_center: 0.9          # 加速sigmoid中心点
-  decel_sigmoid_center: 0.3          # 减速sigmoid中心点
+  decel_sigmoid_center: 0.5          # 减速sigmoid中心点
 
 
 # 距离阈值
 distance:
   alignment: 0.08                    # 对齐距离阈值 [m]
-  deceleration: 0.3                  # 减速距离（工作模式）[m]
+  deceleration: 0.2                  # 减速距离（工作模式）[m]
   non_work_deceleration: 0.4         # 减速距离（非工作模式）[m]
   acceleration: 0.15                 # 加速阶段距离 [m]
   lookahead: 0.25                    # 前瞻距离 [m]
-  waypoint_tolerance: 0.005          # 路径点容差 [m]
+  waypoint_tolerance: 0.007          # 路径点容差 [m]
   mini_path: 0.3                     # 最小路径距离 [m]
-
-
-# 原地旋转控制
-rotation:
-  max_w: 0.8                         # 最大角速度 [rad/s]
-  min_w: 0.15                        # 最小角速度 [rad/s]
-  factor: 1.2                        # 角速度调节因子
-  angle_threshold: 0.5               # 角度阈值 [rad]
-  smooth_factor: 0.6                 # 平滑因子
 
 
 # 滤波器配置
@@ -78,6 +69,9 @@ phase:
 
     smoother_freq: 15.0              # 平滑器频率 [Hz]
     smoother_damping: 0.86           # 平滑器阻尼比
+    line_cross_track_tolerance: 0.004 # 起步：到直线的横向误差阈值 [m]
+    line_heading_tolerance: 0.015     # 起步：相对直线航向的误差阈值 [rad]
+    line_alignment_stable_count: 10   # 起步：连续满足次数（抗抖）
 
   following:                         # 跟随阶段
     max_angular_vel: 0.065           # 最大角速度 [rad/s]
@@ -88,3 +82,12 @@ phase:
     
     smoother_freq: 15.0              # 平滑器频率 [Hz]
     smoother_damping: 0.86           # 平滑器阻尼比
+
+
+# 原地旋转控制
+rotation:
+  max_w: 0.8                         # 最大角速度 [rad/s]
+  min_w: 0.15                        # 最小角速度 [rad/s]
+  factor: 1.2                        # 角速度调节因子
+  angle_threshold: 0.5               # 角度阈值 [rad]
+  smooth_factor: 0.6                 # 平滑因子

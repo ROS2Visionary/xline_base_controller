@@ -48,6 +48,9 @@ LineFollowController::LineFollowController()
   , wait_duration_(0.2)
   , waiting_(false)
   , angular_smoother_(2.0, 0.7)
+  , start_line_aligned_(false)
+  , start_line_aligned_count_(0)
+  , accel_start_distance_to_start_(0.0)
 {
   updateParameters();
   initializeFilters();
@@ -158,6 +161,9 @@ void LineFollowController::updateParameters()
     params_.phase.alignment.filter_alpha = parser.getParameter<double>("phase.alignment.filter_alpha");
     params_.phase.alignment.smoother_freq = parser.getParameter<double>("phase.alignment.smoother_freq");
     params_.phase.alignment.smoother_damping = parser.getParameter<double>("phase.alignment.smoother_damping");
+    params_.phase.alignment.line_cross_track_tolerance = parser.getParameter<double>("phase.alignment.line_cross_track_tolerance");
+    params_.phase.alignment.line_heading_tolerance = parser.getParameter<double>("phase.alignment.line_heading_tolerance");
+    params_.phase.alignment.line_alignment_stable_count = parser.getParameter<int>("phase.alignment.line_alignment_stable_count");
 
     params_.phase.following.max_angular_vel = parser.getParameter<double>("phase.following.max_angular_vel");
     params_.phase.following.max_angular_accel = parser.getParameter<double>("phase.following.max_angular_accel");
@@ -238,6 +244,9 @@ void LineFollowController::resetControllerState()
   current_angular_speed_ = 0.0;
   last_yaw_error_ = 0.0;
   decel_phase_entered_ = false;
+  start_line_aligned_ = false;
+  start_line_aligned_count_ = 0;
+  accel_start_distance_to_start_ = 0.0;
 
   prev_angular_velocity_ = 0.0;
   second_prev_angular_velocity_ = 0.0;
@@ -251,6 +260,59 @@ void LineFollowController::resetControllerState()
 
   angular_smoother_.reset();
   last_time_ = std::chrono::steady_clock::now();
+}
+
+void LineFollowController::updateStartLineAlignment(double robot_x, double robot_y, double robot_yaw, double distance_to_start)
+{
+  if (start_line_aligned_)
+  {
+    return;
+  }
+
+  if (alignment_params_.line_alignment_stable_count <= 0)
+  {
+    start_line_aligned_ = true;
+    accel_start_distance_to_start_ = distance_to_start;
+    return;
+  }
+
+  const double cross_track_error = computeCrossTrackError(robot_x, robot_y);
+
+  double path_ideal_yaw = tf2::getYaw(start_pose_.pose.orientation);
+  if (back_follow_)
+  {
+    path_ideal_yaw = normalizeAngle(path_ideal_yaw + M_PI);
+  }
+  const double heading_error = angles::shortest_angular_distance(robot_yaw, path_ideal_yaw);
+
+  const bool cross_track_ok = std::abs(cross_track_error) <= alignment_params_.line_cross_track_tolerance;
+  const bool heading_ok = std::abs(heading_error) <= alignment_params_.line_heading_tolerance;
+
+  if (cross_track_ok && heading_ok)
+  {
+    ++start_line_aligned_count_;
+  }
+  else
+  {
+    start_line_aligned_count_ = 0;
+  }
+
+  if (start_line_aligned_count_ >= alignment_params_.line_alignment_stable_count)
+  {
+    start_line_aligned_ = true;
+    accel_start_distance_to_start_ = distance_to_start;
+
+    if (heading_pid_controller_)
+    {
+      heading_pid_controller_->reset();
+    }
+    angular_smoother_.reset();
+    prev_smoothed_angular_velocity_ = 0.0;
+    prev_angular_velocity_ = 0.0;
+
+    LOG_INFO("起步对齐完成: cross_track=%.4f(m), heading_err=%.4f(rad), stable=%d",
+             cross_track_error, heading_error, start_line_aligned_count_);
+  }
 }
 
 // ============================================================================
@@ -603,7 +665,7 @@ double LineFollowController::computeLinearSpeed(double distance_to_target, doubl
   }
   else
   {
-    if (current_state_ == ControlState::ALIGNING_START || distance_to_start < runtime_alignment_dist_)
+    if (current_state_ == ControlState::ALIGNING_START || !start_line_aligned_)
     {
       target_speed = prev_speed + acceFactor();
       max_linear_speed_ = runtime_alignment_vel_;
@@ -635,13 +697,23 @@ double LineFollowController::computeLinearSpeed(double distance_to_target, doubl
         max_linear_speed_ = std::min(max_linear_speed_, standard_max_speed * 0.5);
       }
 
-      double normalized_distance = (distance_to_start - runtime_alignment_dist_) / runtime_accel_dist_;
-      normalized_distance = std::max(0.0, std::min(1.0, normalized_distance));
+      if (runtime_accel_dist_ <= 1e-6)
+      {
+        target_speed = max_linear_speed_;
+      }
+      else
+      {
+        double distance_since_accel_start = distance_to_start - accel_start_distance_to_start_;
+        distance_since_accel_start = std::max(0.0, distance_since_accel_start);
 
-      double sigmoid_value =
-          1.0 / (1.0 + std::exp(-accelSigmoidK() * (normalized_distance - accelSigmoidCenter())));
+        double normalized_distance = distance_since_accel_start / runtime_accel_dist_;
+        normalized_distance = std::max(0.0, std::min(1.0, normalized_distance));
 
-      target_speed = runtime_alignment_vel_ + (max_linear_speed_ - runtime_alignment_vel_) * sigmoid_value;
+        double sigmoid_value =
+            1.0 / (1.0 + std::exp(-accelSigmoidK() * (normalized_distance - accelSigmoidCenter())));
+
+        target_speed = runtime_alignment_vel_ + (max_linear_speed_ - runtime_alignment_vel_) * sigmoid_value;
+      }
     }
 
     target_speed = std::min(target_speed, max_linear_speed_);
@@ -686,13 +758,14 @@ double LineFollowController::computeAngularVelocity(double yaw_error, double dt,
                                                     double distance_to_start, double linear_speed)
 {
   (void)distance_to_target;
+  (void)distance_to_start;
   (void)linear_speed;
 
   // 角速度规划核心：
   // - 对齐阶段和跟随阶段使用不同的 PID 参数和角速度/角加速度限制；
   // - 对 PID 输出做 Hampel 滤波 + 一阶低通（alpha）；
   // - 最后再经过一个二阶平滑器，减少急剧转向带来的抖动。
-  bool is_alignment_phase = (distance_to_start < runtime_alignment_dist_);
+  const bool is_alignment_phase = !start_line_aligned_;
   double current_max_angular_vel =
       is_alignment_phase ? alignment_params_.max_angular_vel : following_params_.max_angular_vel;
 
@@ -722,8 +795,9 @@ double LineFollowController::computeAngularVelocity(double yaw_error, double dt,
     raw_angular_velocity = prev_angular_velocity_ + angular_acceleration * dt;
   }
 
+  const double alpha = is_alignment_phase ? alignment_params_.filter_alpha : following_params_.filter_alpha;
   double smoothed_angular_vel = angular_vel_hampel_filter_.filter(raw_angular_velocity);
-  smoothed_angular_vel = alpha_ * smoothed_angular_vel + (1 - alpha_) * prev_smoothed_angular_velocity_;
+  smoothed_angular_vel = alpha * smoothed_angular_vel + (1 - alpha) * prev_smoothed_angular_velocity_;
   prev_smoothed_angular_velocity_ = smoothed_angular_vel;
 
   smoothed_angular_vel = angular_smoother_.filter(smoothed_angular_vel, dt);
@@ -1012,22 +1086,15 @@ void LineFollowController::handlePathFollowing(double robot_x, double robot_y,
     path_ideal_yaw = std::atan2(std::sin(path_ideal_yaw), std::cos(path_ideal_yaw));
   }
 
+  updateStartLineAlignment(robot_x, robot_y, robot_yaw_, distance_to_start);
+
   double current_heading_weight = 0.0;
   double target_heading_weight = 0.0;
 
-  if (distance_to_start > runtime_alignment_dist_)
+  if (start_line_aligned_)
   {
     current_heading_weight = following_params_.current_heading_weight;
     target_heading_weight = following_params_.target_heading_weight;
-
-    if (current_state_ == ControlState::ALIGNING_START)
-    {
-      if (heading_pid_controller_)
-      {
-        heading_pid_controller_->reset();
-      }
-      current_state_ = ControlState::FOLLOWING_PATH;
-    }
   }
   else
   {

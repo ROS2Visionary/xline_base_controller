@@ -130,6 +130,9 @@ private:
   double current_angular_speed_;      ///< 当前角速度
   double robot_yaw_;                  ///< 机器人当前偏航角
   double alpha_;                      ///< 当前低通滤波系数
+  bool start_line_aligned_;           ///< 起步阶段：是否已经满足“上直线+航向对齐”
+  int start_line_aligned_count_;      ///< 连续满足计数（抗抖）
+  double accel_start_distance_to_start_;  ///< 允许加速时的起点距离（用于加速曲线从0开始）
 
   // 路径和位姿信息
   nav_msgs::msg::Path global_plan_;                       ///< 全局路径
@@ -205,6 +208,7 @@ private:
   bool isAlignedWithTarget(double robot_yaw, 
                            const geometry_msgs::msg::Quaternion& target_orientation,
                            bool is_backward);
+  void updateStartLineAlignment(double robot_x, double robot_y, double robot_yaw, double distance_to_start);
 
   // ================================
   // 私有方法 - 路径管理

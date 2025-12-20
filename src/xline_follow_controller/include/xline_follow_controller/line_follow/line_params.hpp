@@ -95,6 +95,11 @@ struct LinePhaseConfig
   double filter_alpha = 0.95;        ///< 低通滤波系数
   double smoother_freq = 15.0;       ///< 平滑器频率 [Hz]
   double smoother_damping = 0.86;    ///< 平滑器阻尼比
+
+  // 起步对齐 -> 加速的切换条件（主要用于直线跟随）
+  double line_cross_track_tolerance = 0.02;   ///< 允许的横向误差(到直线) [m]
+  double line_heading_tolerance = 0.08;       ///< 允许的航向误差(相对直线航向) [rad]
+  int line_alignment_stable_count = 5;        ///< 连续满足次数（抗抖）
 };
 
 struct LinePhaseParams
@@ -125,6 +130,9 @@ struct LinePhaseRuntimeParams
   double filter_alpha;
   double smoother_freq;
   double smoother_damping;
+  double line_cross_track_tolerance;
+  double line_heading_tolerance;
+  int line_alignment_stable_count;
 
   static LinePhaseRuntimeParams fromConfig(const LinePhaseConfig& cfg)
   {
@@ -136,6 +144,9 @@ struct LinePhaseRuntimeParams
     p.filter_alpha = cfg.filter_alpha;
     p.smoother_freq = cfg.smoother_freq;
     p.smoother_damping = cfg.smoother_damping;
+    p.line_cross_track_tolerance = cfg.line_cross_track_tolerance;
+    p.line_heading_tolerance = cfg.line_heading_tolerance;
+    p.line_alignment_stable_count = cfg.line_alignment_stable_count;
     return p;
   }
 };
