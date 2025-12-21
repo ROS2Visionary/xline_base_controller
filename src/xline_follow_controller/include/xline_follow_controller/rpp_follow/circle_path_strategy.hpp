@@ -165,6 +165,12 @@ private:
   bool start_print_;
   bool stop_print_;
 
+  // 打印区间的角度窗口（基于累计角度）
+  bool print_window_initialized_ = false;
+  double start_print_angle_ = 0.0;        ///< 触发“开始打印信号”时的累计角度（喷码机有延时）
+  double stop_print_start_angle_ = 0.0;   ///< 停止打印开始点（关闭打印起点）
+  double stop_print_end_angle_ = 0.0;     ///< 停止打印结束点（到达该角度即认为圆弧完成）
+
   // ================================
   // 内部辅助方法
   // ================================

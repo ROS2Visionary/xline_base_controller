@@ -662,7 +662,14 @@ double LineFollowController::computeLinearSpeed(double distance_to_target, doubl
   }
   else
   {
-    if (current_state_ == ControlState::ALIGNING_START || !start_line_aligned_)
+    // 线速度“加速时机”额外约束：
+    // - 在 distance_to_start < 0.2m 之前，即使已经满足加速标准（start_line_aligned_==true），也不允许进入加速段；
+    // - 一旦 distance_to_start > 0.2m，如果仍未满足加速标准，则维持现有逻辑（对齐段低速），不做额外延后；
+    // - 注意：该约束只限制线速度，角速度控制保持原有逻辑。
+    constexpr double kMinAccelStartDistance = 0.2;
+    const bool allow_linear_accel_by_distance = (distance_to_start >= kMinAccelStartDistance);
+
+    if (current_state_ == ControlState::ALIGNING_START || !start_line_aligned_ || !allow_linear_accel_by_distance)
     {
       target_speed = prev_speed + acceFactor();
       max_linear_speed_ = runtime_alignment_vel_;
@@ -700,7 +707,12 @@ double LineFollowController::computeLinearSpeed(double distance_to_target, doubl
       }
       else
       {
-        double distance_since_accel_start = distance_to_start - accel_start_distance_to_start_;
+        // 如果对齐很早完成但被 0.25m 门槛延后加速，为避免加速曲线在 0.25m 处“跳速”，
+        // 将加速曲线的距离零点钉在 max(对齐完成时刻, 0.25m)。
+        const double effective_accel_start_distance =
+            std::max(accel_start_distance_to_start_, kMinAccelStartDistance);
+
+        double distance_since_accel_start = distance_to_start - effective_accel_start_distance;
         distance_since_accel_start = std::max(0.0, distance_since_accel_start);
 
         double normalized_distance = distance_since_accel_start / runtime_accel_dist_;
@@ -1096,12 +1108,12 @@ void LineFollowController::handlePathFollowing(double robot_x, double robot_y,
     final_target_yaw = path_ideal_yaw;
   }
 
-  if(distance_to_original_start > 0.1375){
+  if(distance_to_original_start > 0.145){
     start_print = true;
     stop_print = false;
   }
 
-  if (distance_to_original_target < 0.0325)
+  if (distance_to_original_target < 0.033)
   {
     start_print = false;
     stop_print = true;

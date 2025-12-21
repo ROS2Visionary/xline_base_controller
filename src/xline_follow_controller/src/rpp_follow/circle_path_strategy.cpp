@@ -470,6 +470,14 @@ void CirclePathStrategy::resetCirclePathState()
   last_yaw_initialized_ = false;
   last_yaw_ = 0.0;
   accumulated_angle_ = 0.0;
+
+  start_print_ = false;
+  stop_print_ = true;
+
+  print_window_initialized_ = false;
+  start_print_angle_ = 0.0;
+  stop_print_start_angle_ = 0.0;
+  stop_print_end_angle_ = 0.0;
 }
 
 bool CirclePathStrategy::updateAccumulatedAngle(double current_yaw)
@@ -505,16 +513,64 @@ bool CirclePathStrategy::updateAccumulatedAngle(double current_yaw)
 
   last_yaw_ = current_yaw;
 
-  if (accumulated_angle_ > (params_.deviation.start_factor + 0.25) * M_PI)
+  // 喷码机有固定延时：收到“开始打印”信号后约 1s 才真正出墨。
+  // 为了让“实际开始喷印”的位置落在 desired_start_angle，需要提前触发 start_print_。
+  constexpr double kPrintStartDelaySec = 1.0;
+  const double desired_start_angle = (params_.deviation.start_factor + 0.5) * M_PI;
+  const double omega_for_delay = std::max(std::abs(circle_target_angular_velocity_),
+                                          std::abs(baseline_angular_velocity_));
+  const double start_lead_angle = omega_for_delay * kPrintStartDelaySec;
+  const double start_trigger_angle = std::max(0.0, desired_start_angle - start_lead_angle);
+
+  if (accumulated_angle_ > start_trigger_angle)
   {
     // 累计超过一定角度后，允许开始打印，
     // 在一圈开始的那一小段不打印，避免入口区域重复喷印。
-    start_print_ = true;
-    stop_print_ = false;
+    if (!print_window_initialized_)
+    {
+      // start_print_angle_ 记录“触发开始打印信号”的角度；
+      // 有效开始喷印角度 = start_print_angle_ + start_lead_angle。
+      start_print_angle_ = accumulated_angle_;
+      const double effective_start_print_angle = start_print_angle_ + start_lead_angle;
+
+      // 停止打印窗口：从 stop_print_start_angle_ 到 stop_print_end_angle_ 的弧长为 3cm。
+      // end 点定义为：从“有效开始喷印角度”起，再走一圈(2π)后的角度位置。
+      // 额外补偿：由于实际起点/终点仍有约 6cm 误差，这里把 end 点再沿弧长方向前移 6cm，
+      // 以抵消累计角度误差/执行滞后带来的“提前结束”。
+      constexpr double kStopArcLengthMeters = 0.03;
+      constexpr double kClosureCompensationMeters = 0.06;
+      const double safe_radius = std::max(circle_radius_, 1e-6);
+      const double stop_delta_angle = std::min(2.0 * M_PI, kStopArcLengthMeters / safe_radius);
+      const double closure_comp_angle =
+          std::min(2.0 * M_PI, kClosureCompensationMeters / safe_radius);
+
+      stop_print_end_angle_ = effective_start_print_angle + 2.0 * M_PI + closure_comp_angle;
+      stop_print_start_angle_ = stop_print_end_angle_ - stop_delta_angle;
+      print_window_initialized_ = true;
+    }
   }
 
-  if (accumulated_angle_ >= 2.38 * M_PI)
+  if (print_window_initialized_)
   {
+    if (accumulated_angle_ < stop_print_start_angle_)
+    {
+      start_print_ = true;
+      stop_print_ = false;
+    }
+    else
+    {
+      start_print_ = false;
+      stop_print_ = true;
+    }
+
+    if (accumulated_angle_ >= stop_print_end_angle_)
+    {
+      return true;
+    }
+  }
+  else if (accumulated_angle_ >= 2.63 * M_PI)
+  {
+    // 兜底：若打印窗口未初始化，沿用旧完成逻辑避免卡死。
     start_print_ = false;
     stop_print_ = true;
     return true;
