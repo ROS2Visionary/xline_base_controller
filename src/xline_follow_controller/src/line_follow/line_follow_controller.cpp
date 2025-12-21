@@ -35,7 +35,6 @@ LineFollowController::LineFollowController()
   , back_follow_(false)
   , m_work_state_(true)
   , short_path_(false)
-  , reset_required_(false)
   , decel_phase_entered_(false)
   , current_waypoint_index_(0)
   , path_length_(0.0)
@@ -109,7 +108,6 @@ void LineFollowController::updateParameters()
     params_.velocity.decel_min = parser.getParameter<double>("velocity.decel_min");
     params_.velocity.walk_max = parser.getParameter<double>("velocity.walk_max");
     params_.velocity.work_max = parser.getParameter<double>("velocity.work_max");
-    params_.velocity.work_short = parser.getParameter<double>("velocity.work_short");
     params_.velocity.alignment = parser.getParameter<double>("velocity.alignment");
     params_.velocity.acce_factor = parser.getParameter<double>("velocity.acce_factor");
     params_.velocity.accel_sigmoid_k = parser.getParameter<double>("velocity.accel_sigmoid_k");
@@ -123,11 +121,9 @@ void LineFollowController::updateParameters()
     // 距离参数 (distance.*)
     params_.distance.alignment = parser.getParameter<double>("distance.alignment");
     params_.distance.deceleration = parser.getParameter<double>("distance.deceleration");
-    params_.distance.non_work_deceleration = parser.getParameter<double>("distance.non_work_deceleration");
     params_.distance.acceleration = parser.getParameter<double>("distance.acceleration");
     params_.distance.lookahead = parser.getParameter<double>("distance.lookahead");
     params_.distance.waypoint_tolerance = parser.getParameter<double>("distance.waypoint_tolerance");
-    params_.distance.mini_path = parser.getParameter<double>("distance.mini_path");
 
     // ================================
     // 5. 原地旋转参数
@@ -210,12 +206,12 @@ void LineFollowController::syncRuntimeParams()
   alpha_ = following_params_.filter_alpha;
 
   // 二阶平滑器
-  angular_smoother_.setParameters(following_params_.smoother_freq, following_params_.smoother_damping);
+  angular_smoother_.setParameters(alignment_params_.smoother_freq, alignment_params_.smoother_damping);
 
   // PID控制器
   if (heading_pid_controller_)
   {
-    heading_pid_controller_->setGains(followingPID().kp, followingPID().ki, followingPID().kd);
+    heading_pid_controller_->setGains(alignmentPID().kp, alignmentPID().ki, alignmentPID().kd);
   }
 }
 
@@ -237,7 +233,6 @@ void LineFollowController::resetControllerState()
   current_state_ = ControlState::IDLE;
   goal_reached_ = false;
   back_follow_ = false;
-  reset_required_ = false;
   waiting_ = false;
   current_waypoint_index_ = 0;
   current_linear_speed_ = 0.0;
@@ -278,7 +273,7 @@ void LineFollowController::updateStartLineAlignment(double robot_x, double robot
 
   const double cross_track_error = computeCrossTrackError(robot_x, robot_y);
 
-  double path_ideal_yaw = tf2::getYaw(start_pose_.pose.orientation);
+  double path_ideal_yaw = tf2::getYaw(original_start_pose_.pose.orientation);
   if (back_follow_)
   {
     path_ideal_yaw = normalizeAngle(path_ideal_yaw + M_PI);
@@ -301,6 +296,9 @@ void LineFollowController::updateStartLineAlignment(double robot_x, double robot
   {
     start_line_aligned_ = true;
     accel_start_distance_to_start_ = distance_to_start;
+
+    heading_pid_controller_->setGains(followingPID().kp, followingPID().ki, followingPID().kd);
+    angular_smoother_.setParameters(following_params_.smoother_freq, following_params_.smoother_damping);
 
     if (heading_pid_controller_)
     {
@@ -346,30 +344,29 @@ bool LineFollowController::setPlan(const nav_msgs::msg::Path& orig_global_plan)
   LOG_INFO("接收到路径: 点数=%zu, 总长度=%.3fm", orig_global_plan.poses.size(), raw_path_length);
 
   global_plan_ = orig_global_plan;
-  start_pose_ = global_plan_.poses.front();
   original_target_pose_ = global_plan_.poses.back();
   original_start_pose_ = global_plan_.poses.front();
   target_pose_ = global_plan_.poses.back();
   end_pose_ = target_pose_;
 
-  double dx = target_pose_.pose.position.x - start_pose_.pose.position.x;
-  double dy = target_pose_.pose.position.y - start_pose_.pose.position.y;
+  double dx = target_pose_.pose.position.x - original_start_pose_.pose.position.x;
+  double dy = target_pose_.pose.position.y - original_start_pose_.pose.position.y;
   original_path_length_ = std::sqrt(dx * dx + dy * dy);
 
   if (isDebugEnabled())
   {
     original_path_.clear();
     filtered_path_.clear();
-    original_path_.push_back({ start_pose_.pose.position.x, start_pose_.pose.position.y });
+    original_path_.push_back({ original_start_pose_.pose.position.x, original_start_pose_.pose.position.y });
     original_path_.push_back({ target_pose_.pose.position.x, target_pose_.pose.position.y });
-    filtered_path_.push_back({ start_pose_.pose.position.x, start_pose_.pose.position.y });
+    filtered_path_.push_back({ original_start_pose_.pose.position.x, original_start_pose_.pose.position.y });
     filtered_path_.push_back({ target_pose_.pose.position.x, target_pose_.pose.position.y });
   }
 
   extendPath();
 
-  dx = target_pose_.pose.position.x - start_pose_.pose.position.x;
-  dy = target_pose_.pose.position.y - start_pose_.pose.position.y;
+  dx = target_pose_.pose.position.x - original_start_pose_.pose.position.x;
+  dy = target_pose_.pose.position.y - original_start_pose_.pose.position.y;
   path_length_ = std::sqrt(dx * dx + dy * dy);
 
   updateParameters();
@@ -746,10 +743,6 @@ double LineFollowController::computeLinearSpeed(double distance_to_target, doubl
   prev_speed = target_speed;
   current_linear_speed_ = target_speed;
 
-  if (path_length_ < miniPathDist())
-  {
-    current_linear_speed_ = runtime_accel_min_vel_;
-  }
 
   return current_linear_speed_;
 }
@@ -771,15 +764,6 @@ double LineFollowController::computeAngularVelocity(double yaw_error, double dt,
 
   if (heading_pid_controller_)
   {
-    if (is_alignment_phase)
-    {
-      heading_pid_controller_->setGains(alignmentPID().kp, alignmentPID().ki, alignmentPID().kd);
-    }
-    else
-    {
-      heading_pid_controller_->setGains(followingPID().kp, followingPID().ki, followingPID().kd);
-    }
-
     heading_pid_controller_->setOutputLimits(-current_max_angular_vel, current_max_angular_vel);
   }
 
@@ -796,11 +780,14 @@ double LineFollowController::computeAngularVelocity(double yaw_error, double dt,
   }
 
   const double alpha = is_alignment_phase ? alignment_params_.filter_alpha : following_params_.filter_alpha;
+
   double smoothed_angular_vel = angular_vel_hampel_filter_.filter(raw_angular_velocity);
-  smoothed_angular_vel = alpha * smoothed_angular_vel + (1 - alpha) * prev_smoothed_angular_velocity_;
-  prev_smoothed_angular_velocity_ = smoothed_angular_vel;
 
   smoothed_angular_vel = angular_smoother_.filter(smoothed_angular_vel, dt);
+
+  smoothed_angular_vel = alpha * smoothed_angular_vel + (1 - alpha) * prev_smoothed_angular_velocity_;
+
+  prev_smoothed_angular_velocity_ = smoothed_angular_vel;
 
   prev_angular_velocity_ = smoothed_angular_vel;
   return smoothed_angular_vel;
@@ -850,8 +837,8 @@ bool LineFollowController::isBeyondGoal(double robot_x, double robot_y)
   // 判断是否已经“越过”终点：
   // - 沿起点到终点的方向做投影，看投影长度是否超过整条路径；
   // - 或者距离终点已经小于 waypoint 容差，也认为到达/略过了终点。
-  double path_dx = original_target_pose_.pose.position.x - start_pose_.pose.position.x;
-  double path_dy = original_target_pose_.pose.position.y - start_pose_.pose.position.y;
+  double path_dx = original_target_pose_.pose.position.x - original_start_pose_.pose.position.x;
+  double path_dy = original_target_pose_.pose.position.y - original_start_pose_.pose.position.y;
   double path_length = std::sqrt(path_dx * path_dx + path_dy * path_dy);
 
   if (path_length == 0.0)
@@ -862,8 +849,8 @@ bool LineFollowController::isBeyondGoal(double robot_x, double robot_y)
     return (distance_to_goal <= waypointTolerance());
   }
 
-  double robot_dx = robot_x - start_pose_.pose.position.x;
-  double robot_dy = robot_y - start_pose_.pose.position.y;
+  double robot_dx = robot_x - original_start_pose_.pose.position.x;
+  double robot_dy = robot_y - original_start_pose_.pose.position.y;
 
   double dot_product = robot_dx * path_dx + robot_dy * path_dy;
   double proj_length = dot_product / path_length;
@@ -983,8 +970,8 @@ void LineFollowController::extendPath()
     return;
   }
 
-  double dx = target_pose_.pose.position.x - start_pose_.pose.position.x;
-  double dy = target_pose_.pose.position.y - start_pose_.pose.position.y;
+  double dx = target_pose_.pose.position.x - original_start_pose_.pose.position.x;
+  double dy = target_pose_.pose.position.y - original_start_pose_.pose.position.y;
 
   double norm = std::sqrt(dx * dx + dy * dy);
   double unit_dx = dx / norm;
@@ -1058,9 +1045,9 @@ void LineFollowController::handlePathFollowing(double robot_x, double robot_y,
   double original_start_dy = original_start_pose_.pose.position.y - robot_y;
   double distance_to_original_start = std::sqrt(original_start_dx * original_start_dx + original_start_dy * original_start_dy);
 
-  double start_dx = start_pose_.pose.position.x - robot_x;
-  double start_dy = start_pose_.pose.position.y - robot_y;
-  double distance_to_start = std::sqrt(start_dx * start_dx + start_dy * start_dy);
+  // double start_dx = start_pose_.pose.position.x - robot_x;
+  // double start_dy = start_pose_.pose.position.y - robot_y;
+  // double distance_to_start = std::sqrt(start_dx * start_dx + start_dy * start_dy);
 
   geometry_msgs::msg::PoseStamped target_waypoint = getNextWaypoint(robot_x, robot_y);
 
@@ -1079,14 +1066,14 @@ void LineFollowController::handlePathFollowing(double robot_x, double robot_y,
   double path_direction_yaw = std::atan2(path_dy, path_dx);
   double final_target_yaw = path_direction_yaw;
 
-  double path_ideal_yaw = tf2::getYaw(start_pose_.pose.orientation);
+  double path_ideal_yaw = tf2::getYaw(original_start_pose_.pose.orientation);
   if (back_follow_)
   {
     path_ideal_yaw += M_PI;
     path_ideal_yaw = std::atan2(std::sin(path_ideal_yaw), std::cos(path_ideal_yaw));
   }
 
-  updateStartLineAlignment(robot_x, robot_y, robot_yaw_, distance_to_start);
+  updateStartLineAlignment(robot_x, robot_y, robot_yaw_, distance_to_original_start);
 
   double current_heading_weight = 0.0;
   double target_heading_weight = 0.0;
@@ -1120,7 +1107,7 @@ void LineFollowController::handlePathFollowing(double robot_x, double robot_y,
     stop_print = true;
   }
   
-  double linear_speed = computeLinearSpeed(distance_to_original_target, distance_to_start);
+  double linear_speed = computeLinearSpeed(distance_to_original_target, distance_to_original_start);
 
   current_pose_.pose.position.x = robot_x;
   current_pose_.pose.position.y = robot_y;
@@ -1128,7 +1115,7 @@ void LineFollowController::handlePathFollowing(double robot_x, double robot_y,
   double yaw_error = angles::shortest_angular_distance(robot_yaw_, final_target_yaw);
   double dt = 1.0 / 18.0;
   double angular_output =
-      computeAngularVelocity(yaw_error, dt, distance_to_original_target, distance_to_start, linear_speed);
+      computeAngularVelocity(yaw_error, dt, distance_to_original_target, distance_to_original_start, linear_speed);
 
   current_angular_speed_ = angular_output;
 
@@ -1204,22 +1191,6 @@ bool LineFollowController::computeVelocityCommands(const geometry_msgs::msg::Pos
     initializeFilters();
   }
 
-  if (reset_required_)
-  {
-    double robot_x = pose.pose.position.x;
-    double robot_y = pose.pose.position.y;
-
-    if (!short_path_)
-    {
-      start_pose_ = getNextWaypoint(robot_x, robot_y);
-      double dx = start_pose_.pose.position.x - target_pose_.pose.position.x;
-      double dy = start_pose_.pose.position.y - target_pose_.pose.position.y;
-      path_length_ = std::sqrt(dx * dx + dy * dy);
-    }
-
-    reset_required_ = false;
-  }
-
   if (waiting_)
   {
     if (handleWaitingState(cmd_vel))
@@ -1251,7 +1222,7 @@ bool LineFollowController::computeVelocityCommands(const geometry_msgs::msg::Pos
   {
     case ControlState::ALIGNING_START:
     {
-      if (handleStateAlignment(robot_yaw_, start_pose_.pose.orientation, cmd_vel, back_follow_))
+      if (handleStateAlignment(robot_yaw_, original_start_pose_.pose.orientation, cmd_vel, back_follow_))
       {
         current_state_ = ControlState::FOLLOWING_PATH;
       }

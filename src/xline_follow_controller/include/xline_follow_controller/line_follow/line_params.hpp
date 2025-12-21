@@ -38,7 +38,6 @@ struct LineVelocityParams
   double decel_min = 0.03;           ///< 减速时最小线速度 [m/s]
   double walk_max = 0.35;            ///< 步行模式最大速度 [m/s]
   double work_max = 0.35;            ///< 工作模式最大速度 [m/s]
-  double work_short = 0.2;           ///< 短路径工作速度 [m/s]
   double alignment = 0.05;           ///< 对齐阶段速度 [m/s]
   // 调速参数
   double acce_factor = 0.0005;       ///< 加速因子
@@ -53,11 +52,9 @@ struct LineDistanceParams
 {
   double alignment = 0.08;           ///< 对齐距离阈值 [m]
   double deceleration = 0.3;         ///< 减速距离（工作模式）[m]
-  double non_work_deceleration = 0.4;///< 减速距离（非工作模式）[m]
   double acceleration = 0.15;        ///< 加速阶段距离 [m]
   double lookahead = 0.25;           ///< 前瞻距离 [m]
   double waypoint_tolerance = 0.005; ///< 路径点容差 [m]
-  double mini_path = 0.3;            ///< 最小路径距离 [m]
 };
 
 // 原地旋转参数 (rotation.*)

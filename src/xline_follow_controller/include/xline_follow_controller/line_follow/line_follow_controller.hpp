@@ -99,7 +99,6 @@ private:
   bool back_follow_;                  ///< 是否后退模式
   bool m_work_state_;                 ///< 工作状态（影响最大速度）
   bool short_path_;                   ///< 是否为短路径
-  bool reset_required_;               ///< 是否需要重置
   bool decel_phase_entered_;          ///< 是否已进入减速阶段
 
   // 参数结构体（从YAML加载，只读）
@@ -136,7 +135,6 @@ private:
 
   // 路径和位姿信息
   nav_msgs::msg::Path global_plan_;                       ///< 全局路径
-  geometry_msgs::msg::PoseStamped start_pose_;            ///< 起始位姿
   geometry_msgs::msg::PoseStamped target_pose_;           ///< 目标位姿
   geometry_msgs::msg::PoseStamped end_pose_;              ///< 终点位姿
   geometry_msgs::msg::PoseStamped current_pose_;          ///< 当前位姿
@@ -272,7 +270,7 @@ private:
   // 距离参数
   inline double lookaheadDist() const { return params_.distance.lookahead; }
   inline double waypointTolerance() const { return params_.distance.waypoint_tolerance; }
-  inline double miniPathDist() const { return params_.distance.mini_path; }
+
   
   // 速度调节参数
   inline double acceFactor() const { return params_.velocity.acce_factor; }
