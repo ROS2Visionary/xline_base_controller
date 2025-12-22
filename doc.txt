@@ -59,3 +59,8 @@ ros2 run xline_path_planner planner_node   >/dev/null 2>&1 &
 
 
 lookahead = ref_lookahead × (v/ref_v) × (r/ref_r)^α
+
+
+想“更快回线”：增大 guidance.stanley_k，但同时用 guidance.theta_max 限制上限。
+想“更稳不抖”：增大 guidance.stanley_v0、减小 k，或加大 theta_max 的约束、并确保 max_angular_vel/max_angular_accel 合理。
+如果你的定位横向噪声较大，weighted_yaw 可能更耐受；如果偏线大、需要快速切回线，stanley 通常更占优。

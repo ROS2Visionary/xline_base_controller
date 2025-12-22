@@ -9,9 +9,9 @@ debug:
 # 航向PID控制
 heading_pid:
   alignment:                         # 对齐阶段
-    kp: 1.1
+    kp: 1.0
     ki: 0.0
-    kd: 0.2
+    kd: 0.1
   following:                         # 跟随阶段
     kp: 1.0
     ki: 0.0
@@ -55,11 +55,21 @@ filter:
   angular_hampel_k: 3.0              # Hampel异常值阈值
 
 
+# 起步回线 / 进线制导（决定 handlePathFollowing 里目标航向生成方式）
+guidance:
+  mode: "weighted_yaw"                     # "weighted_yaw" | "stanley" | "hybrid"
+  alignment_mode: "stanley"          # mode=hybrid 时生效：对齐阶段制导
+  following_mode: "weighted_yaw"     # mode=hybrid 时生效：跟随阶段制导
+  stanley_k: 1.0                     # stanley: 增益 k
+  stanley_v0: 0.1                   # stanley: 低速软化项 v0 [m/s]
+  theta_max: 0.25                     # 最大截获角限制 [rad]
+
+
 # 阶段控制参数
 phase:
   alignment:                         # 对齐阶段
     max_angular_vel: 0.08           # 最大角速度 [rad/s]
-    max_angular_accel: 0.05          # 最大角加速度 [rad/s²]
+    max_angular_accel: 0.07          # 最大角加速度 [rad/s²]
     current_heading_weight: 0.0      # 当前航向权重
     target_heading_weight: 1.0       # 目标航向权重
     filter_alpha: 0.8               # 低通滤波系数

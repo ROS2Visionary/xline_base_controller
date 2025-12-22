@@ -105,6 +105,27 @@ struct LinePhaseParams
   LinePhaseConfig following;             ///< 跟随阶段
 };
 
+// 直线路径“回线/进线”制导参数 (guidance.*)
+struct LineGuidanceParams
+{
+  /// 制导模式：
+  /// - weighted_yaw: 现有逻辑（path_ideal_yaw 与 path_direction_yaw 加权）
+  /// - stanley: Stanley 侧向误差制导
+  /// - hybrid: 对齐阶段用 alignment_mode，跟随阶段用 following_mode
+  std::string mode = "weighted_yaw";
+
+  // hybrid 子模式
+  std::string alignment_mode = "stanley";       ///< 对齐阶段制导（默认 stanley）
+  std::string following_mode = "weighted_yaw";  ///< 跟随阶段制导（默认 weighted_yaw）
+
+  // stanley
+  double stanley_k = 1.0;                ///< Stanley 增益 k
+  double stanley_v0 = 0.05;              ///< 低速软化项 v0 [m/s]
+
+  // 限制“截获角”，避免目标航向过于激进
+  double theta_max = 0.7;                ///< 最大截获角 [rad]
+};
+
 // 顶层参数结构体
 struct LineParams
 {
@@ -115,6 +136,7 @@ struct LineParams
   LineRotationParams rotation;           ///< 旋转参数
   LineFilterParams filter;               ///< 滤波器参数
   LinePhaseParams phase;                 ///< 阶段控制参数
+  LineGuidanceParams guidance;           ///< 制导参数（回线/进线）
 };
 
 // 运行时参数（从PhaseConfig展开）

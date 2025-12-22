@@ -12,6 +12,7 @@
 #include <tf2/utils.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <iomanip>
 #include <sstream>
@@ -168,6 +169,42 @@ void LineFollowController::updateParameters()
     params_.phase.following.filter_alpha = parser.getParameter<double>("phase.following.filter_alpha");
     params_.phase.following.smoother_freq = parser.getParameter<double>("phase.following.smoother_freq");
     params_.phase.following.smoother_damping = parser.getParameter<double>("phase.following.smoother_damping");
+
+    // ================================
+    // 8. 制导参数（回线/进线）
+    // ================================
+    if (parser.hasParameter("guidance.mode"))
+    {
+      params_.guidance.mode = parser.getParameter<std::string>("guidance.mode");
+      std::transform(params_.guidance.mode.begin(), params_.guidance.mode.end(), params_.guidance.mode.begin(),
+                     [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    }
+    if (parser.hasParameter("guidance.alignment_mode"))
+    {
+      params_.guidance.alignment_mode = parser.getParameter<std::string>("guidance.alignment_mode");
+      std::transform(params_.guidance.alignment_mode.begin(), params_.guidance.alignment_mode.end(),
+                     params_.guidance.alignment_mode.begin(),
+                     [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    }
+    if (parser.hasParameter("guidance.following_mode"))
+    {
+      params_.guidance.following_mode = parser.getParameter<std::string>("guidance.following_mode");
+      std::transform(params_.guidance.following_mode.begin(), params_.guidance.following_mode.end(),
+                     params_.guidance.following_mode.begin(),
+                     [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    }
+    if (parser.hasParameter("guidance.stanley_k"))
+    {
+      params_.guidance.stanley_k = parser.getParameter<double>("guidance.stanley_k");
+    }
+    if (parser.hasParameter("guidance.stanley_v0"))
+    {
+      params_.guidance.stanley_v0 = parser.getParameter<double>("guidance.stanley_v0");
+    }
+    if (parser.hasParameter("guidance.theta_max"))
+    {
+      params_.guidance.theta_max = parser.getParameter<double>("guidance.theta_max");
+    }
 
     // 同步到运行时变量
     syncRuntimeParams();
@@ -466,7 +503,7 @@ bool LineFollowController::setPlan(const nav_msgs::msg::Path& orig_global_plan)
   resetControllerState();
 
   start_print = false;
-  stop_print = false;
+  stop_print = true;
 
   received_plan_ = true;
   current_state_ = ControlState::ALIGNING_START;
@@ -1087,21 +1124,74 @@ void LineFollowController::handlePathFollowing(double robot_x, double robot_y,
 
   updateStartLineAlignment(robot_x, robot_y, robot_yaw_, distance_to_original_start);
 
-  double current_heading_weight = 0.0;
-  double target_heading_weight = 0.0;
+  double linear_speed = computeLinearSpeed(distance_to_original_target, distance_to_original_start);
 
-  if (start_line_aligned_)
+  const size_t nearest_segment_index = findNearestSegment(robot_x, robot_y);
+  const auto& seg_p1 = global_plan_.poses[nearest_segment_index].pose.position;
+  const auto& seg_p2 = global_plan_.poses[nearest_segment_index + 1].pose.position;
+
+  double seg_dx = seg_p2.x - seg_p1.x;
+  double seg_dy = seg_p2.y - seg_p1.y;
+  if (back_follow_)
   {
-    current_heading_weight = following_params_.current_heading_weight;
-    target_heading_weight = following_params_.target_heading_weight;
+    seg_dx = -seg_dx;
+    seg_dy = -seg_dy;
+  }
+  const double seg_len = std::hypot(seg_dx, seg_dy);
+  const double seg_unit_x = (seg_len > 1e-9) ? (seg_dx / seg_len) : 1.0;
+  const double seg_unit_y = (seg_len > 1e-9) ? (seg_dy / seg_len) : 0.0;
+  const double path_yaw = std::atan2(seg_unit_y, seg_unit_x);
+
+  // 使用“与运动方向一致的法向”计算横向误差（back_follow_ 时符号也会同步翻转）
+  const double seg_nx = -seg_unit_y;
+  const double seg_ny = seg_unit_x;
+  const double rx = robot_x - seg_p1.x;
+  const double ry = robot_y - seg_p1.y;
+  const double cross_track_error = rx * seg_nx + ry * seg_ny;
+
+  const double theta_max = std::max(0.0, params_.guidance.theta_max);
+  const std::string& guidance_mode = params_.guidance.mode;
+  std::string effective_mode = guidance_mode;
+  if (guidance_mode == "hybrid")
+  {
+    effective_mode = start_line_aligned_ ? params_.guidance.following_mode : params_.guidance.alignment_mode;
+  }
+
+  if (effective_mode == "stanley")
+  {
+    const double k = std::max(0.0, params_.guidance.stanley_k);
+    const double v0 = std::max(0.0, params_.guidance.stanley_v0);
+    const double v = std::abs(linear_speed);
+
+    // 注意：这里的 cross_track_error 使用“左法向”（seg_n = (-uy, ux)）定义：
+    // - cross_track_error > 0 表示机器人在路径左侧；
+    // - 为了朝路径收敛，截获角应与横向误差符号相反（否则会越修越偏）。
+    double intercept = std::atan2(-k * cross_track_error, v + v0);
+    if (theta_max > 1e-6)
+    {
+      intercept = std::clamp(intercept, -theta_max, theta_max);
+    }
+    final_target_yaw = normalizeAngle(path_yaw + intercept);
   }
   else
   {
-    current_heading_weight = alignment_params_.current_heading_weight;
-    target_heading_weight = alignment_params_.target_heading_weight;
-  }
+    // 兼容原行为：path_ideal_yaw 与 path_direction_yaw 加权
+    double current_heading_weight = 0.0;
+    double target_heading_weight = 0.0;
 
-  final_target_yaw = path_ideal_yaw * current_heading_weight + path_direction_yaw * target_heading_weight;
+    if (start_line_aligned_)
+    {
+      current_heading_weight = following_params_.current_heading_weight;
+      target_heading_weight = following_params_.target_heading_weight;
+    }
+    else
+    {
+      current_heading_weight = alignment_params_.current_heading_weight;
+      target_heading_weight = alignment_params_.target_heading_weight;
+    }
+
+    final_target_yaw = path_ideal_yaw * current_heading_weight + path_direction_yaw * target_heading_weight;
+  }
 
   if (robot_x == 0.0 || robot_y == 0.0)
   {
@@ -1113,19 +1203,17 @@ void LineFollowController::handlePathFollowing(double robot_x, double robot_y,
     stop_print = false;
   }
 
-  if (distance_to_original_target < 0.033)
+  if (distance_to_original_target < 0.03)
   {
     start_print = false;
     stop_print = true;
   }
-  
-  double linear_speed = computeLinearSpeed(distance_to_original_target, distance_to_original_start);
 
   current_pose_.pose.position.x = robot_x;
   current_pose_.pose.position.y = robot_y;
 
   double yaw_error = angles::shortest_angular_distance(robot_yaw_, final_target_yaw);
-  double dt = 1.0 / 18.0;
+  double dt = getDeltaTime();
   double angular_output =
       computeAngularVelocity(yaw_error, dt, distance_to_original_target, distance_to_original_start, linear_speed);
 
@@ -1144,7 +1232,8 @@ void LineFollowController::handlePathFollowing(double robot_x, double robot_y,
     cmd_vel.twist.linear.x = -cmd_vel.twist.linear.x;
   }
 
-  double cross_track_error = computeCrossTrackError(robot_x, robot_y);
+  // debug 用：与制导一致的横向误差
+  // （此处不再调用 computeCrossTrackError，避免 back_follow_ 时符号不一致）
 
   if (isDebugEnabled())
   {
