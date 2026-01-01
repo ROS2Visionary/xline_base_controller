@@ -37,6 +37,7 @@ LineFollowController::LineFollowController()
   , m_work_state_(true)
   , short_path_(false)
   , decel_phase_entered_(false)
+  , is_transition_path_(false)
   , current_waypoint_index_(0)
   , path_length_(0.0)
   , robot_yaw_(0.0)
@@ -65,6 +66,12 @@ LineFollowController::LineFollowController()
 
 LineFollowController::~LineFollowController()
 {
+}
+
+void LineFollowController::setTransitionPath(bool is_transition)
+{
+  is_transition_path_ = is_transition;
+  LOG_INFO("设置转场路径: %d", is_transition_path_);
 }
 
 
@@ -704,7 +711,7 @@ double LineFollowController::computeLinearSpeed(double distance_to_target, doubl
     // - 一旦 distance_to_start > 0.2m，如果仍未满足加速标准，则维持现有逻辑（对齐段低速），不做额外延后；
     // - 注意：该约束只限制线速度，角速度控制保持原有逻辑。
     constexpr double kMinAccelStartDistance = 0.2;
-    const bool allow_linear_accel_by_distance = (distance_to_start >= kMinAccelStartDistance);
+    const bool allow_linear_accel_by_distance = is_transition_path_ ? true : (distance_to_start >= kMinAccelStartDistance);
 
     if (current_state_ == ControlState::ALIGNING_START || !start_line_aligned_ || !allow_linear_accel_by_distance)
     {
@@ -1198,7 +1205,7 @@ void LineFollowController::handlePathFollowing(double robot_x, double robot_y,
     final_target_yaw = path_ideal_yaw;
   }
 
-  if(distance_to_original_start > 0.145){
+  if(distance_to_original_start > 0.14){
     start_print = true;
     stop_print = false;
   }

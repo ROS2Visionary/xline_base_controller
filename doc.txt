@@ -17,6 +17,7 @@ ros2 service call /motion_control/execute_calibration std_srvs/srv/Trigger
 #  设置工作空间根
 export XLINE_WS_ROOT=/root/xline_ws/xline_base_controller
 
+export XLINE_WS_ROOT=/root/xline_ws/_xline_data_dir
 
   1. 使用指令名称
   source install/setup.sh

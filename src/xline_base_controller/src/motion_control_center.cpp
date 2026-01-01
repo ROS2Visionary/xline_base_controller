@@ -148,400 +148,410 @@ namespace xline
     {
       std::thread{std::bind(&MotionControlCenter::execute, this, goal_handle)}.detach();
     }
+      
 
-    void MotionControlCenter::execute(const std::shared_ptr<GoalHandleExecutePlan> goal_handle)
-    {
-      // 使用 compare_exchange_strong 原子地检查并设置执行标志
-      // 这样可以防止多个 goal 同时通过 handleGoal 检查后并发执行
-      bool expected = false;
-      if (!is_executing_.compare_exchange_strong(expected, true))
-      {
-        // 竞态条件：另一个任务已经开始执行
-        auto result = std::make_shared<ExecutePlan::Result>();
-        result->success = false;
-        result->error_message = "系统忙：另一个任务正在执行中";
-        goal_handle->abort(result);
-        RCLCPP_ERROR(get_logger(), "拒绝执行：检测到并发任务冲突");
-        return;
-      }
-
-      // 使用RAII确保函数退出时清除所有状态标志
-      auto cleanup = [this](void *)
-      {
-        is_executing_.store(false);
-        is_paused_.store(false);  // 防止暂停标志残留
-      };
-      std::unique_ptr<void, decltype(cleanup)> guard(reinterpret_cast<void *>(1), cleanup);
-
-      const auto goal = goal_handle->get_goal();
-      auto feedback = std::make_shared<ExecutePlan::Feedback>();
+    void MotionControlCenter::execute(const std::shared_ptr<GoalHandleExecutePlan> goal_handle){
+      std::this_thread::sleep_for(std::chrono::milliseconds(500));
       auto result = std::make_shared<ExecutePlan::Result>();
-
-      // 初始反馈
-      feedback->current_id = 0;
-      goal_handle->publish_feedback(feedback);
-
-      // 解析JSON字符串
-      Json::CharReaderBuilder reader_builder;
-      Json::Value line;
-      std::string parse_errors;
-      std::istringstream json_stream(goal->plan_json);
-
-      if (!Json::parseFromStream(reader_builder, json_stream, &line, &parse_errors))
-      {
-        result->success = false;
-        result->error_message = "JSON解析失败: " + parse_errors;
-        goal_handle->abort(result);
-        RCLCPP_ERROR(get_logger(), "JSON解析失败：%s", parse_errors.c_str());
-        return;
-      }
-
-      RCLCPP_INFO(get_logger(), "开始执行计划,路径id: %u", line["id"].asUInt());
-
-      // 支持取消：收到取消则返回 canceled
-      if (goal_handle->is_canceling())
-      {
-        // 停止机器人
-        geometry_msgs::msg::Twist stop;
-        cmd_vel_publisher_->publish(stop);
-
-        // 清理暂停标志
-        is_paused_.store(false);
-
-        result->success = false;
-        result->error_message = "客户端取消执行";
-        goal_handle->canceled(result);
-        RCLCPP_INFO(get_logger(), "目标已取消：plan_uid=%s", goal->plan_uid.c_str());
-        return;
-      }
-
-      current_layer_type = line["type"].asString();
-      uint32_t path_id = line["id"].asUInt();
-      current_layer_id = line["layer_id"].asUInt();
-      bool is_backward = line["backward"].asBool();
-
-      bool is_start_from_robot = current_layer_id == 1000000 ? true : false;
-
-      // 发布反馈 - 只发送current_id
-      feedback->current_id = path_id;
-      goal_handle->publish_feedback(feedback);
-
-      // 在路径配置前检查取消状态，提高取消响应速度
-      if (goal_handle->is_canceling())
-      {
-        geometry_msgs::msg::Twist stop;
-        cmd_vel_publisher_->publish(stop);
-        
-        is_paused_.store(false);
-
-        result->success = false;
-        result->error_message = "任务在路径配置前被取消";
-        goal_handle->canceled(result);
-        RCLCPP_INFO(get_logger(), "目标已取消：plan_uid=%s", goal->plan_uid.c_str());
-        return;
-      }
-
-      // 解析 ink 信息
-      std::string ink_mode = "solid";  // 默认实线模式
-      std::string ink_printer = "center";  // 默认中心打印机
-      std::string ink_content = "";  // 文字内容（仅 text 模式）
-      bool ink_enabled = true;  // 默认启用喷墨
-      
-      if (line.isMember("ink") && line["ink"].isObject())
-      {
-        const Json::Value& ink = line["ink"];
-        if (ink.isMember("enabled"))
-        {
-          ink_enabled = ink["enabled"].asBool();
-        }
-        if (ink.isMember("mode"))
-        {
-          ink_mode = ink["mode"].asString();
-        }
-        if (ink.isMember("printer"))
-        {
-          ink_printer = ink["printer"].asString();
-        }
-        if (ink.isMember("content"))
-        {
-          ink_content = ink["content"].asString();
-        }
-        
-        RCLCPP_INFO(get_logger(), "[id=%u] ink信息: enabled=%s, mode=%s, printer=%s%s", 
-                    path_id,
-                    ink_enabled ? "true" : "false",
-                    ink_mode.c_str(),
-                    ink_printer.c_str(),
-                    ink_mode == "text" ? (", content=" + ink_content).c_str() : "");
-      }
-
-      // 获取 layer 信息，判断是否为 TRANSITION 路径
-      std::string layer_name = "";
-      if (line.isMember("layer"))
-      {
-        layer_name = line["layer"].asString();
-      }
-      bool is_transition = (layer_name == "TRANSITION");
-
-      // ========== 姿态校正计时逻辑 ==========
-      // 需求：在持续接收任务过程中，以 60s 为周期进行一次姿态校正。
-      // 在每次接收到路径 action 时，如果：
-      //   1) 当前路径为转场路径（TRANSITION），且
-      //   2) 距离上一次姿态校正已超过 60s，或尚未进行过姿态校正
-      // 则先执行一次姿态校正，待校正完成后再继续路径跟随。
-      if (is_transition)
-      {
-        bool need_calibration = false;
-        {
-          std::lock_guard<std::mutex> lock(calibration_mutex_);
-          if (!has_last_calibration_time_)
-          {
-            // 从未进行过姿态校正：在首个转场路径前进行一次校正
-            need_calibration = true;
-          }
-          else
-          {
-            auto now = this->now();
-            auto elapsed = now - last_calibration_time_;
-            if (elapsed.seconds() >= 60.0)
-            {
-              need_calibration = true;
-            }
-          }
-        }
-
-        if (need_calibration)
-        {
-          // 在执行校正前再次检查是否已取消
-          if (goal_handle->is_canceling())
-          {
-            geometry_msgs::msg::Twist stop;
-            cmd_vel_publisher_->publish(stop);
-
-            is_paused_.store(false);
-
-            result->success = false;
-            result->error_message = "任务在姿态校正前被取消";
-            goal_handle->canceled(result);
-            RCLCPP_INFO(get_logger(), "目标已取消：plan_uid=%s", goal->plan_uid.c_str());
-            return;
-          }
-
-          RCLCPP_INFO(get_logger(),
-                      "[id=%u] 转场路径前触发姿态校正：距离上次校正已超过60秒或尚未校正",
-                      path_id);
-
-          // 使用与姿态校正服务相同的参数
-          double calibration_velocity = 0.05;  // m/s
-          double calibration_duration = 3.0;   // 秒
-          bool calibration_success = executeLocalizationCalibration(calibration_velocity, calibration_duration);
-
-          if (!calibration_success)
-          {
-            result->success = false;
-            result->error_message = "转场路径前姿态校正失败";
-            goal_handle->abort(result);
-            RCLCPP_ERROR(get_logger(), "转场路径前姿态校正失败：plan_uid=%s", goal->plan_uid.c_str());
-            return;
-          }
-        }
-      }
-      
-      // 存储 ink 信息到成员变量，供后续使用
-      current_ink_mode_ = ink_mode;
-      current_ink_printer_ = ink_printer;
-      current_ink_content_ = ink_content;
-      current_ink_enabled_ = ink_enabled;
-      is_transition_path_ = is_transition;
-      use_stepper_for_current_path_ = false;
-      current_stepper_motor_id_ = 0;
-      
-      if (is_transition)
-      {
-        RCLCPP_INFO(get_logger(), "[id=%u] TRANSITION路径: ink.mode=%s, ink.printer=%s%s", 
-                    path_id, ink_mode.c_str(), ink_printer.c_str(),
-                    ink_mode == "text" ? (", ink.content=" + ink_content).c_str() : "");
-        
-        // ========== 关键逻辑：在 transition 路径中预设文字 ==========
-        // 如果是 transition 路径且 ink_mode 为 "text"，需要先设置文字到打印机
-        // 这样在下一条工作路径开始时可以直接开始打印
-        if (ink_mode == "text" && !ink_content.empty())
-        {
-          RCLCPP_INFO(get_logger(), "[id=%u] TRANSITION路径检测到text模式，异步预设文字到打印机 %s", 
-                      path_id, ink_printer.c_str());
-          
-          // 异步调用打印机的 set_text 方法预设文字（不阻塞主线程）
-          auto inkjet_client = inkjet_client_;
-          std::string printer_name = ink_printer;
-          std::string text_content = ink_content;
-          uint32_t log_path_id = path_id;
-          auto logger = get_logger();
-          
-          std::thread([inkjet_client, printer_name, text_content, log_path_id, logger]() {
-            auto [success, message] = inkjet_client->set_text(printer_name, text_content);
-            if (success)
-            {
-              RCLCPP_INFO(logger, "[id=%u] 文字预设成功: printer=%s, text=\"%s\"", 
-                          log_path_id, printer_name.c_str(), text_content.c_str());
-            }
-            else
-            {
-              RCLCPP_ERROR(logger, "[id=%u] 文字预设失败: %s", log_path_id, message.c_str());
-            }
-          }).detach();
-        }
-      }
-
-      // ========== 步进电机控制：非转场路径 + 左/右喷码机 ==========
-      // 需求：在执行非转场路径时，如果是左右喷码机，
-      //      先使对应的喷码机电机 forward，在到达目标后再 reverse。
-      if (!is_transition && ink_enabled &&
-          (ink_printer == "left" || ink_printer == "right"))
-      {
-        current_stepper_motor_id_ = (ink_printer == "left") ? 1 : 2;
-        use_stepper_for_current_path_ = true;
-
-        RCLCPP_INFO(get_logger(),
-                    "[id=%u] 非转场路径，启动步进电机: printer=%s, motor_id=%d, command=forward",
-                    path_id, ink_printer.c_str(), current_stepper_motor_id_);
-
-        // 异步发送 forward 命令，不阻塞主执行线程
-        controlStepperMotor(current_stepper_motor_id_, "forward");
-      }
-
-      // 根据类型提取数据
-      if (current_layer_type == "line" || current_layer_type == "text")
-      {
-        // text 类型与 line 类型使用相同的数据结构（都有 start/end）
-        LineData line_data = extractLineData(line);
-        
-        if (current_layer_type == "text")
-        {
-          // 获取文字内容
-          std::string text_content = "";
-          if (line.isMember("content"))
-          {
-            text_content = line["content"].asString();
-          }
-          RCLCPP_INFO(get_logger(), "[text, id=%u]: 起点(%.2f, %.2f) -> 终点(%.2f, %.2f), 内容=\"%s\"", 
-                      path_id, line_data.start_x, line_data.start_y, line_data.end_x, line_data.end_y,
-                      text_content.c_str());
-        }
-        else
-        {
-          RCLCPP_INFO(get_logger(), "[line, id=%u]: 起点(%.2f, %.2f) -> 终点(%.2f, %.2f)", 
-                      path_id, line_data.start_x, line_data.start_y, line_data.end_x, line_data.end_y);
-        }
-        
-        geometry_msgs::msg::PoseStamped robot_pose;
-        getLatestPose(robot_pose);
-        line_follow_controller_->setPose(robot_pose);
-        if(is_start_from_robot){ // 是否使用机器人位置作为路径的起点
-          
-          line_follow_controller_->setPlan(robot_pose.pose.position.x, robot_pose.pose.position.y, line_data.end_x, line_data.end_y);
-          line_follow_controller_->setBackFollow(is_backward);
-        }else{
-          line_follow_controller_->setPlan(line_data.start_x, line_data.start_y, line_data.end_x, line_data.end_y);
-        }
-        base_follow_controller_ = line_follow_controller_;
-      }
-      else if (current_layer_type == "circle")
-      {
-        CircleData circle_data = extractCircleData(line);
-        RCLCPP_INFO(get_logger(), "[circle, id=%u]: 圆心(%.2f, %.2f), 半径%.2f", path_id, circle_data.center_x,
-                    circle_data.center_y, circle_data.radius);
-
-        geometry_msgs::msg::PoseStamped start_pose;
-        start_pose.pose.position.x = circle_data.start_x;
-        start_pose.pose.position.y = circle_data.start_y;
-        rpp_follow_controller_->setAngleRange(2 * M_PI, 0.0);
-        rpp_follow_controller_->setPlanForCircle(circle_data.center_x, circle_data.center_y, circle_data.radius, start_pose);
-        rpp_follow_controller_->setBackFollow(false);
-        base_follow_controller_ = rpp_follow_controller_;
-      }
-      else if (current_layer_type == "arc")
-      {
-        ArcData arc_data = extractArcData(line);
-        RCLCPP_INFO(get_logger(), "[arc, id=%u]: 圆心(%.2f, %.2f), 半径%.2f, 角度[%.2f, %.2f] rad", path_id,
-                    arc_data.center_x, arc_data.center_y, arc_data.radius, arc_data.start_angle, arc_data.end_angle);
-        geometry_msgs::msg::PoseStamped current_pose;
-        getLatestPose(current_pose);
-
-        rpp_follow_controller_->setAngleRange(arc_data.start_angle, arc_data.end_angle);
-        rpp_follow_controller_->setPlanForCircle(arc_data.center_x, arc_data.center_y, arc_data.radius, current_pose);
-        base_follow_controller_ = rpp_follow_controller_;
-      }
-      else
-      {
-        RCLCPP_WARN(get_logger(), "[id=%u]: 未知类型 %s，跳过", path_id, current_layer_type.c_str());
-      }
-
-      // type 为 text 时，不执行路径跟随，直接返回成功
-      if (current_layer_type == "text")
-      {
-        result->success = true;
-        result->error_message.clear();
-        goal_handle->succeed(result);
-        RCLCPP_INFO(get_logger(), "[text, id=%u]: 文本路径不执行路径跟随，直接返回成功", path_id);
-        return;
-      }
-
-      // ========== 速度限制逻辑 ==========
-      // 当路径模式为 "text" 且不是转场路径时，限制速度为 0.2 m/s
-      if (ink_mode == "text" && !is_transition && base_follow_controller_)
-      {
-        const double text_mode_speed_limit = 0.2;  // 文字喷印模式的速度限制 (m/s)
-        base_follow_controller_->setSpeedLimit(text_mode_speed_limit);
-        RCLCPP_INFO(get_logger(), "[id=%u] text模式非转场路径: 速度限制为 %.2f m/s", 
-                    path_id, text_mode_speed_limit);
-      }
-
-      // 在开始执行控制循环前检查暂停/取消状态，提高响应速度
-      checkPauseState(goal_handle);
-      if (goal_handle->is_canceling())
-      {
-        geometry_msgs::msg::Twist stop;
-        cmd_vel_publisher_->publish(stop);
-
-
-        is_paused_.store(false);
-
-        result->success = false;
-        result->error_message = "任务在控制器初始化后被取消";
-        goal_handle->canceled(result);
-        RCLCPP_INFO(get_logger(), "目标已取消：plan_uid=%s", goal->plan_uid.c_str());
-        return;
-      }
-
-      compute_velocity(goal_handle, result);
-
-
-      // 根据结果和取消状态决定如何结束Action
-      if (goal_handle->is_canceling())
-      {
-        // 取消状态：调用canceled
-        result->success = false;
-        if (result->error_message.empty())
-        {
-          result->error_message = "任务已取消";
-        }
-        goal_handle->canceled(result);
-        RCLCPP_INFO(get_logger(), "目标已取消：plan_uid=%s", goal->plan_uid.c_str());
-      }
-      else if (result->success)
-      {
-        // 成功状态：调用succeed
-        goal_handle->succeed(result);
-        RCLCPP_INFO(get_logger(), "目标执行完成：plan_uid=%s", goal->plan_uid.c_str());
-      }
-      else
-      {
-        // 失败状态：调用abort
-        goal_handle->abort(result);
-        RCLCPP_ERROR(get_logger(), "目标执行失败：plan_uid=%s, 原因: %s",
-                     goal->plan_uid.c_str(), result->error_message.c_str());
-      }
+      result->success = true;
+      result->error_message = "模拟流程";
+      goal_handle->succeed(result);
     }
+
+    // void MotionControlCenter::execute(const std::shared_ptr<GoalHandleExecutePlan> goal_handle)
+    // {
+    //   // 使用 compare_exchange_strong 原子地检查并设置执行标志
+    //   // 这样可以防止多个 goal 同时通过 handleGoal 检查后并发执行
+    //   bool expected = false;
+    //   if (!is_executing_.compare_exchange_strong(expected, true))
+    //   {
+    //     // 竞态条件：另一个任务已经开始执行
+    //     auto result = std::make_shared<ExecutePlan::Result>();
+    //     result->success = false;
+    //     result->error_message = "系统忙：另一个任务正在执行中";
+    //     goal_handle->abort(result);
+    //     RCLCPP_ERROR(get_logger(), "拒绝执行：检测到并发任务冲突");
+    //     return;
+    //   }
+
+    //   // 使用RAII确保函数退出时清除所有状态标志
+    //   auto cleanup = [this](void *)
+    //   {
+    //     is_executing_.store(false);
+    //     is_paused_.store(false);  // 防止暂停标志残留
+    //   };
+    //   std::unique_ptr<void, decltype(cleanup)> guard(reinterpret_cast<void *>(1), cleanup);
+
+    //   const auto goal = goal_handle->get_goal();
+    //   auto feedback = std::make_shared<ExecutePlan::Feedback>();
+    //   auto result = std::make_shared<ExecutePlan::Result>();
+
+    //   // 初始反馈
+    //   feedback->current_id = 0;
+    //   goal_handle->publish_feedback(feedback);
+
+    //   // 解析JSON字符串
+    //   Json::CharReaderBuilder reader_builder;
+    //   Json::Value line;
+    //   std::string parse_errors;
+    //   std::istringstream json_stream(goal->plan_json);
+
+    //   if (!Json::parseFromStream(reader_builder, json_stream, &line, &parse_errors))
+    //   {
+    //     result->success = false;
+    //     result->error_message = "JSON解析失败: " + parse_errors;
+    //     goal_handle->abort(result);
+    //     RCLCPP_ERROR(get_logger(), "JSON解析失败：%s", parse_errors.c_str());
+    //     return;
+    //   }
+
+    //   RCLCPP_INFO(get_logger(), "开始执行计划,路径id: %u", line["id"].asUInt());
+
+    //   // 支持取消：收到取消则返回 canceled
+    //   if (goal_handle->is_canceling())
+    //   {
+    //     // 停止机器人
+    //     geometry_msgs::msg::Twist stop;
+    //     cmd_vel_publisher_->publish(stop);
+
+    //     // 清理暂停标志
+    //     is_paused_.store(false);
+
+    //     result->success = false;
+    //     result->error_message = "客户端取消执行";
+    //     goal_handle->canceled(result);
+    //     RCLCPP_INFO(get_logger(), "目标已取消：plan_uid=%s", goal->plan_uid.c_str());
+    //     return;
+    //   }
+
+    //   current_layer_type = line["type"].asString();
+    //   uint32_t path_id = line["id"].asUInt();
+    //   current_layer_id = line["layer_id"].asUInt();
+    //   bool is_backward = line["backward"].asBool();
+
+    //   bool is_start_from_robot = current_layer_id == 1000000 ? true : false;
+
+    //   // 发布反馈 - 只发送current_id
+    //   feedback->current_id = path_id;
+    //   goal_handle->publish_feedback(feedback);
+
+    //   // 在路径配置前检查取消状态，提高取消响应速度
+    //   if (goal_handle->is_canceling())
+    //   {
+    //     geometry_msgs::msg::Twist stop;
+    //     cmd_vel_publisher_->publish(stop);
+        
+    //     is_paused_.store(false);
+
+    //     result->success = false;
+    //     result->error_message = "任务在路径配置前被取消";
+    //     goal_handle->canceled(result);
+    //     RCLCPP_INFO(get_logger(), "目标已取消：plan_uid=%s", goal->plan_uid.c_str());
+    //     return;
+    //   }
+
+    //   // 解析 ink 信息
+    //   std::string ink_mode = "solid";  // 默认实线模式
+    //   std::string ink_printer = "center";  // 默认中心打印机
+    //   std::string ink_content = "";  // 文字内容（仅 text 模式）
+    //   bool ink_enabled = true;  // 默认启用喷墨
+      
+    //   if (line.isMember("ink") && line["ink"].isObject())
+    //   {
+    //     const Json::Value& ink = line["ink"];
+    //     if (ink.isMember("enabled"))
+    //     {
+    //       ink_enabled = ink["enabled"].asBool();
+    //     }
+    //     if (ink.isMember("mode"))
+    //     {
+    //       ink_mode = ink["mode"].asString();
+    //     }
+    //     if (ink.isMember("printer"))
+    //     {
+    //       ink_printer = ink["printer"].asString();
+    //     }
+    //     if (ink.isMember("content"))
+    //     {
+    //       ink_content = ink["content"].asString();
+    //     }
+        
+    //     RCLCPP_INFO(get_logger(), "[id=%u] ink信息: enabled=%s, mode=%s, printer=%s%s", 
+    //                 path_id,
+    //                 ink_enabled ? "true" : "false",
+    //                 ink_mode.c_str(),
+    //                 ink_printer.c_str(),
+    //                 ink_mode == "text" ? (", content=" + ink_content).c_str() : "");
+    //   }
+
+    //   // 获取 layer 信息，判断是否为 TRANSITION 路径
+    //   std::string layer_name = "";
+    //   if (line.isMember("layer"))
+    //   {
+    //     layer_name = line["layer"].asString();
+    //   }
+    //   bool is_transition = (layer_name == "TRANSITION");
+
+    //   // ========== 姿态校正计时逻辑 ==========
+    //   // 需求：在持续接收任务过程中，以 60s 为周期进行一次姿态校正。
+    //   // 在每次接收到路径 action 时，如果：
+    //   //   1) 当前路径为转场路径（TRANSITION），且
+    //   //   2) 距离上一次姿态校正已超过 60s，或尚未进行过姿态校正
+    //   // 则先执行一次姿态校正，待校正完成后再继续路径跟随。
+    //   if (is_transition)
+    //   {
+    //     bool need_calibration = false;
+    //     {
+    //       std::lock_guard<std::mutex> lock(calibration_mutex_);
+    //       if (!has_last_calibration_time_)
+    //       {
+    //         // 从未进行过姿态校正：在首个转场路径前进行一次校正
+    //         need_calibration = true;
+    //       }
+    //       else
+    //       {
+    //         auto now = this->now();
+    //         auto elapsed = now - last_calibration_time_;
+    //         if (elapsed.seconds() >= 60.0)
+    //         {
+    //           need_calibration = true;
+    //         }
+    //       }
+    //     }
+
+    //     if (need_calibration)
+    //     {
+    //       // 在执行校正前再次检查是否已取消
+    //       if (goal_handle->is_canceling())
+    //       {
+    //         geometry_msgs::msg::Twist stop;
+    //         cmd_vel_publisher_->publish(stop);
+
+    //         is_paused_.store(false);
+
+    //         result->success = false;
+    //         result->error_message = "任务在姿态校正前被取消";
+    //         goal_handle->canceled(result);
+    //         RCLCPP_INFO(get_logger(), "目标已取消：plan_uid=%s", goal->plan_uid.c_str());
+    //         return;
+    //       }
+
+    //       RCLCPP_INFO(get_logger(),
+    //                   "[id=%u] 转场路径前触发姿态校正：距离上次校正已超过60秒或尚未校正",
+    //                   path_id);
+
+    //       // 使用与姿态校正服务相同的参数
+    //       double calibration_velocity = 0.05;  // m/s
+    //       double calibration_duration = 3.0;   // 秒
+    //       bool calibration_success = executeLocalizationCalibration(calibration_velocity, calibration_duration);
+
+    //       if (!calibration_success)
+    //       {
+    //         result->success = false;
+    //         result->error_message = "转场路径前姿态校正失败";
+    //         goal_handle->abort(result);
+    //         RCLCPP_ERROR(get_logger(), "转场路径前姿态校正失败：plan_uid=%s", goal->plan_uid.c_str());
+    //         return;
+    //       }
+    //     }
+    //   }
+      
+    //   // 存储 ink 信息到成员变量，供后续使用
+    //   current_ink_mode_ = ink_mode;
+    //   current_ink_printer_ = ink_printer;
+    //   current_ink_content_ = ink_content;
+    //   current_ink_enabled_ = ink_enabled;
+    //   is_transition_path_ = is_transition;
+    //   use_stepper_for_current_path_ = false;
+    //   current_stepper_motor_id_ = 0;
+      
+    //   if (is_transition)
+    //   {
+    //     RCLCPP_INFO(get_logger(), "[id=%u] TRANSITION路径: ink.mode=%s, ink.printer=%s%s", 
+    //                 path_id, ink_mode.c_str(), ink_printer.c_str(),
+    //                 ink_mode == "text" ? (", ink.content=" + ink_content).c_str() : "");
+        
+    //     // ========== 关键逻辑：在 transition 路径中预设文字 ==========
+    //     // 如果是 transition 路径且 ink_mode 为 "text"，需要先设置文字到打印机
+    //     // 这样在下一条工作路径开始时可以直接开始打印
+    //     if (ink_mode == "text" && !ink_content.empty())
+    //     {
+    //       RCLCPP_INFO(get_logger(), "[id=%u] TRANSITION路径检测到text模式，异步预设文字到打印机 %s", 
+    //                   path_id, ink_printer.c_str());
+          
+    //       // 异步调用打印机的 set_text 方法预设文字（不阻塞主线程）
+    //       auto inkjet_client = inkjet_client_;
+    //       std::string printer_name = ink_printer;
+    //       std::string text_content = ink_content;
+    //       uint32_t log_path_id = path_id;
+    //       auto logger = get_logger();
+          
+    //       std::thread([inkjet_client, printer_name, text_content, log_path_id, logger]() {
+    //         auto [success, message] = inkjet_client->set_text(printer_name, text_content);
+    //         if (success)
+    //         {
+    //           RCLCPP_INFO(logger, "[id=%u] 文字预设成功: printer=%s, text=\"%s\"", 
+    //                       log_path_id, printer_name.c_str(), text_content.c_str());
+    //         }
+    //         else
+    //         {
+    //           RCLCPP_ERROR(logger, "[id=%u] 文字预设失败: %s", log_path_id, message.c_str());
+    //         }
+    //       }).detach();
+    //     }
+    //   }
+
+    //   // ========== 步进电机控制：非转场路径 + 左/右喷码机 ==========
+    //   // 需求：在执行非转场路径时，如果是左右喷码机，
+    //   //      先使对应的喷码机电机 forward，在到达目标后再 reverse。
+    //   if (!is_transition && ink_enabled &&
+    //       (ink_printer == "left" || ink_printer == "right"))
+    //   {
+    //     current_stepper_motor_id_ = (ink_printer == "left") ? 1 : 2;
+    //     use_stepper_for_current_path_ = true;
+
+    //     RCLCPP_INFO(get_logger(),
+    //                 "[id=%u] 非转场路径，启动步进电机: printer=%s, motor_id=%d, command=forward",
+    //                 path_id, ink_printer.c_str(), current_stepper_motor_id_);
+
+    //     // 异步发送 forward 命令，不阻塞主执行线程
+    //     controlStepperMotor(current_stepper_motor_id_, "forward");
+    //   }
+
+    //   // 根据类型提取数据
+    //   if (current_layer_type == "line" || current_layer_type == "text")
+    //   {
+    //     // text 类型与 line 类型使用相同的数据结构（都有 start/end）
+    //     LineData line_data = extractLineData(line);
+        
+    //     if (current_layer_type == "text")
+    //     {
+    //       // 获取文字内容
+    //       std::string text_content = "";
+    //       if (line.isMember("content"))
+    //       {
+    //         text_content = line["content"].asString();
+    //       }
+    //       RCLCPP_INFO(get_logger(), "[text, id=%u]: 起点(%.2f, %.2f) -> 终点(%.2f, %.2f), 内容=\"%s\"", 
+    //                   path_id, line_data.start_x, line_data.start_y, line_data.end_x, line_data.end_y,
+    //                   text_content.c_str());
+    //     }
+    //     else
+    //     {
+    //       RCLCPP_INFO(get_logger(), "[line, id=%u]: 起点(%.2f, %.2f) -> 终点(%.2f, %.2f)", 
+    //                   path_id, line_data.start_x, line_data.start_y, line_data.end_x, line_data.end_y);
+    //     }
+        
+    //     geometry_msgs::msg::PoseStamped robot_pose;
+    //     getLatestPose(robot_pose);
+    //     line_follow_controller_->setPose(robot_pose);
+    //     line_follow_controller_->setTransitionPath(is_transition);
+    //     if(is_start_from_robot){ // 是否使用机器人位置作为路径的起点
+          
+    //       line_follow_controller_->setPlan(robot_pose.pose.position.x, robot_pose.pose.position.y, line_data.end_x, line_data.end_y);
+    //       line_follow_controller_->setBackFollow(is_backward);
+    //     }else{
+    //       line_follow_controller_->setPlan(line_data.start_x, line_data.start_y, line_data.end_x, line_data.end_y);
+    //     }
+    //     base_follow_controller_ = line_follow_controller_;
+    //   }
+    //   else if (current_layer_type == "circle")
+    //   {
+    //     CircleData circle_data = extractCircleData(line);
+    //     RCLCPP_INFO(get_logger(), "[circle, id=%u]: 圆心(%.2f, %.2f), 半径%.2f", path_id, circle_data.center_x,
+    //                 circle_data.center_y, circle_data.radius);
+
+    //     geometry_msgs::msg::PoseStamped start_pose;
+    //     start_pose.pose.position.x = circle_data.start_x;
+    //     start_pose.pose.position.y = circle_data.start_y;
+    //     rpp_follow_controller_->setAngleRange(2 * M_PI, 0.0);
+    //     rpp_follow_controller_->setPlanForCircle(circle_data.center_x, circle_data.center_y, circle_data.radius, start_pose);
+    //     rpp_follow_controller_->setBackFollow(false);
+    //     base_follow_controller_ = rpp_follow_controller_;
+    //   }
+    //   else if (current_layer_type == "arc")
+    //   {
+    //     ArcData arc_data = extractArcData(line);
+    //     RCLCPP_INFO(get_logger(), "[arc, id=%u]: 圆心(%.2f, %.2f), 半径%.2f, 角度[%.2f, %.2f] rad", path_id,
+    //                 arc_data.center_x, arc_data.center_y, arc_data.radius, arc_data.start_angle, arc_data.end_angle);
+    //     geometry_msgs::msg::PoseStamped current_pose;
+    //     getLatestPose(current_pose);
+
+    //     rpp_follow_controller_->setAngleRange(arc_data.start_angle, arc_data.end_angle);
+    //     rpp_follow_controller_->setPlanForCircle(arc_data.center_x, arc_data.center_y, arc_data.radius, current_pose);
+    //     base_follow_controller_ = rpp_follow_controller_;
+    //   }
+    //   else
+    //   {
+    //     RCLCPP_WARN(get_logger(), "[id=%u]: 未知类型 %s，跳过", path_id, current_layer_type.c_str());
+    //   }
+
+    //   // type 为 text 时，不执行路径跟随，直接返回成功
+    //   if (current_layer_type == "text")
+    //   {
+    //     result->success = true;
+    //     result->error_message.clear();
+    //     goal_handle->succeed(result);
+    //     RCLCPP_INFO(get_logger(), "[text, id=%u]: 文本路径不执行路径跟随，直接返回成功", path_id);
+    //     return;
+    //   }
+
+    //   // ========== 速度限制逻辑 ==========
+    //   // 当路径模式为 "text" 且不是转场路径时，限制速度为 0.2 m/s
+    //   if (ink_mode == "text" && !is_transition && base_follow_controller_)
+    //   {
+    //     const double text_mode_speed_limit = 0.2;  // 文字喷印模式的速度限制 (m/s)
+    //     base_follow_controller_->setSpeedLimit(text_mode_speed_limit);
+    //     RCLCPP_INFO(get_logger(), "[id=%u] text模式非转场路径: 速度限制为 %.2f m/s", 
+    //                 path_id, text_mode_speed_limit);
+    //   }
+
+    //   // 在开始执行控制循环前检查暂停/取消状态，提高响应速度
+    //   checkPauseState(goal_handle);
+    //   if (goal_handle->is_canceling())
+    //   {
+    //     geometry_msgs::msg::Twist stop;
+    //     cmd_vel_publisher_->publish(stop);
+
+
+    //     is_paused_.store(false);
+
+    //     result->success = false;
+    //     result->error_message = "任务在控制器初始化后被取消";
+    //     goal_handle->canceled(result);
+    //     RCLCPP_INFO(get_logger(), "目标已取消：plan_uid=%s", goal->plan_uid.c_str());
+    //     return;
+    //   }
+
+    //   compute_velocity(goal_handle, result);
+
+
+    //   // 根据结果和取消状态决定如何结束Action
+    //   if (goal_handle->is_canceling())
+    //   {
+    //     // 取消状态：调用canceled
+    //     result->success = false;
+    //     if (result->error_message.empty())
+    //     {
+    //       result->error_message = "任务已取消";
+    //     }
+    //     goal_handle->canceled(result);
+    //     RCLCPP_INFO(get_logger(), "目标已取消：plan_uid=%s", goal->plan_uid.c_str());
+    //   }
+    //   else if (result->success)
+    //   {
+    //     // 成功状态：调用succeed
+    //     goal_handle->succeed(result);
+    //     RCLCPP_INFO(get_logger(), "目标执行完成：plan_uid=%s", goal->plan_uid.c_str());
+    //   }
+    //   else
+    //   {
+    //     // 失败状态：调用abort
+    //     goal_handle->abort(result);
+    //     RCLCPP_ERROR(get_logger(), "目标执行失败：plan_uid=%s, 原因: %s",
+    //                  goal->plan_uid.c_str(), result->error_message.c_str());
+    //   }
+    // }
 
     bool MotionControlCenter::compute_velocity(const std::shared_ptr<GoalHandleExecutePlan> goal_handle,
                                                ExecutePlan::Result::SharedPtr result)
@@ -1193,15 +1203,15 @@ namespace xline
       double calibration_duration = 3.0;   // 秒
 
       // 执行姿态校正
-      bool calibration_success = executeLocalizationCalibration(calibration_velocity, calibration_duration);
+      // bool calibration_success = executeLocalizationCalibration(calibration_velocity, calibration_duration);
 
-      if (!calibration_success)
-      {
-        response->success = false;
-        response->message = "姿态校正失败，请查看日志了解详情";
-        RCLCPP_ERROR(get_logger(), " %s", response->message.c_str());
-        return;
-      }
+      // if (!calibration_success)
+      // {
+      //   response->success = false;
+      //   response->message = "姿态校正失败，请查看日志了解详情";
+      //   RCLCPP_ERROR(get_logger(), " %s", response->message.c_str());
+      //   return;
+      // }
 
 
       // 立即返回成功响应（喷码机恢复在后台进行）
