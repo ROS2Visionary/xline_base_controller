@@ -59,6 +59,34 @@ public:
   /// 设置是否启用后退模式（仅记录标志，具体控制由上层处理）
   void setBackFollow(bool enable);
 
+  /// 设置 Spline 路径
+  /// @param vertices 样条控制点列表 (x, y) 单位：米
+  /// @param degree 样条阶数
+  /// @param start_x 起点X坐标（米）
+  /// @param start_y 起点Y坐标（米）
+  /// @param end_x 终点X坐标（米）
+  /// @param end_y 终点Y坐标（米）
+  /// @return 是否成功设置路径
+  bool setSplinePath(const std::vector<std::pair<double, double>>& vertices,
+                     int degree,
+                     double start_x, double start_y,
+                     double end_x, double end_y);
+
+  /// 设置 Ellipse 路径
+  /// @param center_x 椭圆中心X坐标（米）
+  /// @param center_y 椭圆中心Y坐标（米）
+  /// @param major_axis_x 主轴向量X分量（米）
+  /// @param major_axis_y 主轴向量Y分量（米）
+  /// @param ratio 短轴/长轴比例
+  /// @param rotation 旋转角度（度）
+  /// @param start_angle 起始角度（度）
+  /// @param end_angle 结束角度（度）
+  /// @return 是否成功设置路径
+  bool setEllipsePath(double center_x, double center_y,
+                      double major_axis_x, double major_axis_y,
+                      double ratio, double rotation,
+                      double start_angle, double end_angle);
+
 private:
   /// 与 YAML 中结构对应的策略参数（目标、靠近约束等）
   RPPPathStrategyParams params_;    ///< 策略参数

@@ -71,6 +71,18 @@ public:
   bool setPlanForCircle(double circle_center_x, double circle_center_y, double circle_radius,
                         const geometry_msgs::msg::PoseStamped& robot_pose);
 
+  /// 设置 Spline 路径（使用 CurvePathStrategy）
+  bool setPlanForSpline(const std::vector<std::pair<double, double>>& vertices,
+                        int degree,
+                        double start_x, double start_y,
+                        double end_x, double end_y);
+
+  /// 设置 Ellipse 路径（使用 CurvePathStrategy）
+  bool setPlanForEllipse(double center_x, double center_y,
+                         double major_axis_x, double major_axis_y,
+                         double ratio, double rotation,
+                         double start_angle, double end_angle);
+
   /// 设置全局路径（曲线路径）。
   bool setPlan(const nav_msgs::msg::Path& orig_global_plan);
 

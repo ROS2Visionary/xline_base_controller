@@ -481,6 +481,38 @@ namespace xline
         rpp_follow_controller_->setPlanForCircle(arc_data.center_x, arc_data.center_y, arc_data.radius, current_pose);
         base_follow_controller_ = rpp_follow_controller_;
       }
+      else if (current_layer_type == "spline")
+      {
+        SplineData spline_data = extractSplineData(line);
+        RCLCPP_INFO(get_logger(), "[spline, id=%u]: 控制点数=%zu, 起点(%.2f, %.2f) -> 终点(%.2f, %.2f)",
+                    path_id, spline_data.vertices.size(), spline_data.start_x, spline_data.start_y,
+                    spline_data.end_x, spline_data.end_y);
+
+        // 使用 RPP 控制器的 setPlanForSpline 方法设置 Spline 路径
+        // 路径生成由 CurvePathStrategy 内部完成
+        rpp_follow_controller_->setPlanForSpline(spline_data.vertices, spline_data.degree,
+                                                  spline_data.start_x, spline_data.start_y,
+                                                  spline_data.end_x, spline_data.end_y);
+        rpp_follow_controller_->setBackFollow(is_backward);
+        base_follow_controller_ = rpp_follow_controller_;
+      }
+      else if (current_layer_type == "ellipse")
+      {
+        EllipseData ellipse_data = extractEllipseData(line);
+        RCLCPP_INFO(get_logger(), "[ellipse, id=%u]: 中心(%.2f, %.2f), 主轴(%.2f, %.2f), 比例=%.2f, 角度[%.2f, %.2f]度",
+                    path_id, ellipse_data.center_x, ellipse_data.center_y,
+                    ellipse_data.major_axis_x, ellipse_data.major_axis_y,
+                    ellipse_data.ratio, ellipse_data.start_angle, ellipse_data.end_angle);
+
+        // 使用 RPP 控制器的 setPlanForEllipse 方法设置 Ellipse 路径
+        // 路径生成由 CurvePathStrategy 内部完成
+        rpp_follow_controller_->setPlanForEllipse(ellipse_data.center_x, ellipse_data.center_y,
+                                                   ellipse_data.major_axis_x, ellipse_data.major_axis_y,
+                                                   ellipse_data.ratio, ellipse_data.rotation,
+                                                   ellipse_data.start_angle, ellipse_data.end_angle);
+        rpp_follow_controller_->setBackFollow(is_backward);
+        base_follow_controller_ = rpp_follow_controller_;
+      }
       else
       {
         RCLCPP_WARN(get_logger(), "[id=%u]: 未知类型 %s，跳过", path_id, current_layer_type.c_str());
@@ -883,6 +915,75 @@ namespace xline
 
       RCLCPP_DEBUG(get_logger(), "提取Arc数据: 圆心(%.2f, %.2f), 半径%.2f, 起始角%.2f rad, 结束角%.2f rad", data.center_x,
                    data.center_y, data.radius, data.start_angle, data.end_angle);
+      return data;
+    }
+
+    /**
+     * 提取spline数据
+     * spline包含: vertices(控制点数组), degree, start{x,y}, end{x,y}
+     */
+    MotionControlCenter::SplineData MotionControlCenter::extractSplineData(const Json::Value &spline_obj)
+    {
+      SplineData data;
+
+      // 提取控制点
+      if (spline_obj.isMember("vertices") && spline_obj["vertices"].isArray())
+      {
+        const Json::Value& vertices = spline_obj["vertices"];
+        for (Json::ArrayIndex i = 0; i < vertices.size(); ++i)
+        {
+          double x = vertices[i]["x"].asDouble() / 1000.0;  // 转换为米
+          double y = vertices[i]["y"].asDouble() / 1000.0;
+          data.vertices.push_back(std::make_pair(x, y));
+        }
+      }
+
+      // 提取阶数
+      data.degree = spline_obj.isMember("degree") ? spline_obj["degree"].asInt() : 3;
+
+      // 提取起点和终点
+      data.start_x = spline_obj["start"]["x"].asDouble() / 1000.0;
+      data.start_y = spline_obj["start"]["y"].asDouble() / 1000.0;
+      data.end_x = spline_obj["end"]["x"].asDouble() / 1000.0;
+      data.end_y = spline_obj["end"]["y"].asDouble() / 1000.0;
+
+      RCLCPP_DEBUG(get_logger(), "提取Spline数据: 控制点数=%zu, 阶数=%d, 起点(%.2f, %.2f), 终点(%.2f, %.2f)",
+                   data.vertices.size(), data.degree, data.start_x, data.start_y, data.end_x, data.end_y);
+      return data;
+    }
+
+    /**
+     * 提取ellipse数据
+     * ellipse包含: center{x,y}, major_axis{x,y}, ratio, rotation, start_angle, end_angle
+     */
+    MotionControlCenter::EllipseData MotionControlCenter::extractEllipseData(const Json::Value &ellipse_obj)
+    {
+      EllipseData data;
+
+      // 提取中心点
+      data.center_x = ellipse_obj["center"]["x"].asDouble() / 1000.0;
+      data.center_y = ellipse_obj["center"]["y"].asDouble() / 1000.0;
+
+      // 提取主轴向量
+      data.major_axis_x = ellipse_obj["major_axis"]["x"].asDouble() / 1000.0;
+      data.major_axis_y = ellipse_obj["major_axis"]["y"].asDouble() / 1000.0;
+
+      // 提取比例和旋转角度
+      data.ratio = ellipse_obj["ratio"].asDouble();
+      data.rotation = ellipse_obj["rotation"].asDouble();
+
+      // 提取起始和结束角度
+      data.start_angle = ellipse_obj["start_angle"].asDouble();
+      data.end_angle = ellipse_obj["end_angle"].asDouble();
+
+      // 提取起点和终点
+      data.start_x = ellipse_obj["start"]["x"].asDouble() / 1000.0;
+      data.start_y = ellipse_obj["start"]["y"].asDouble() / 1000.0;
+      data.end_x = ellipse_obj["end"]["x"].asDouble() / 1000.0;
+      data.end_y = ellipse_obj["end"]["y"].asDouble() / 1000.0;
+
+      RCLCPP_DEBUG(get_logger(), "提取Ellipse数据: 中心(%.2f, %.2f), 主轴(%.2f, %.2f), 比例=%.2f, 旋转=%.2f度",
+                   data.center_x, data.center_y, data.major_axis_x, data.major_axis_y, data.ratio, data.rotation);
       return data;
     }
 

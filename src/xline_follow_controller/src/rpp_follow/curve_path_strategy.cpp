@@ -170,6 +170,174 @@ void CurvePathStrategy::setBackFollow(bool enable)
   RCLCPP_INFO(getLogger(), "后退模式: %s", enable ? "启用" : "禁用");
 }
 
+bool CurvePathStrategy::setSplinePath(const std::vector<std::pair<double, double>>& vertices,
+                                       int degree,
+                                       double start_x, double start_y,
+                                       double end_x, double end_y)
+{
+  // 参数验证
+  if (vertices.size() < 2)
+  {
+    RCLCPP_ERROR(getLogger(), "Spline路径控制点数不足（至少需要2个点），当前: %zu", vertices.size());
+    return false;
+  }
+
+  // 重置内部状态
+  reset();
+
+  // 生成路径：直接使用vertices作为路径点
+  global_plan_.header.frame_id = "map";
+  global_plan_.header.stamp = rclcpp::Clock().now();
+  global_plan_.poses.clear();
+
+  for (const auto& vertex : vertices)
+  {
+    geometry_msgs::msg::PoseStamped pose;
+    pose.header = global_plan_.header;
+    pose.pose.position.x = vertex.first;
+    pose.pose.position.y = vertex.second;
+    pose.pose.position.z = 0.0;
+
+    // 计算朝向（指向下一个点）
+    pose.pose.orientation.w = 1.0;
+    pose.pose.orientation.x = 0.0;
+    pose.pose.orientation.y = 0.0;
+    pose.pose.orientation.z = 0.0;
+
+    global_plan_.poses.push_back(pose);
+  }
+
+  // 为路径点计算朝向（每个点朝向下一个点）
+  for (size_t i = 0; i < global_plan_.poses.size() - 1; ++i)
+  {
+    double dx = global_plan_.poses[i + 1].pose.position.x - global_plan_.poses[i].pose.position.x;
+    double dy = global_plan_.poses[i + 1].pose.position.y - global_plan_.poses[i].pose.position.y;
+    double yaw = std::atan2(dy, dx);
+
+    tf2::Quaternion q;
+    q.setRPY(0, 0, yaw);
+    global_plan_.poses[i].pose.orientation = tf2::toMsg(q);
+  }
+
+  // 最后一个点的朝向与前一个点相同
+  if (global_plan_.poses.size() > 1)
+  {
+    global_plan_.poses.back().pose.orientation =
+      global_plan_.poses[global_plan_.poses.size() - 2].pose.orientation;
+  }
+
+  // 计算路径信息
+  calculatePathInfo();
+
+  RCLCPP_INFO(getLogger(),
+              "Spline路径设置完成 - 控制点数: %zu, 阶数: %d, 路径长度: %.3fm, 起点(%.3f, %.3f), 终点(%.3f, %.3f)",
+              vertices.size(), degree, path_length_, start_x, start_y, end_x, end_y);
+
+  return true;
+}
+
+bool CurvePathStrategy::setEllipsePath(double center_x, double center_y,
+                                        double major_axis_x, double major_axis_y,
+                                        double ratio, double rotation,
+                                        double start_angle, double end_angle)
+{
+  // 参数验证
+  if (ratio <= 0.0 || ratio > 1.0)
+  {
+    RCLCPP_ERROR(getLogger(), "Ellipse路径比例参数无效（应在0-1之间）: %.3f", ratio);
+    return false;
+  }
+
+  // 重置内部状态
+  reset();
+
+  // 生成椭圆路径点
+  global_plan_.header.frame_id = "map";
+  global_plan_.header.stamp = rclcpp::Clock().now();
+  global_plan_.poses.clear();
+
+  // 计算椭圆的长轴和短轴长度
+  double a = std::sqrt(major_axis_x * major_axis_x + major_axis_y * major_axis_y);  // 长轴长度
+  double b = a * ratio;  // 短轴长度
+
+  // 旋转角度（转换为弧度）
+  double rotation_rad = rotation * M_PI / 180.0;
+
+  // 生成椭圆上的点（使用参数方程）
+  double start_angle_rad = start_angle * M_PI / 180.0;
+  double end_angle_rad = end_angle * M_PI / 180.0;
+
+  // 确定角度范围和步长
+  double angle_range = end_angle_rad - start_angle_rad;
+  if (angle_range < 0)
+  {
+    angle_range += 2 * M_PI;
+  }
+
+  // 生成足够多的点以保证平滑（至少50个点，每度一个点）
+  int num_points = std::max(50, static_cast<int>(angle_range / (M_PI / 180.0)));
+  double angle_step = angle_range / num_points;
+
+  for (int i = 0; i <= num_points; ++i)
+  {
+    double theta = start_angle_rad + i * angle_step;
+
+    // 参数方程：椭圆上的点（未旋转）
+    double x_local = a * std::cos(theta);
+    double y_local = b * std::sin(theta);
+
+    // 应用旋转
+    double x_rotated = x_local * std::cos(rotation_rad) - y_local * std::sin(rotation_rad);
+    double y_rotated = x_local * std::sin(rotation_rad) + y_local * std::cos(rotation_rad);
+
+    // 平移到椭圆中心
+    double x_global = center_x + x_rotated;
+    double y_global = center_y + y_rotated;
+
+    geometry_msgs::msg::PoseStamped pose;
+    pose.header = global_plan_.header;
+    pose.pose.position.x = x_global;
+    pose.pose.position.y = y_global;
+    pose.pose.position.z = 0.0;
+
+    // 初始朝向
+    pose.pose.orientation.w = 1.0;
+    pose.pose.orientation.x = 0.0;
+    pose.pose.orientation.y = 0.0;
+    pose.pose.orientation.z = 0.0;
+
+    global_plan_.poses.push_back(pose);
+  }
+
+  // 为路径点计算朝向（每个点朝向下一个点）
+  for (size_t i = 0; i < global_plan_.poses.size() - 1; ++i)
+  {
+    double dx = global_plan_.poses[i + 1].pose.position.x - global_plan_.poses[i].pose.position.x;
+    double dy = global_plan_.poses[i + 1].pose.position.y - global_plan_.poses[i].pose.position.y;
+    double yaw = std::atan2(dy, dx);
+
+    tf2::Quaternion q;
+    q.setRPY(0, 0, yaw);
+    global_plan_.poses[i].pose.orientation = tf2::toMsg(q);
+  }
+
+  // 最后一个点的朝向与前一个点相同
+  if (global_plan_.poses.size() > 1)
+  {
+    global_plan_.poses.back().pose.orientation =
+      global_plan_.poses[global_plan_.poses.size() - 2].pose.orientation;
+  }
+
+  // 计算路径信息
+  calculatePathInfo();
+
+  RCLCPP_INFO(getLogger(),
+              "Ellipse路径设置完成 - 点数: %zu, 路径长度: %.3fm, 中心(%.3f, %.3f), 长轴=%.3fm, 短轴=%.3fm, 旋转=%.1f度",
+              global_plan_.poses.size(), path_length_, center_x, center_y, a, b, rotation);
+
+  return true;
+}
+
 // 私有方法
 void CurvePathStrategy::calculatePathInfo()
 {

@@ -55,3 +55,4 @@ __pycache__/
 .vscode/browse.vc.db-shm
 .vscode/browse.vc.db-wal
 other/
+temp.txt

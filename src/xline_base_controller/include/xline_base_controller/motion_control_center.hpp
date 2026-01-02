@@ -200,6 +200,32 @@ namespace xline
         double end_angle;   // 弧度
       };
 
+      struct SplineData
+      {
+        std::vector<std::pair<double, double>> vertices; // 控制点坐标列表
+        int degree;                                       // 样条阶数
+        double start_x;
+        double start_y;
+        double end_x;
+        double end_y;
+      };
+
+      struct EllipseData
+      {
+        double center_x;      // 椭圆中心X坐标
+        double center_y;      // 椭圆中心Y坐标
+        double major_axis_x;  // 主轴向量X分量
+        double major_axis_y;  // 主轴向量Y分量
+        double ratio;         // 短轴/长轴比例
+        double rotation;      // 旋转角度（度）
+        double start_angle;   // 起始角度（度）
+        double end_angle;     // 结束角度（度）
+        double start_x;
+        double start_y;
+        double end_x;
+        double end_y;
+      };
+
       /**
        * 提取line数据
        */
@@ -215,6 +241,15 @@ namespace xline
        */
       ArcData extractArcData(const Json::Value &arc_obj);
 
+      /**
+       * 提取spline数据
+       */
+      SplineData extractSplineData(const Json::Value &spline_obj);
+
+      /**
+       * 提取ellipse数据
+       */
+      EllipseData extractEllipseData(const Json::Value &ellipse_obj);
 
       /**
        * 线程安全地获取最新机器人位姿

@@ -328,6 +328,87 @@ bool RPPController::setPlanForCircle(double circle_center_x, double circle_cente
   }
 }
 
+bool RPPController::setPlanForSpline(const std::vector<std::pair<double, double>>& vertices,
+                                      int degree,
+                                      double start_x, double start_y,
+                                      double end_x, double end_y)
+{
+  if (!initialized_)
+  {
+    RCLCPP_ERROR(get_logger(), "控制器未初始化，请先调用 initialize()");
+    return false;
+  }
+
+  // 切换到曲线路径策略
+  switchStrategy(PathStrategyType::CURVE);
+  updateParameters("/config/rpp_curve.yaml");
+
+  auto* curve_strategy = dynamic_cast<CurvePathStrategy*>(path_strategy_.get());
+  if (!curve_strategy)
+  {
+    RCLCPP_ERROR(get_logger(), "策略类型错误，无法转换为 CurvePathStrategy");
+    return false;
+  }
+
+  // 重置控制器状态
+  resetControllerState();
+
+  // 调用 CurvePathStrategy 的 setSplinePath 方法生成路径
+  if (!curve_strategy->setSplinePath(vertices, degree, start_x, start_y, end_x, end_y))
+  {
+    RCLCPP_ERROR(get_logger(), "设置 Spline 路径失败");
+    return false;
+  }
+
+  // 计算路径信息（从 curve_strategy 复制）
+  // 注意：curve_strategy 内部已经生成了 global_plan_，我们需要获取它
+  // 由于 global_plan_ 是 private，我们通过其他方式同步
+  calculatePathInfo();
+
+  RCLCPP_INFO(get_logger(), "Spline 路径设置完成");
+  return true;
+}
+
+bool RPPController::setPlanForEllipse(double center_x, double center_y,
+                                       double major_axis_x, double major_axis_y,
+                                       double ratio, double rotation,
+                                       double start_angle, double end_angle)
+{
+  if (!initialized_)
+  {
+    RCLCPP_ERROR(get_logger(), "控制器未初始化，请先调用 initialize()");
+    return false;
+  }
+
+  // 切换到曲线路径策略
+  switchStrategy(PathStrategyType::CURVE);
+  updateParameters("/config/rpp_curve.yaml");
+
+  auto* curve_strategy = dynamic_cast<CurvePathStrategy*>(path_strategy_.get());
+  if (!curve_strategy)
+  {
+    RCLCPP_ERROR(get_logger(), "策略类型错误，无法转换为 CurvePathStrategy");
+    return false;
+  }
+
+  // 重置控制器状态
+  resetControllerState();
+
+  // 调用 CurvePathStrategy 的 setEllipsePath 方法生成路径
+  if (!curve_strategy->setEllipsePath(center_x, center_y, major_axis_x, major_axis_y,
+                                       ratio, rotation, start_angle, end_angle))
+  {
+    RCLCPP_ERROR(get_logger(), "设置 Ellipse 路径失败");
+    return false;
+  }
+
+  // 计算路径信息
+  calculatePathInfo();
+
+  RCLCPP_INFO(get_logger(), "Ellipse 路径设置完成");
+  return true;
+}
+
 bool RPPController::setPlan(const nav_msgs::msg::Path& orig_global_plan)
 {
   if (!initialized_)
