@@ -1528,7 +1528,7 @@ void RPPController::saveGridMap()
     return;
   }
 
-  std::string filename = params_.debug.grid_map_path + "/path_tracking.png";
+  std::string filename = params_.debug.grid_map_path + "/rpp_path_tracking.png";
   cv::imwrite(filename, grid_map_);
 }
 

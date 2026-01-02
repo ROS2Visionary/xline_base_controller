@@ -216,7 +216,10 @@ bool CurvePathStrategy::setSplinePath(const std::vector<std::pair<double, double
 
     tf2::Quaternion q;
     q.setRPY(0, 0, yaw);
-    global_plan_.poses[i].pose.orientation = tf2::toMsg(q);
+    global_plan_.poses[i].pose.orientation.x = q.x();
+    global_plan_.poses[i].pose.orientation.y = q.y();
+    global_plan_.poses[i].pose.orientation.z = q.z();
+    global_plan_.poses[i].pose.orientation.w = q.w();
   }
 
   // 最后一个点的朝向与前一个点相同
@@ -318,7 +321,10 @@ bool CurvePathStrategy::setEllipsePath(double center_x, double center_y,
 
     tf2::Quaternion q;
     q.setRPY(0, 0, yaw);
-    global_plan_.poses[i].pose.orientation = tf2::toMsg(q);
+    global_plan_.poses[i].pose.orientation.x = q.x();
+    global_plan_.poses[i].pose.orientation.y = q.y();
+    global_plan_.poses[i].pose.orientation.z = q.z();
+    global_plan_.poses[i].pose.orientation.w = q.w();
   }
 
   // 最后一个点的朝向与前一个点相同

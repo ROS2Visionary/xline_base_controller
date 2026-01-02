@@ -1,0 +1,775 @@
+#include "xline_follow_controller/lqr_follow/lqr_follow_controller.hpp"
+#include "ament_index_cpp/get_package_share_directory.hpp"
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+
+#include <sstream>
+#include <iomanip>
+
+namespace xline
+{
+namespace follow_controller
+{
+
+// ============================================================================
+// 构造函数与初始化
+// ============================================================================
+
+LQRFollowController::LQRFollowController()
+  : BaseFollowController("lqr_follow_controller")
+  , K1_(0.0)
+  , K2_(0.0)
+  , initialized_(false)
+  , goal_reached_(false)
+  , last_nearest_idx_(0)
+  , need_yaw_prealign_(true)
+  , yaw_prealign_done_(false)
+  , target_yaw_(0.0)
+  , integral_e_y_(0.0)
+  , last_omega_(0.0)
+  , debug_e_y_(0.0)
+  , debug_e_theta_(0.0)
+  , debug_omega_ff_(0.0)
+  , debug_omega_fb_(0.0)
+  , debug_ref_curvature_(0.0)
+  , debug_ref_index_(0)
+{
+  // 基于环境变量初始化默认的栅格图路径
+  const char* ws_root = std::getenv("XLINE_WS_ROOT");
+  if (ws_root && *ws_root)
+  {
+    params_.grid_map_path = ws_root;
+  }
+
+  RCLCPP_INFO(get_logger(), "LQRFollowController 创建完成");
+}
+
+void LQRFollowController::initialize()
+{
+  // 计算控制周期
+  params_.control_period = 1.0 / params_.control_frequency;
+
+  // 计算初始增益（使用默认速度）
+  computeLQRGains(params_.v_max);
+
+  // 创建栅格图保存目录
+  if (params_.enable_grid_map)
+  {
+    std::filesystem::create_directories(params_.grid_map_path);
+    RCLCPP_INFO(get_logger(), "栅格图将保存到: %s", params_.grid_map_path.c_str());
+  }
+
+  initialized_ = true;
+  RCLCPP_INFO(get_logger(), "LQRFollowController 初始化完成 - K1=%.2f, K2=%.2f", K1_, K2_);
+}
+
+void LQRFollowController::updateParameters(const std::string& config_path)
+{
+  try
+  {
+    std::string package_share_directory =
+        ament_index_cpp::get_package_share_directory("xline_follow_controller");
+    std::string full_path = package_share_directory + config_path;
+
+    xline::YamlParser::YamlParser parser(full_path);
+
+    // 加载LQR权重参数
+    params_.q1 = parser.getParameter<double>("lqr.q1");
+    params_.q2 = parser.getParameter<double>("lqr.q2");
+    params_.r = parser.getParameter<double>("lqr.r");
+
+    // 加载直接指定增益
+    params_.use_direct_gains = parser.getParameter<bool>("lqr.use_direct_gains");
+    params_.K1_direct = parser.getParameter<double>("lqr.K1_direct");
+    params_.K2_direct = parser.getParameter<double>("lqr.K2_direct");
+
+    // 加载积分项参数
+    params_.enable_integral = parser.getParameter<bool>("lqr.enable_integral");
+    params_.Ki = parser.getParameter<double>("lqr.Ki");
+    params_.integral_max = parser.getParameter<double>("lqr.integral_max");
+    params_.integral_decay = parser.getParameter<double>("lqr.integral_decay");
+
+    // 加载速度限制
+    params_.v_max = parser.getParameter<double>("velocity.max");
+    params_.v_min = parser.getParameter<double>("velocity.min");
+    params_.omega_max = parser.getParameter<double>("velocity.omega_max");
+    params_.omega_dot_max = parser.getParameter<double>("velocity.omega_dot_max");
+
+    // 加载机器人参数
+    params_.wheel_base = parser.getParameter<double>("robot.wheel_base");
+
+    // 加载前瞻参数
+    params_.lookahead_distance = parser.getParameter<double>("lookahead.distance");
+    params_.lookahead_time = parser.getParameter<double>("lookahead.time");
+
+    // 加载搜索窗口
+    params_.search_window_back = parser.getParameter<int>("search.window_back");
+    params_.search_window_forward = parser.getParameter<int>("search.window_forward");
+
+    // 加载目标容差
+    params_.goal_dist_tolerance = parser.getParameter<double>("goal.dist_tolerance");
+    params_.goal_angle_tolerance = parser.getParameter<double>("goal.angle_tolerance");
+
+    // 加载控制频率
+    params_.control_frequency = parser.getParameter<double>("control.frequency");
+
+    // 加载调试参数
+    params_.enable_debug = parser.getParameter<bool>("debug.enable");
+    params_.verbose = parser.getParameter<bool>("debug.verbose");
+    params_.enable_grid_map = parser.getParameter<bool>("debug.enable_grid_map");
+    if (parser.hasParameter("debug.grid_map_path"))
+    {
+      params_.grid_map_path = xline::path_utils::resolve_path(
+          parser.getParameter<std::string>("debug.grid_map_path"));
+    }
+
+    RCLCPP_INFO(get_logger(), "LQR参数已从配置文件加载: %s", full_path.c_str());
+  }
+  catch (const std::exception& e)
+  {
+    RCLCPP_WARN(get_logger(), "加载LQR参数失败: %s，使用默认值", e.what());
+  }
+}
+
+// ============================================================================
+// BaseFollowController 接口实现
+// ============================================================================
+
+bool LQRFollowController::setPlan(const nav_msgs::msg::Path& orig_global_plan)
+{
+  if (orig_global_plan.poses.empty())
+  {
+    RCLCPP_ERROR(get_logger(), "收到空路径，无法设置计划");
+    return false;
+  }
+
+  // 重置状态
+  reset();
+
+  // 转换路径格式并计算曲率
+  path_.clear();
+  path_.reserve(orig_global_plan.poses.size());
+
+  double accumulated_arc_length = 0.0;
+
+  for (size_t i = 0; i < orig_global_plan.poses.size(); ++i)
+  {
+    const auto& pose = orig_global_plan.poses[i];
+
+    PathPointWithCurvature pt;
+    pt.x = pose.pose.position.x;
+    pt.y = pose.pose.position.y;
+    pt.theta = tf2::getYaw(pose.pose.orientation);
+    pt.curvature = 0.0;  // 稍后计算
+    pt.arc_length = accumulated_arc_length;
+
+    // 累积弧长
+    if (i > 0)
+    {
+      double dx = pt.x - path_[i-1].x;
+      double dy = pt.y - path_[i-1].y;
+      accumulated_arc_length += std::hypot(dx, dy);
+      pt.arc_length = accumulated_arc_length;
+    }
+
+    path_.push_back(pt);
+  }
+
+  // 计算曲率
+  computePathCurvature();
+
+  // 设置目标航向角为路径起点的朝向
+  if (!path_.empty())
+  {
+    target_yaw_ = path_[0].theta;
+    need_yaw_prealign_ = true;
+    yaw_prealign_done_ = false;
+  }
+
+  RCLCPP_INFO(get_logger(), "LQR路径设置完成 - 点数: %zu, 总长度: %.3fm, 起始朝向: %.2f°",
+              path_.size(), accumulated_arc_length, target_yaw_ * 180.0 / M_PI);
+
+  // 初始化栅格图
+  if (params_.enable_grid_map)
+  {
+    initializeGridMap(orig_global_plan);
+  }
+
+  return true;
+}
+
+bool LQRFollowController::computeVelocityCommands(
+    const geometry_msgs::msg::PoseStamped& pose,
+    const geometry_msgs::msg::Twist& velocity,
+    geometry_msgs::msg::TwistStamped& cmd_vel)
+{
+  if (!initialized_)
+  {
+    RCLCPP_ERROR(get_logger(), "控制器未初始化");
+    return false;
+  }
+
+  if (path_.empty())
+  {
+    RCLCPP_ERROR(get_logger(), "路径为空");
+    return false;
+  }
+
+  if (goal_reached_)
+  {
+    cmd_vel.twist.linear.x = 0.0;
+    cmd_vel.twist.angular.z = 0.0;
+    return true;
+  }
+
+  // 提取当前状态
+  double current_x = pose.pose.position.x;
+  double current_y = pose.pose.position.y;
+  double current_theta = tf2::getYaw(pose.pose.orientation);
+  double current_v = params_.v_max;  // 使用期望速度
+
+  // 0. 检查是否需要航向预对准
+  if (need_yaw_prealign_ && !yaw_prealign_done_)
+  {
+    if (performYawPrealignment(pose, target_yaw_, cmd_vel))
+    {
+      yaw_prealign_done_ = true;
+      need_yaw_prealign_ = false;
+      RCLCPP_INFO(get_logger(), "LQR航向预对准完成，开始路径跟随");
+    }
+    return true;  // 预对准期间返回 true，继续执行预对准
+  }
+
+  // 1. 找到最近的路径点
+  size_t nearest_idx = findNearestPoint(current_x, current_y);
+
+  // 2. 计算前瞻距离
+  double lookahead_dist = getLookaheadDistance(current_v);
+
+  // 3. 获取前瞻参考点（带插值）
+  PathPointWithCurvature ref = findLookaheadPoint(nearest_idx, lookahead_dist);
+
+  // 4. 计算误差
+  double e_y, e_theta;
+  computeErrors(current_x, current_y, current_theta, ref, e_y, e_theta);
+
+  // 5. 计算LQR增益（基于当前速度）
+  computeLQRGains(current_v);
+
+  // 6. 前馈控制 ω_ff = v × κ
+  double omega_ff = current_v * ref.curvature;
+
+  // 7. LQR反馈控制 ω_fb = -K₁·e_y - K₂·e_θ
+  double omega_fb = -K1_ * e_y - K2_ * e_theta;
+
+  // 8. 积分项（可选）
+  double omega_i = 0.0;
+  if (params_.enable_integral)
+  {
+    integral_e_y_ = params_.integral_decay * integral_e_y_ + e_y * params_.control_period;
+    // 积分限幅
+    integral_e_y_ = std::clamp(integral_e_y_, -params_.integral_max / params_.Ki,
+                                params_.integral_max / params_.Ki);
+    omega_i = -params_.Ki * integral_e_y_;
+  }
+
+  // 9. 总控制量
+  double omega = omega_ff + omega_fb + omega_i;
+
+  // 10. 应用限幅
+  omega = applyLimits(omega);
+
+  // 11. 设置输出
+  cmd_vel.header.stamp = this->now();
+  cmd_vel.header.frame_id = pose.header.frame_id;
+  cmd_vel.twist.linear.x = current_v;
+  cmd_vel.twist.angular.z = omega;
+
+  // 保存调试信息
+  debug_e_y_ = e_y;
+  debug_e_theta_ = e_theta;
+  debug_omega_ff_ = omega_ff;
+  debug_omega_fb_ = omega_fb + omega_i;
+  debug_ref_curvature_ = ref.curvature;
+  debug_ref_index_ = nearest_idx;  // 使用最近点索引作为参考
+
+  // 调试输出
+  if (params_.enable_debug && params_.verbose)
+  {
+    RCLCPP_INFO(get_logger(),
+                "LQR: e_y=%.1fmm, e_θ=%.2f°, ω_ff=%.3f, ω_fb=%.3f, ω=%.3f, κ=%.3f",
+                e_y * 1000, e_theta * 180 / M_PI,
+                omega_ff, omega_fb + omega_i, omega, ref.curvature);
+  }
+
+  // 更新栅格图可视化
+  updateGridMapIfNeeded(pose, ref);
+
+  return true;
+}
+
+bool LQRFollowController::isGoalReached()
+{
+  if (goal_reached_)
+  {
+    return true;
+  }
+
+  // 简化实现：检查是否接近最后一个路径点
+  // 实际应用中应在computeVelocityCommands中检查
+  return false;
+}
+
+bool LQRFollowController::cancel()
+{
+  reset();
+  RCLCPP_INFO(get_logger(), "LQR控制器已取消");
+  return true;
+}
+
+// ============================================================================
+// LQR 特有接口
+// ============================================================================
+
+void LQRFollowController::getGains(double& K1, double& K2) const
+{
+  K1 = K1_;
+  K2 = K2_;
+}
+
+std::string LQRFollowController::getDebugInfo() const
+{
+  std::ostringstream oss;
+  oss << std::fixed << std::setprecision(3)
+      << "LQR["
+      << " e_y=" << debug_e_y_ * 1000 << "mm"
+      << ", e_θ=" << debug_e_theta_ * 180 / M_PI << "°"
+      << ", ω_ff=" << debug_omega_ff_
+      << ", ω_fb=" << debug_omega_fb_
+      << ", κ=" << debug_ref_curvature_
+      << ", K1=" << K1_
+      << ", K2=" << K2_
+      << "]";
+  return oss.str();
+}
+
+// ============================================================================
+// 核心计算函数
+// ============================================================================
+
+void LQRFollowController::computeLQRGains(double v)
+{
+  if (params_.use_direct_gains)
+  {
+    // 使用直接指定的增益
+    K1_ = params_.K1_direct;
+    K2_ = params_.K2_direct;
+  }
+  else
+  {
+    // 从LQR权重参数计算增益
+    // 防止除零
+    v = std::max(v, 0.05);
+
+    // K1 = √(q1/r) / v
+    K1_ = std::sqrt(params_.q1 / params_.r) / v;
+
+    // K2 = √(2√(q1·q2)/r + q2/r)
+    K2_ = std::sqrt(2.0 * std::sqrt(params_.q1 * params_.q2) / params_.r +
+                    params_.q2 / params_.r);
+  }
+}
+
+void LQRFollowController::computePathCurvature()
+{
+  if (path_.size() < 3)
+  {
+    // 路径点太少，无法计算曲率
+    for (auto& pt : path_)
+    {
+      pt.curvature = 0.0;
+    }
+    return;
+  }
+
+  // 使用三点法计算曲率
+  for (size_t i = 1; i < path_.size() - 1; ++i)
+  {
+    const auto& p0 = path_[i - 1];
+    const auto& p1 = path_[i];
+    const auto& p2 = path_[i + 1];
+
+    // 计算一阶导数（中心差分）
+    double dx = (p2.x - p0.x) / 2.0;
+    double dy = (p2.y - p0.y) / 2.0;
+
+    // 计算二阶导数
+    double ddx = p2.x - 2.0 * p1.x + p0.x;
+    double ddy = p2.y - 2.0 * p1.y + p0.y;
+
+    // 曲率公式: κ = (x'y'' - y'x'') / (x'² + y'²)^(3/2)
+    double cross = dx * ddy - dy * ddx;
+    double norm_cubed = std::pow(dx * dx + dy * dy, 1.5);
+
+    if (norm_cubed < 1e-10)
+    {
+      path_[i].curvature = 0.0;
+    }
+    else
+    {
+      path_[i].curvature = cross / norm_cubed;
+    }
+  }
+
+  // 端点使用相邻点的曲率
+  path_[0].curvature = path_[1].curvature;
+  path_.back().curvature = path_[path_.size() - 2].curvature;
+}
+
+size_t LQRFollowController::findNearestPoint(double x, double y)
+{
+  if (path_.empty())
+  {
+    return 0;
+  }
+
+  // 使用搜索窗口优化（避免曲线处震荡）
+  size_t start_idx = (last_nearest_idx_ > params_.search_window_back)
+                         ? (last_nearest_idx_ - params_.search_window_back)
+                         : 0;
+
+  size_t end_idx = std::min(last_nearest_idx_ + params_.search_window_forward,
+                            path_.size());
+
+  size_t nearest_idx = start_idx;
+  double min_dist_sq = std::numeric_limits<double>::max();
+
+  for (size_t i = start_idx; i < end_idx; ++i)
+  {
+    double dx = path_[i].x - x;
+    double dy = path_[i].y - y;
+    double dist_sq = dx * dx + dy * dy;
+
+    if (dist_sq < min_dist_sq)
+    {
+      min_dist_sq = dist_sq;
+      nearest_idx = i;
+    }
+  }
+
+  last_nearest_idx_ = nearest_idx;
+  return nearest_idx;
+}
+
+PathPointWithCurvature LQRFollowController::findLookaheadPoint(size_t nearest_idx,
+                                                                double lookahead_dist)
+{
+  if (path_.empty())
+  {
+    return PathPointWithCurvature();
+  }
+
+  // 如果最近点已经是最后一个点，直接返回
+  if (nearest_idx >= path_.size() - 1)
+  {
+    return path_.back();
+  }
+
+  double accumulated_dist = 0.0;
+
+  // 从最近点开始，沿路径累积距离
+  for (size_t i = nearest_idx; i < path_.size() - 1; ++i)
+  {
+    double segment_length = std::hypot(
+        path_[i + 1].x - path_[i].x,
+        path_[i + 1].y - path_[i].y);
+
+    // 如果累积距离加上当前段长度超过前瞻距离，进行插值
+    if (accumulated_dist + segment_length >= lookahead_dist)
+    {
+      double remaining = lookahead_dist - accumulated_dist;
+      double ratio = remaining / segment_length;
+
+      // 插值计算前瞻点
+      PathPointWithCurvature lookahead_pt;
+      lookahead_pt.x = path_[i].x + ratio * (path_[i + 1].x - path_[i].x);
+      lookahead_pt.y = path_[i].y + ratio * (path_[i + 1].y - path_[i].y);
+
+      // 插值曲率
+      lookahead_pt.curvature = path_[i].curvature +
+                                ratio * (path_[i + 1].curvature - path_[i].curvature);
+
+      // 计算朝向（根据路径段的方向）
+      lookahead_pt.theta = std::atan2(
+          path_[i + 1].y - path_[i].y,
+          path_[i + 1].x - path_[i].x);
+
+      // 插值弧长
+      lookahead_pt.arc_length = path_[i].arc_length + remaining;
+
+      return lookahead_pt;
+    }
+
+    accumulated_dist += segment_length;
+  }
+
+  // 如果前瞻距离超过路径末端，返回最后一个点
+  return path_.back();
+}
+
+double LQRFollowController::getLookaheadDistance(double speed)
+{
+  // 基于时间-速度模型计算前瞻距离
+  double lookahead_dist = params_.lookahead_distance +
+                          params_.lookahead_time * std::abs(speed);
+
+  // 简单限幅（可根据需要添加 min/max 参数）
+  return std::max(0.02, lookahead_dist);  // 最小20mm前瞻
+}
+
+void LQRFollowController::computeErrors(double current_x, double current_y,
+                                         double current_theta,
+                                         const PathPointWithCurvature& ref,
+                                         double& e_y, double& e_theta)
+{
+  // 计算位置偏差
+  double dx = current_x - ref.x;
+  double dy = current_y - ref.y;
+
+  // 横向误差（垂直于路径方向，Frenet坐标系）
+  e_y = -dx * std::sin(ref.theta) + dy * std::cos(ref.theta);
+
+  // 航向误差
+  e_theta = normalizeAngle(current_theta - ref.theta);
+}
+
+double LQRFollowController::applyLimits(double omega)
+{
+  // 角速度限幅
+  omega = std::clamp(omega, -params_.omega_max, params_.omega_max);
+
+  // 角加速度限幅（平滑控制）
+  double omega_change = omega - last_omega_;
+  double max_change = params_.omega_dot_max * params_.control_period;
+
+  if (std::abs(omega_change) > max_change)
+  {
+    omega = last_omega_ + std::copysign(max_change, omega_change);
+  }
+
+  last_omega_ = omega;
+  return omega;
+}
+
+double LQRFollowController::normalizeAngle(double angle)
+{
+  // 使用 fmod 实现 O(1) 复杂度，避免 while 循环
+  angle = std::fmod(angle + M_PI, 2.0 * M_PI);
+  if (angle < 0)
+  {
+    angle += 2.0 * M_PI;
+  }
+  return angle - M_PI;
+}
+
+void LQRFollowController::reset()
+{
+  goal_reached_ = false;
+  last_nearest_idx_ = 0;
+  integral_e_y_ = 0.0;
+  last_omega_ = 0.0;
+  debug_e_y_ = 0.0;
+  debug_e_theta_ = 0.0;
+  debug_omega_ff_ = 0.0;
+  debug_omega_fb_ = 0.0;
+  debug_ref_curvature_ = 0.0;
+  debug_ref_index_ = 0;
+
+  RCLCPP_DEBUG(get_logger(), "LQR控制器状态已重置");
+}
+
+// ============================================================================
+// 栅格图可视化
+// ============================================================================
+
+void LQRFollowController::initializeGridMap(const nav_msgs::msg::Path& path)
+{
+  if (path.poses.empty())
+  {
+    RCLCPP_WARN(get_logger(), "无法初始化栅格图：路径为空");
+    return;
+  }
+
+  double min_x = std::numeric_limits<double>::max();
+  double min_y = std::numeric_limits<double>::max();
+  double max_x = std::numeric_limits<double>::lowest();
+  double max_y = std::numeric_limits<double>::lowest();
+
+  for (const auto& pose : path.poses)
+  {
+    min_x = std::min(min_x, pose.pose.position.x);
+    min_y = std::min(min_y, pose.pose.position.y);
+    max_x = std::max(max_x, pose.pose.position.x);
+    max_y = std::max(max_y, pose.pose.position.y);
+  }
+
+  double margin = 0.05;  // 50mm margin
+  grid_width_ = (max_x - min_x) + 2 * margin;
+  grid_height_ = (max_y - min_y) + 2 * margin;
+  grid_origin_x_ = min_x - margin;
+  grid_origin_y_ = min_y - margin;
+
+  int width_pixels = static_cast<int>(grid_width_ / grid_resolution_);
+  int height_pixels = static_cast<int>(grid_height_ / grid_resolution_);
+  grid_map_ = cv::Mat(height_pixels, width_pixels, CV_8UC3, cv::Scalar(255, 255, 255));
+
+  drawGridLines();
+  drawPathOnGrid(path, cv::Scalar(0, 0, 255), 1);  // Red path
+
+  last_grid_update_time_ = this->now();
+  saveGridMap();
+
+  RCLCPP_INFO(get_logger(), "初始化栅格图 大小: %.2f x %.2f m, 尺寸: %d x %d 像素",
+              grid_width_, grid_height_, width_pixels, height_pixels);
+}
+
+cv::Point LQRFollowController::worldToGrid(double x, double y)
+{
+  int grid_x = static_cast<int>((x - grid_origin_x_) / grid_resolution_);
+  int grid_y = grid_map_.rows - static_cast<int>((y - grid_origin_y_) / grid_resolution_) - 1;
+  return cv::Point(grid_x, grid_y);
+}
+
+void LQRFollowController::drawPathOnGrid(const nav_msgs::msg::Path& path,
+                                          const cv::Scalar& color, int thickness)
+{
+  if (path.poses.empty() || grid_map_.empty())
+  {
+    return;
+  }
+
+  for (size_t i = 0; i < path.poses.size() - 1; ++i)
+  {
+    cv::Point pt1 = worldToGrid(path.poses[i].pose.position.x, path.poses[i].pose.position.y);
+    cv::Point pt2 = worldToGrid(path.poses[i + 1].pose.position.x, path.poses[i + 1].pose.position.y);
+
+    if (isPointInGrid(pt1) && isPointInGrid(pt2))
+    {
+      cv::line(grid_map_, pt1, pt2, color, thickness);
+    }
+  }
+
+  // 绘制起点和终点
+  if (!path.poses.empty())
+  {
+    cv::Point start = worldToGrid(path.poses.front().pose.position.x,
+                                   path.poses.front().pose.position.y);
+    cv::Point end = worldToGrid(path.poses.back().pose.position.x,
+                                 path.poses.back().pose.position.y);
+
+    if (isPointInGrid(start))
+    {
+      cv::circle(grid_map_, start, 3, cv::Scalar(0, 255, 0), -1);  // Green start
+    }
+    if (isPointInGrid(end))
+    {
+      cv::circle(grid_map_, end, 3, cv::Scalar(255, 0, 0), -1);  // Blue end
+    }
+  }
+}
+
+void LQRFollowController::drawRobotOnGrid(const geometry_msgs::msg::PoseStamped& pose)
+{
+  if (grid_map_.empty())
+  {
+    return;
+  }
+
+  cv::Point robot_pt = worldToGrid(pose.pose.position.x, pose.pose.position.y);
+  if (isPointInGrid(robot_pt))
+  {
+    cv::circle(grid_map_, robot_pt, 2, cv::Scalar(0, 165, 255), -1);  // Orange robot
+  }
+}
+
+void LQRFollowController::drawLookaheadPointOnGrid(const PathPointWithCurvature& lookahead_point)
+{
+  if (grid_map_.empty())
+  {
+    return;
+  }
+
+  cv::Point lookahead_pt = worldToGrid(lookahead_point.x, lookahead_point.y);
+  if (isPointInGrid(lookahead_pt))
+  {
+    cv::circle(grid_map_, lookahead_pt, 3, cv::Scalar(255, 0, 255), -1);  // Magenta lookahead
+  }
+}
+
+void LQRFollowController::drawGridLines()
+{
+  if (grid_map_.empty())
+  {
+    return;
+  }
+
+  cv::Scalar grid_color(220, 220, 220);
+
+  // Draw vertical grid lines every 10mm
+  for (double x = grid_origin_x_; x < grid_origin_x_ + grid_width_; x += 0.01)
+  {
+    cv::Point pt1 = worldToGrid(x, grid_origin_y_);
+    cv::Point pt2 = worldToGrid(x, grid_origin_y_ + grid_height_);
+    if (isPointInGrid(pt1) && isPointInGrid(pt2))
+    {
+      cv::line(grid_map_, pt1, pt2, grid_color, 1);
+    }
+  }
+
+  // Draw horizontal grid lines every 10mm
+  for (double y = grid_origin_y_; y < grid_origin_y_ + grid_height_; y += 0.01)
+  {
+    cv::Point pt1 = worldToGrid(grid_origin_x_, y);
+    cv::Point pt2 = worldToGrid(grid_origin_x_ + grid_width_, y);
+    if (isPointInGrid(pt1) && isPointInGrid(pt2))
+    {
+      cv::line(grid_map_, pt1, pt2, grid_color, 1);
+    }
+  }
+}
+
+void LQRFollowController::saveGridMap()
+{
+  if (grid_map_.empty() || params_.grid_map_path.empty())
+  {
+    return;
+  }
+
+  std::string filename = params_.grid_map_path + "/lar_path_tracking.png";
+  cv::imwrite(filename, grid_map_);
+}
+
+void LQRFollowController::updateGridMapIfNeeded(const geometry_msgs::msg::PoseStamped& current_pose,
+                                                 const PathPointWithCurvature& lookahead_point)
+{
+  if (!params_.enable_grid_map)
+  {
+    return;
+  }
+
+  auto current_time = this->now();
+  if ((current_time - last_grid_update_time_).seconds() > 1.0)
+  {
+    drawRobotOnGrid(current_pose);
+    drawLookaheadPointOnGrid(lookahead_point);
+    saveGridMap();
+    last_grid_update_time_ = current_time;
+  }
+}
+
+bool LQRFollowController::isPointInGrid(const cv::Point& pt)
+{
+  return pt.x >= 0 && pt.x < grid_map_.cols && pt.y >= 0 && pt.y < grid_map_.rows;
+}
+
+}  // namespace follow_controller
+}  // namespace xline

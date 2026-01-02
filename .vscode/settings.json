@@ -100,5 +100,6 @@
         "typeinfo": "cpp",
         "valarray": "cpp",
         "variant": "cpp"
-    }
+    },
+    "cmake.sourceDirectory": "/root/xline_ws/xline_base_controller/src/xline_base_controller"
 }
