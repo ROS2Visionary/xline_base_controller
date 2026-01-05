@@ -40,6 +40,9 @@ LQRFollowController::LQRFollowController()
     params_.grid_map_path = ws_root;
   }
 
+  updateParameters("/config/lqr.yaml");
+  initialize();
+
   RCLCPP_INFO(get_logger(), "LQRFollowController 创建完成");
 }
 
@@ -112,6 +115,13 @@ void LQRFollowController::updateParameters(const std::string& config_path)
     // 加载控制频率
     params_.control_frequency = parser.getParameter<double>("control.frequency");
 
+    // 加载原地旋转控制参数
+    params_.rotation_factor = parser.getParameter<double>("rotation.factor");
+    params_.rotation_max_w = parser.getParameter<double>("rotation.max_w");
+    params_.rotation_min_w = parser.getParameter<double>("rotation.min_w");
+    params_.rotation_angle_threshold = parser.getParameter<double>("rotation.angle_threshold");
+    params_.rotation_smooth_factor = parser.getParameter<double>("rotation.smooth_factor");
+
     // 加载调试参数
     params_.enable_debug = parser.getParameter<bool>("debug.enable");
     params_.verbose = parser.getParameter<bool>("debug.verbose");
@@ -144,6 +154,8 @@ bool LQRFollowController::setPlan(const nav_msgs::msg::Path& orig_global_plan)
 
   // 重置状态
   reset();
+
+  updateParameters("/config/lqr.yaml");
 
   // 转换路径格式并计算曲率
   path_.clear();
@@ -195,6 +207,124 @@ bool LQRFollowController::setPlan(const nav_msgs::msg::Path& orig_global_plan)
   }
 
   return true;
+}
+
+void LQRFollowController::setAngleRange(double start_angle, double end_angle)
+{
+  circle_total_angle_ = std::abs(end_angle - start_angle);
+
+  // 兼容：如果输入角度范围为 0，则默认走一整圈
+  if (circle_total_angle_ < 1e-6)
+  {
+    circle_total_angle_ = 2.0 * M_PI;
+  }
+
+  RCLCPP_INFO(get_logger(), "设置圆形角度范围: [%.2f, %.2f], 总角度: %.2f rad (%.1f°)",
+              start_angle, end_angle, circle_total_angle_,
+              circle_total_angle_ * 180.0 / M_PI);
+}
+
+bool LQRFollowController::setPlanForCircle(double circle_center_x, double circle_center_y,
+                                          double circle_radius,
+                                          const geometry_msgs::msg::PoseStamped& robot_pose)
+{
+  if (!initialized_)
+  {
+    RCLCPP_ERROR(get_logger(), "控制器未初始化，请先调用 initialize()");
+    return false;
+  }
+
+  if (circle_radius <= 0.0)
+  {
+    RCLCPP_ERROR(get_logger(), "圆半径必须为正值");
+    return false;
+  }
+
+  nav_msgs::msg::Path circle_path =
+      generateCirclePath(circle_center_x, circle_center_y, circle_radius, robot_pose);
+
+  RCLCPP_INFO(get_logger(), "圆形路径已生成 - 圆心: (%.3f, %.3f), 半径: %.3f m, 总角度: %.2f rad, 点数: %zu",
+              circle_center_x, circle_center_y, circle_radius, circle_total_angle_,
+              circle_path.poses.size());
+
+  return setPlan(circle_path);
+}
+
+nav_msgs::msg::Path LQRFollowController::generateCirclePath(
+    double center_x, double center_y, double radius,
+    const geometry_msgs::msg::PoseStamped& start_pose) const
+{
+  nav_msgs::msg::Path circle_path;
+  circle_path.header.frame_id =
+      start_pose.header.frame_id.empty() ? std::string("world") : start_pose.header.frame_id;
+  circle_path.header.stamp = this->now();
+
+  geometry_msgs::msg::PoseStamped entry_pose = start_pose;
+
+  // 起点相对圆心的切线方向
+  double tangent_x = -(entry_pose.pose.position.y - center_y);
+  double tangent_y = (entry_pose.pose.position.x - center_x);
+  double tangent_length = std::hypot(tangent_x, tangent_y);
+
+  if (tangent_length > 1e-6)
+  {
+    tangent_x /= tangent_length;
+    tangent_y /= tangent_length;
+  }
+
+  const double entry_yaw = std::atan2(tangent_y, tangent_x);
+  tf2::Quaternion entry_q;
+  entry_q.setRPY(0, 0, entry_yaw);
+  entry_pose.pose.orientation = tf2::toMsg(entry_q);
+
+  circle_path.poses.push_back(entry_pose);
+
+  // 以“弧长间距”决定采样密度：点间距固定 0.003m（3mm）
+  constexpr double kPointSpacingMeters = 0.003;
+  const double safe_radius = std::max(radius, 1e-6);
+  const double max_step_angle = kPointSpacingMeters / safe_radius;
+
+  const double start_angle = std::atan2(
+      entry_pose.pose.position.y - center_y,
+      entry_pose.pose.position.x - center_x);
+
+  const double total_angle = std::max(circle_total_angle_, 1e-6);
+
+  size_t num_segments = static_cast<size_t>(std::ceil(total_angle / max_step_angle));
+  num_segments = std::max<size_t>(num_segments, 1);
+
+  constexpr size_t kMaxSegments = 20000;
+  if (num_segments > kMaxSegments)
+  {
+    RCLCPP_WARN(get_logger(),
+                "圆弧采样点过多(%zu)，已限制到 %zu 段；可通过增大点间距降低负载",
+                num_segments, kMaxSegments);
+    num_segments = kMaxSegments;
+  }
+
+  const double step_angle = total_angle / static_cast<double>(num_segments);
+
+  // 跳过入口处一小段，减少“入口过密”对控制的干扰
+  const size_t start_idx = (num_segments > 5) ? 5 : 1;
+  for (size_t idx = start_idx; idx <= num_segments; ++idx)
+  {
+    const double angle = start_angle + static_cast<double>(idx) * step_angle;
+
+    geometry_msgs::msg::PoseStamped circle_pose;
+    circle_pose.header = entry_pose.header;
+    circle_pose.pose.position.x = center_x + radius * std::cos(angle);
+    circle_pose.pose.position.y = center_y + radius * std::sin(angle);
+    circle_pose.pose.position.z = start_pose.pose.position.z;
+
+    const double tangent_direction = angle + M_PI / 2.0;
+    tf2::Quaternion circle_q;
+    circle_q.setRPY(0, 0, tangent_direction);
+    circle_pose.pose.orientation = tf2::toMsg(circle_q);
+
+    circle_path.poses.push_back(circle_pose);
+  }
+
+  return circle_path;
 }
 
 bool LQRFollowController::computeVelocityCommands(
@@ -571,6 +701,58 @@ double LQRFollowController::normalizeAngle(double angle)
   return angle - M_PI;
 }
 
+bool LQRFollowController::performYawPrealignment(const geometry_msgs::msg::PoseStamped& current_pose,
+                                                  double target_yaw,
+                                                  geometry_msgs::msg::TwistStamped& cmd_vel)
+{
+  // 获取当前航向角
+  double current_yaw = tf2::getYaw(current_pose.pose.orientation);
+
+  // 计算航向角差
+  double angle_diff = normalizeAngle(target_yaw - current_yaw);
+
+  // 检查是否已对准（默认阈值：约5度）
+  const double yaw_tolerance = params_.goal_angle_tolerance;
+  if (std::abs(angle_diff) < yaw_tolerance)
+  {
+    cmd_vel.twist.linear.x = 0.0;
+    cmd_vel.twist.angular.z = 0.0;
+    return true;  // 对准完成
+  }
+
+  // 计算旋转速度
+  double rotation_velocity = calculateRotationVelocity(angle_diff);
+
+  // 设置输出命令（仅旋转，不前进）
+  cmd_vel.header.stamp = this->now();
+  cmd_vel.header.frame_id = current_pose.header.frame_id;
+  cmd_vel.twist.linear.x = 0.0;
+  cmd_vel.twist.angular.z = rotation_velocity;
+
+  return false;  // 对准未完成
+}
+
+double LQRFollowController::calculateRotationVelocity(double angle_diff)
+{
+  // 使用sigmoid函数计算角速度因子（与line_follow_controller一致）
+  double factor = 1.0 / (1.0 + std::exp(-params_.rotation_factor * std::abs(angle_diff)));
+
+  // 对于小角度，使用余弦函数进一步平滑
+  if (std::abs(angle_diff) < params_.rotation_angle_threshold)
+  {
+    double cosine_factor = params_.rotation_smooth_factor *
+        (1.0 - std::cos(M_PI * std::abs(angle_diff) / params_.rotation_angle_threshold));
+    factor *= cosine_factor;
+  }
+
+  // 计算角速度
+  double rot_vel = params_.rotation_max_w * factor;
+  rot_vel = std::max(rot_vel, params_.rotation_min_w);
+
+  // 根据角度差的符号确定旋转方向
+  return (angle_diff > 0.0) ? rot_vel : -rot_vel;
+}
+
 void LQRFollowController::reset()
 {
   goal_reached_ = false;
@@ -744,7 +926,7 @@ void LQRFollowController::saveGridMap()
     return;
   }
 
-  std::string filename = params_.grid_map_path + "/lar_path_tracking.png";
+  std::string filename = params_.grid_map_path + "/lqr_path_tracking.png";
   cv::imwrite(filename, grid_map_);
 }
 

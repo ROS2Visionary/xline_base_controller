@@ -121,6 +121,25 @@ struct LQRParams
   double control_period = 1.0 / 18.0;
 
   // ================================
+  // 原地旋转控制参数
+  // ================================
+
+  /// 旋转速度调节因子（sigmoid函数增益）
+  double rotation_factor = 1.2;
+
+  /// 旋转最大角速度 (rad/s)
+  double rotation_max_w = 0.8;
+
+  /// 旋转最小角速度 (rad/s)
+  double rotation_min_w = 0.15;
+
+  /// 角度阈值 (rad)
+  double rotation_angle_threshold = 0.5;
+
+  /// 平滑因子（小角度时的余弦平滑系数）
+  double rotation_smooth_factor = 0.6;
+
+  // ================================
   // 调试参数
   // ================================
 
