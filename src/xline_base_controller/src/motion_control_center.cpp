@@ -205,7 +205,83 @@ namespace xline
         return;
       }
 
-      RCLCPP_INFO(get_logger(), "开始执行计划,路径id: %u", line["id"].asUInt());
+      // 安全地提取 id 和 layer_id（支持 int 和 uint 类型）
+      uint32_t path_id = 0;
+      uint32_t layer_id = 0;
+
+      if (!line.isMember("id"))
+      {
+        result->success = false;
+        result->error_message = "JSON中缺少必需字段: id";
+        goal_handle->abort(result);
+        RCLCPP_ERROR(get_logger(), "JSON解析失败：缺少id字段");
+        return;
+      }
+
+      if (!line.isMember("layer_id"))
+      {
+        result->success = false;
+        result->error_message = "JSON中缺少必需字段: layer_id";
+        goal_handle->abort(result);
+        RCLCPP_ERROR(get_logger(), "JSON解析失败：缺少layer_id字段");
+        return;
+      }
+
+      // 安全转换 id（可能是 int 或 uint）
+      if (line["id"].isUInt())
+      {
+        path_id = line["id"].asUInt();
+      }
+      else if (line["id"].isInt())
+      {
+        int id_int = line["id"].asInt();
+        if (id_int < 0)
+        {
+          result->success = false;
+          result->error_message = "JSON中id字段值为负数: " + std::to_string(id_int);
+          goal_handle->abort(result);
+          RCLCPP_ERROR(get_logger(), "JSON解析失败：id为负数 %d", id_int);
+          return;
+        }
+        path_id = static_cast<uint32_t>(id_int);
+      }
+      else
+      {
+        result->success = false;
+        result->error_message = "JSON中id字段类型错误（应为整数）";
+        goal_handle->abort(result);
+        RCLCPP_ERROR(get_logger(), "JSON解析失败：id字段类型不是整数");
+        return;
+      }
+
+      // 安全转换 layer_id（可能是 int 或 uint）
+      if (line["layer_id"].isUInt())
+      {
+        layer_id = line["layer_id"].asUInt();
+      }
+      else if (line["layer_id"].isInt())
+      {
+        int layer_id_int = line["layer_id"].asInt();
+        if (layer_id_int < 0)
+        {
+          result->success = false;
+          result->error_message = "JSON中layer_id字段值为负数: " + std::to_string(layer_id_int);
+          goal_handle->abort(result);
+          RCLCPP_ERROR(get_logger(), "JSON解析失败：layer_id为负数 %d", layer_id_int);
+          return;
+        }
+        layer_id = static_cast<uint32_t>(layer_id_int);
+      }
+      else
+      {
+        result->success = false;
+        result->error_message = "JSON中layer_id字段类型错误（应为整数）";
+        goal_handle->abort(result);
+        RCLCPP_ERROR(get_logger(), "JSON解析失败：layer_id字段类型不是整数");
+        return;
+      }
+
+      RCLCPP_INFO(get_logger(), "开始执行计划,路径id: %u", path_id);
 
       // 支持取消：收到取消则返回 canceled
       if (goal_handle->is_canceling())
@@ -225,11 +301,11 @@ namespace xline
       }
 
       current_layer_type = line["type"].asString();
-      uint32_t path_id = line["id"].asUInt();
-      current_layer_id = line["layer_id"].asUInt();
+      current_layer_id = layer_id;
       bool is_backward = line["backward"].asBool();
 
-      bool is_start_from_robot = current_layer_id == 1000000 ? true : false;
+      // 检查 layer_id 是否 >= 1000000
+      bool is_start_from_robot = (layer_id >= 1000000);
 
       // 发布反馈 - 只发送current_id
       feedback->current_id = path_id;
@@ -702,8 +778,10 @@ namespace xline
         // 开始打印条件：
         // 1. 控制器标记需要开始打印 (base_follow_controller_->start_print)
         // 2. 当前未在打印 (!is_inkjet_printing)
-        // 3. 不是 transition 路径 (current_layer_id != 1000000)
-        if (base_follow_controller_->start_print && !is_inkjet_printing && current_layer_id != 1000000)
+        // 3. 不是 transition 路径 (layer_id >= 1000000)
+        bool is_transition_layer = (current_layer_id >= 1000000);
+
+        if (base_follow_controller_->start_print && !is_inkjet_printing && !is_transition_layer)
         {
           is_inkjet_printing = true;
           
@@ -783,7 +861,7 @@ namespace xline
         }
 
         // 停止打印条件
-        if(base_follow_controller_->stop_print && is_inkjet_printing && current_layer_id != 1000000)
+        if(base_follow_controller_->stop_print && is_inkjet_printing && !is_transition_layer)
         {
             std::string printer_name = current_ink_printer_;
             auto inkjet_client = inkjet_client_;
@@ -1216,7 +1294,7 @@ namespace xline
           pause_notified_ = true;
 
           // 暂停时停止打印 - 使用当前路径指定的打印机
-          if(current_layer_id != 1000000)
+          if(current_layer_id < 1000000)
           {
             inkjet_client_->stop_print(current_ink_printer_);
             RCLCPP_INFO(get_logger(), "暂停时停止打印机: %s", current_ink_printer_.c_str());
@@ -1246,7 +1324,7 @@ namespace xline
         }
 
         // 恢复时重新启动打印 - 使用当前路径指定的打印机
-        if(current_layer_id != 1000000)
+        if(current_layer_id < 1000000)
         {
           inkjet_client_->start_print(current_ink_printer_);
           RCLCPP_INFO(get_logger(), "恢复时启动打印机: %s", current_ink_printer_.c_str());
