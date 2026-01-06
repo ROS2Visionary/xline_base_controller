@@ -4,6 +4,7 @@
 #include "xline_follow_controller/lqr_follow/lqr_params.hpp"
 #include "xline_follow_controller/common/yaml_parser.hpp"
 #include "xline_follow_controller/common/path_utils.hpp"
+#include "xline_follow_controller/common/follow_common.hpp"
 
 #include <nav_msgs/msg/path.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
@@ -12,6 +13,7 @@
 #include <opencv2/opencv.hpp>
 
 #include <vector>
+#include <deque>
 #include <cmath>
 #include <algorithm>
 #include <filesystem>
@@ -239,6 +241,27 @@ private:
                                          double radius,
                                          const geometry_msgs::msg::PoseStamped& start_pose) const;
 
+  /**
+   * @brief 位置滤波（使用Hampel滤波器和Savitzky-Golay滤波器）
+   * @param robot_pose 原始机器人位姿
+   * @return 滤波后的机器人位姿
+   */
+  geometry_msgs::msg::PoseStamped filterRobotPose(const geometry_msgs::msg::PoseStamped& robot_pose);
+
+  /**
+   * @brief 角速度平滑（使用多种平滑方法）
+   * @param desired_angular_vel 期望角速度
+   * @param dt 时间步长
+   * @param is_reset 是否重置滤波器
+   * @return 平滑后的角速度
+   */
+  double smoothAngularVelocity(double desired_angular_vel, double dt, bool is_reset = false);
+
+  /**
+   * @brief 初始化滤波器（使用参数文件中的配置）
+   */
+  void initializeFilters();
+
   // ================================
   // 栅格图可视化
   // ================================
@@ -338,6 +361,28 @@ private:
   double debug_omega_fb_;  ///< 反馈角速度
   double debug_ref_curvature_; ///< 参考曲率
   size_t debug_ref_index_;     ///< 参考点索引
+
+  // ================================
+  // 滤波器相关（与RPP保持一致）
+  // ================================
+
+  /// 位置滤波器
+  SavitzkyGolayFilter sg_x_filter_ = SavitzkyGolayFilter(7, 2);
+  SavitzkyGolayFilter sg_y_filter_ = SavitzkyGolayFilter(7, 2);
+  HampelFilter h_x_filter = HampelFilter(5, 3.0);
+  HampelFilter h_y_filter = HampelFilter(5, 3.0);
+
+  /// 角速度滤波器
+  FourthOrderLowpassFilter angle_vel_lowpass_filter_;
+
+  /// 角速度平滑器
+  SecondOrderSmoother second_order_filter_;
+
+  /// 角速度历史记录（用于移动平均）
+  std::deque<double> angular_vel_history_;
+
+  /// 上一次角速度（用于低通滤波）
+  double previous_angular_vel_;
 
   // ================================
   // 栅格图可视化相关

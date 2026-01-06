@@ -133,9 +133,11 @@ ament_target_dependencies(lqr_follow_controller
   rclcpp
   geometry_msgs
   nav_msgs
+  sensor_msgs
   tf2
   tf2_geometry_msgs
   ament_index_cpp
+  angles
 )
 
 target_link_libraries(lqr_follow_controller

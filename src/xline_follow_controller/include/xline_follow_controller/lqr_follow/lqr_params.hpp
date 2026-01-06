@@ -157,6 +157,57 @@ struct LQRParams
   double feedback_min_limit = 0.02;
 
   // ================================
+  // 滤波器参数
+  // ================================
+
+  // 位置滤波器参数
+  /// Hampel滤波器窗口大小
+  int hampel_window = 5;
+
+  /// Hampel滤波器异常值阈值（标准差倍数）
+  double hampel_k = 3.0;
+
+  /// Savitzky-Golay滤波器窗口大小
+  int savgol_window = 7;
+
+  /// Savitzky-Golay滤波器多项式阶数
+  int savgol_order = 2;
+
+  // 角速度滤波器参数
+  /// 低通滤波增益（第一级，0-1之间）
+  double angular_lowpass_gain = 0.3;
+
+  /// 二阶平滑器自然频率 (Hz)
+  double angular_second_order_freq = 2.0;
+
+  /// 二阶平滑器阻尼比
+  double angular_second_order_damping = 0.7;
+
+  /// 四阶低通滤波器截止频率 (Hz)
+  double angular_cutoff_freq = 1.5;
+
+  /// 四阶低通滤波器采样率 (Hz)
+  double angular_sample_rate = 18.0;
+
+  /// 是否使用双二阶级联
+  bool angular_use_biquad_cascade = true;
+
+  /// 是否实际应用四阶低通滤波
+  bool angular_lowpass_active = true;
+
+  /// 是否启用四阶低通滤波偏移限制
+  bool angular_use_offset_limit = true;
+
+  /// 四阶低通滤波输出偏移量 (rad/s)
+  double angular_output_offset = 0.1;
+
+  /// 输出限幅比率
+  double angular_output_limit_rate = 1.05;
+
+  /// 变化率限制 (rad/s²)
+  double angular_rate_limit = 0.03;
+
+  // ================================
   // 调试参数
   // ================================
 

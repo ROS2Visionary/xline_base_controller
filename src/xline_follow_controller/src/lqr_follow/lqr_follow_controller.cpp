@@ -32,6 +32,9 @@ LQRFollowController::LQRFollowController()
   , debug_omega_fb_(0.0)
   , debug_ref_curvature_(0.0)
   , debug_ref_index_(0)
+  // 滤波器初始化（从参数文件加载后会重新初始化）
+  , second_order_filter_(2.0, 0.7)
+  , previous_angular_vel_(0.0)
 {
   // 基于环境变量初始化默认的栅格图路径
   const char* ws_root = std::getenv("XLINE_WS_ROOT");
@@ -41,6 +44,7 @@ LQRFollowController::LQRFollowController()
   }
 
   updateParameters("/config/lqr.yaml");
+  initializeFilters();
   initialize();
 
   RCLCPP_INFO(get_logger(), "LQRFollowController 创建完成");
@@ -132,6 +136,26 @@ void LQRFollowController::updateParameters(const std::string& config_path)
     // 加载反馈限制参数
     params_.feedback_limit_ratio = parser.getParameter<double>("feedback.limit_ratio");
     params_.feedback_min_limit = parser.getParameter<double>("feedback.min_limit");
+
+    // 加载滤波器参数
+    // 位置滤波器参数
+    params_.hampel_window = parser.getParameter<int>("filter.position.hampel_window");
+    params_.hampel_k = parser.getParameter<double>("filter.position.hampel_k");
+    params_.savgol_window = parser.getParameter<int>("filter.position.savgol_window");
+    params_.savgol_order = parser.getParameter<int>("filter.position.savgol_order");
+
+    // 角速度滤波器参数
+    params_.angular_lowpass_gain = parser.getParameter<double>("filter.angular.lowpass_gain");
+    params_.angular_second_order_freq = parser.getParameter<double>("filter.angular.second_order_freq");
+    params_.angular_second_order_damping = parser.getParameter<double>("filter.angular.second_order_damping");
+    params_.angular_cutoff_freq = parser.getParameter<double>("filter.angular.cutoff_freq");
+    params_.angular_sample_rate = parser.getParameter<double>("filter.angular.sample_rate");
+    params_.angular_use_biquad_cascade = parser.getParameter<bool>("filter.angular.use_biquad_cascade");
+    params_.angular_lowpass_active = parser.getParameter<bool>("filter.angular.lowpass_active");
+    params_.angular_use_offset_limit = parser.getParameter<bool>("filter.angular.use_offset_limit");
+    params_.angular_output_offset = parser.getParameter<double>("filter.angular.output_offset");
+    params_.angular_output_limit_rate = parser.getParameter<double>("filter.angular.output_limit_rate");
+    params_.angular_rate_limit = parser.getParameter<double>("filter.angular.rate_limit");
 
     // 加载调试参数
     params_.enable_debug = parser.getParameter<bool>("debug.enable");
@@ -362,10 +386,13 @@ bool LQRFollowController::computeVelocityCommands(
     return true;
   }
 
-  // 提取当前状态
-  double current_x = pose.pose.position.x;
-  double current_y = pose.pose.position.y;
-  double current_theta = tf2::getYaw(pose.pose.orientation);
+  // 位置滤波处理（与RPP一致：先过滤机器人坐标再进入计算）
+  geometry_msgs::msg::PoseStamped current_pose = filterRobotPose(pose);
+
+  // 提取当前状态（使用滤波后的位置）
+  double current_x = current_pose.pose.position.x;
+  double current_y = current_pose.pose.position.y;
+  double current_theta = tf2::getYaw(current_pose.pose.orientation);
 
   // 根据路径类型设置期望速度
   // 无论圆形路径还是一般路径，都使用期望速度计算前馈
@@ -451,7 +478,11 @@ bool LQRFollowController::computeVelocityCommands(
   // 11. 应用角速度和角加速度限幅
   omega = applyLimits(omega);
 
-  // 12. 设置输出
+  // 12. 角速度平滑（与RPP一致：在算得角速度后再做处理）
+  // double dt = params_.control_period;
+  // omega = smoothAngularVelocity(omega, dt, false);
+
+  // 13. 设置输出
   cmd_vel.header.stamp = this->now();
   cmd_vel.header.frame_id = pose.header.frame_id;
   cmd_vel.twist.linear.x = current_v;
@@ -809,7 +840,141 @@ void LQRFollowController::reset()
   debug_ref_curvature_ = 0.0;
   debug_ref_index_ = 0;
 
+  // 重置滤波器（使用参数配置）
+  second_order_filter_.reset();
+  previous_angular_vel_ = 0.0;
+  angular_vel_history_.clear();
+
+  // 重置位置滤波器（使用配置参数）
+  sg_x_filter_.reset(params_.savgol_window, params_.savgol_order);
+  sg_y_filter_.reset(params_.savgol_window, params_.savgol_order);
+  h_x_filter.reset(params_.hampel_window, params_.hampel_k);
+  h_y_filter.reset(params_.hampel_window, params_.hampel_k);
+
+  angle_vel_lowpass_filter_.reset();
+
   RCLCPP_DEBUG(get_logger(), "LQR控制器状态已重置");
+}
+
+void LQRFollowController::initializeFilters()
+{
+  // 初始化位置滤波器（从参数配置）
+  sg_x_filter_ = SavitzkyGolayFilter(params_.savgol_window, params_.savgol_order);
+  sg_y_filter_ = SavitzkyGolayFilter(params_.savgol_window, params_.savgol_order);
+  h_x_filter = HampelFilter(params_.hampel_window, params_.hampel_k);
+  h_y_filter = HampelFilter(params_.hampel_window, params_.hampel_k);
+
+  // 初始化角速度滤波器（从参数配置）
+  second_order_filter_ = SecondOrderSmoother(
+    params_.angular_second_order_freq,
+    params_.angular_second_order_damping);
+
+  angle_vel_lowpass_filter_.initialize(
+    params_.angular_cutoff_freq,
+    params_.angular_sample_rate,
+    params_.angular_use_biquad_cascade);
+
+  // 重置其他角速度滤波状态
+  previous_angular_vel_ = 0.0;
+  angular_vel_history_.clear();
+
+  RCLCPP_INFO(get_logger(),
+              "滤波器已初始化 - 位置滤波: Hampel(%d,%.1f) + SavGol(%d,%d), "
+              "角速度滤波: Lowpass(%.2f) + SecondOrder(%.1fHz,%.2f) + FourthOrder(%.1fHz@%.1fHz)",
+              params_.hampel_window, params_.hampel_k,
+              params_.savgol_window, params_.savgol_order,
+              params_.angular_lowpass_gain,
+              params_.angular_second_order_freq, params_.angular_second_order_damping,
+              params_.angular_cutoff_freq, params_.angular_sample_rate);
+}
+
+geometry_msgs::msg::PoseStamped LQRFollowController::filterRobotPose(
+    const geometry_msgs::msg::PoseStamped& robot_pose)
+{
+  geometry_msgs::msg::PoseStamped current_pose;
+  current_pose.header = robot_pose.header;
+  current_pose.pose.orientation = robot_pose.pose.orientation;
+
+  // 应用Hampel滤波器
+  double filtered_x = h_x_filter.filter(robot_pose.pose.position.x);
+  double filtered_y = h_y_filter.filter(robot_pose.pose.position.y);
+
+  // 应用Savitzky-Golay滤波器
+  filtered_x = sg_x_filter_.filter(filtered_x);
+  filtered_y = sg_y_filter_.filter(filtered_y);
+
+  current_pose.pose.position.x = filtered_x;
+  current_pose.pose.position.y = filtered_y;
+
+  return current_pose;
+}
+
+double LQRFollowController::smoothAngularVelocity(double desired_angular_vel,
+                                                    double dt, bool is_reset)
+{
+  if (is_reset)
+  {
+    angular_vel_history_.clear();
+    second_order_filter_.reset();
+    previous_angular_vel_ = 0.0;
+  }
+
+  // 保存原始输入值（用于偏移限制）
+  const double original_input = desired_angular_vel;
+
+  // 更新历史记录（暂不使用，保留以便将来扩展）
+  angular_vel_history_.push_back(desired_angular_vel);
+  if (angular_vel_history_.size() > 5)
+  {
+    angular_vel_history_.pop_front();
+  }
+
+  double smoothed_angular_vel = desired_angular_vel;
+
+  // 第一级：应用低通滤波（使用配置参数）
+  smoothed_angular_vel = params_.angular_lowpass_gain * desired_angular_vel +
+                         (1.0 - params_.angular_lowpass_gain) * previous_angular_vel_;
+
+  // 第二级：二阶平滑器（使用配置参数初始化）
+  smoothed_angular_vel = second_order_filter_.filter(smoothed_angular_vel, dt);
+
+  // 第三级：四阶低通滤波（根据配置决定是否应用）
+  if (params_.angular_lowpass_active)
+  {
+    double filtered_output = angle_vel_lowpass_filter_.filter(smoothed_angular_vel);
+
+    // 偏移限制（如果启用）
+    if (params_.angular_use_offset_limit)
+    {
+      double offset = std::abs(filtered_output - original_input);
+      if (offset > params_.angular_output_offset)
+      {
+        // 限制偏移量
+        double sign = (filtered_output >= original_input) ? 1.0 : -1.0;
+        filtered_output = original_input + sign * params_.angular_output_offset;
+      }
+    }
+
+    smoothed_angular_vel = filtered_output;
+  }
+
+  // 输出限幅（根据输入值的比率）
+  double max_output = std::abs(original_input) * params_.angular_output_limit_rate;
+  smoothed_angular_vel = std::clamp(smoothed_angular_vel, -max_output, max_output);
+
+  // 变化率限制（限制角加速度）
+  if (dt > 0.0)
+  {
+    double max_change = params_.angular_rate_limit * dt;
+    double change = smoothed_angular_vel - previous_angular_vel_;
+    change = std::clamp(change, -max_change, max_change);
+    smoothed_angular_vel = previous_angular_vel_ + change;
+  }
+
+  // 更新历史数据
+  previous_angular_vel_ = smoothed_angular_vel;
+
+  return smoothed_angular_vel;
 }
 
 // ============================================================================
