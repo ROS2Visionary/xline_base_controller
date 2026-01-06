@@ -39,18 +39,18 @@ namespace follow_controller
  *
  * 继承自 BaseFollowController，可作为路径跟随控制器使用
  */
-class LQRCircleController : public BaseFollowController
+class LQRCurveController : public BaseFollowController
 {
 public:
   /**
    * @brief 构造函数
    */
-  LQRCircleController();
+  LQRCurveController();
 
   /**
    * @brief 析构函数
    */
-  ~LQRCircleController() override = default;
+  ~LQRCurveController() override = default;
 
   // ================================
   // BaseFollowController 接口实现

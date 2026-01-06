@@ -1,0 +1,153 @@
+# ==============================================================================
+# 前馈+LQR 曲线路径跟踪控制器参数配置
+# ==============================================================================
+
+# LQR 权重参数
+lqr:
+  # 横向误差权重 q1（状态权重矩阵Q的第一个对角元素）
+  q1: 200.0
+
+  # 航向误差权重 q2（状态权重矩阵Q的第二个对角元素）
+  q2: 100.0
+
+  # 控制量权重 r
+  r: 1.0
+
+  # 直接指定增益
+  # 如果 use_direct_gains=true，则直接使用 K1_direct 和 K2_direct
+  # 如果 use_direct_gains=false，则从 q1, q2, r 计算增益
+  use_direct_gains: false
+
+  # 横向误差增益
+  K1_direct: 20.0
+
+  # 航向误差增益 K2
+  K2_direct: 15.0
+
+
+  # 积分项参数（LQI，可选）
+  enable_integral: false
+  # 积分增益
+  Ki: 0.5
+  # 积分饱和限制 (rad/s)
+  integral_max: 0.1
+  # 积分衰减系数（0-1之间，越小衰减越快）
+  integral_decay: 0.99
+
+# 速度限制参数
+velocity:
+  # 最大线速度 (m/s)
+  max: 0.05
+
+  # 最小线速度 (m/s)
+  min: 0.01
+
+  # 最大角速度 (rad/s)
+  omega_max: 0.3
+
+  # 最大角加速度 (rad/s²)
+  omega_dot_max: 0.5
+
+# 机器人参数
+robot:
+  # 轮距 (m)
+  wheel_base: 0.3
+
+# 前瞻参数
+lookahead:
+  # 前瞻距离 (m) - 基于弧长的前瞻
+  distance: 0.01
+
+  # 前瞻时间 (s) - 额外的时间前瞻
+  # 总前瞻 = distance + time * v_max
+  time: 0.2
+
+# 最近点搜索窗口
+search:
+  # 向后搜索窗口大小
+  # 用于避免曲线处最近点索引震荡
+  window_back: 10
+
+  # 向前搜索窗口大小
+  # 圆形路径需要更大的搜索窗口
+  window_forward: 50
+
+
+# 目标到达判定参数
+goal:
+  # 距离容差 (m)
+  dist_tolerance: 0.01
+
+  # 角度容差 (rad)
+  angle_tolerance: 0.05
+
+# 控制参数
+control:
+  # 控制频率 (Hz)
+  # 注：实际控制频率由上层调用频率决定，此参数仅用于计算控制周期
+  frequency: 18.0
+
+# 原地旋转控制参数
+rotation:
+  # 旋转速度调节因子（sigmoid函数增益）
+  factor: 1.2
+
+  # 旋转最大角速度 (rad/s)
+  max_w: 0.8
+
+  # 旋转最小角速度 (rad/s)
+  min_w: 0.15
+
+  # 角度阈值 (rad)
+  # 小于此角度时使用余弦平滑
+  angle_threshold: 0.5
+
+  # 平滑因子（小角度时的余弦平滑系数）
+  smooth_factor: 0.6
+
+
+# 反馈限制参数
+feedback:
+  # 反馈角速度限制比例（相对于前馈的百分比）
+  # 反馈量被限制在 ±|前馈| × limit_ratio 范围内
+  # 建议：0.05 表示反馈不超过前馈的5%
+  limit_ratio: 0.1
+
+  # 最小反馈限制 (rad/s)
+  # 设置为0表示不使用最小限制，严格按照比例计算
+  # 注意：前馈为0时（直线路径）反馈也将被限制为0
+  min_limit: 0.0
+
+# 滤波器参数
+filter:
+  # 位置滤波器参数
+  position:
+    # Hampel滤波器窗口大小（用于异常值检测）
+    # 建议范围: 3-7，值越大对异常值越不敏感
+    hampel_window: 5
+
+    # Hampel滤波器异常值阈值（标准差倍数）
+    # 建议范围: 2.0-4.0，值越大允许更大的偏差
+    hampel_k: 3.0
+
+    # Savitzky-Golay滤波器窗口大小（用于平滑）
+    # 建议范围: 5-9（必须为奇数），值越大平滑效果越强
+    savgol_window: 7
+
+    # Savitzky-Golay滤波器多项式阶数
+    # 建议范围: 2-3，阶数越高拟合越精确但可能引入噪声
+    savgol_order: 2
+
+# 调试参数
+debug:
+  # 是否启用调试输出
+  enable: true
+
+  # 是否输出详细日志
+  verbose: true
+
+  # 是否启用栅格图可视化
+  enable_grid_map: true
+
+  # 栅格图保存路径（相对路径或绝对路径）
+  grid_map_path: 'grid_maps'
