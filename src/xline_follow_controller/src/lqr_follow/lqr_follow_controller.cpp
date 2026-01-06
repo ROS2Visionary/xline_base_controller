@@ -62,7 +62,11 @@ void LQRFollowController::initialize()
   }
 
   initialized_ = true;
-  RCLCPP_INFO(get_logger(), "LQRFollowController 初始化完成 - K1=%.2f, K2=%.2f", K1_, K2_);
+  RCLCPP_INFO(get_logger(),
+              "LQRFollowController 初始化完成 - K1=%.2f, K2=%.2f, 路径类型=%s, v_max=%.3f m/s",
+              K1_, K2_,
+              params_.is_circular_path ? "圆形路径(固定速度)" : "一般路径",
+              params_.v_max);
 }
 
 void LQRFollowController::updateParameters(const std::string& config_path)
@@ -121,6 +125,13 @@ void LQRFollowController::updateParameters(const std::string& config_path)
     params_.rotation_min_w = parser.getParameter<double>("rotation.min_w");
     params_.rotation_angle_threshold = parser.getParameter<double>("rotation.angle_threshold");
     params_.rotation_smooth_factor = parser.getParameter<double>("rotation.smooth_factor");
+
+    // 加载路径类型参数
+    params_.is_circular_path = parser.getParameter<bool>("path.is_circular");
+
+    // 加载反馈限制参数
+    params_.feedback_limit_ratio = parser.getParameter<double>("feedback.limit_ratio");
+    params_.feedback_min_limit = parser.getParameter<double>("feedback.min_limit");
 
     // 加载调试参数
     params_.enable_debug = parser.getParameter<bool>("debug.enable");
@@ -355,7 +366,23 @@ bool LQRFollowController::computeVelocityCommands(
   double current_x = pose.pose.position.x;
   double current_y = pose.pose.position.y;
   double current_theta = tf2::getYaw(pose.pose.orientation);
-  double current_v = params_.v_max;  // 使用期望速度
+
+  // 根据路径类型设置期望速度
+  // 无论圆形路径还是一般路径，都使用期望速度计算前馈
+  // 原因：底层速度控制良好，使用期望速度可避免测量噪声影响前馈稳定性
+  double current_v;
+  if (params_.is_circular_path)
+  {
+    // 圆形路径：固定使用最大速度以保持稳定的曲率跟踪
+    // 前馈控制 ω_ff = v × κ 要求速度恒定才能准确跟踪圆弧
+    current_v = params_.v_max;
+  }
+  else
+  {
+    // 一般路径：同样使用期望速度
+    // 保持前馈的稳定性和可预测性
+    current_v = params_.v_max;
+  }
 
   // 0. 检查是否需要航向预对准
   if (need_yaw_prealign_ && !yaw_prealign_done_)
@@ -402,13 +429,29 @@ bool LQRFollowController::computeVelocityCommands(
     omega_i = -params_.Ki * integral_e_y_;
   }
 
-  // 9. 总控制量
-  double omega = omega_ff + omega_fb + omega_i;
+  // 9. 限制反馈量不超过前馈的指定比例
+  // 总反馈量 = LQR反馈 + 积分项
+  double omega_correction = omega_fb + omega_i;
 
-  // 10. 应用限幅
+  // 计算反馈限制：前馈 × 限制比例（默认5%）
+  double feedback_limit = std::abs(omega_ff) * params_.feedback_limit_ratio;
+
+  // 仅当配置了最小限制（>0）时才使用
+  if (params_.feedback_min_limit > 0.0 && feedback_limit < params_.feedback_min_limit)
+  {
+    feedback_limit = params_.feedback_min_limit;
+  }
+
+  // 限幅反馈控制量
+  omega_correction = std::clamp(omega_correction, -feedback_limit, feedback_limit);
+
+  // 10. 总控制量 = 前馈 + 限幅后的反馈
+  double omega = omega_ff + omega_correction;
+
+  // 11. 应用角速度和角加速度限幅
   omega = applyLimits(omega);
 
-  // 11. 设置输出
+  // 12. 设置输出
   cmd_vel.header.stamp = this->now();
   cmd_vel.header.frame_id = pose.header.frame_id;
   cmd_vel.twist.linear.x = current_v;
@@ -418,7 +461,7 @@ bool LQRFollowController::computeVelocityCommands(
   debug_e_y_ = e_y;
   debug_e_theta_ = e_theta;
   debug_omega_ff_ = omega_ff;
-  debug_omega_fb_ = omega_fb + omega_i;
+  debug_omega_fb_ = omega_correction;  // 保存限幅后的反馈量
   debug_ref_curvature_ = ref.curvature;
   debug_ref_index_ = nearest_idx;  // 使用最近点索引作为参考
 
@@ -426,9 +469,9 @@ bool LQRFollowController::computeVelocityCommands(
   if (params_.enable_debug && params_.verbose)
   {
     RCLCPP_INFO(get_logger(),
-                "LQR: e_y=%.1fmm, e_θ=%.2f°, ω_ff=%.3f, ω_fb=%.3f, ω=%.3f, κ=%.3f",
+                "LQR控制: 横向误差=%.1fmm, 航向角误差=%.2f°, 前馈角速度=%.3f, 反馈角速度=%.3f(限幅±%.3f), 总角速度=%.3f, 曲率=%.3f",
                 e_y * 1000, e_theta * 180 / M_PI,
-                omega_ff, omega_fb + omega_i, omega, ref.curvature);
+                omega_ff, omega_correction, feedback_limit, omega, ref.curvature);
   }
 
   // 更新栅格图可视化

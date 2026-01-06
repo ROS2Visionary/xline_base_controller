@@ -39,7 +39,7 @@ RPPController::RPPController()
   , remaining_distance_(0.0)
   , last_closest_idx(0)
   // 栅格图参数
-  , grid_resolution_(0.01)
+  , grid_resolution_(0.001) 
   , grid_width_(10.0)
   , grid_height_(10.0)
   // 角速度滤波
@@ -1402,7 +1402,7 @@ void RPPController::initializeGridMap(const nav_msgs::msg::Path& path)
     max_y = std::max(max_y, pose.pose.position.y);
   }
 
-  double margin = 1.0;
+  double margin = 0.05;  // 50mm margin
   grid_width_ = (max_x - min_x) + 2 * margin;
   grid_height_ = (max_y - min_y) + 2 * margin;
   grid_origin_x_ = min_x - margin;
@@ -1447,18 +1447,21 @@ void RPPController::drawPathOnGrid(const nav_msgs::msg::Path& path, const cv::Sc
     }
   }
 
+  // 绘制起点和终点
   if (!path.poses.empty())
   {
-    cv::Point start = worldToGrid(path.poses.front().pose.position.x, path.poses.front().pose.position.y);
-    cv::Point end = worldToGrid(path.poses.back().pose.position.x, path.poses.back().pose.position.y);
+    cv::Point start = worldToGrid(path.poses.front().pose.position.x,
+                                   path.poses.front().pose.position.y);
+    cv::Point end = worldToGrid(path.poses.back().pose.position.x,
+                                 path.poses.back().pose.position.y);
 
     if (isPointInGrid(start))
     {
-      cv::circle(grid_map_, start, 3, cv::Scalar(0, 255, 0), -1);
+      cv::circle(grid_map_, start, 3, cv::Scalar(0, 255, 0), -1);  // Green start
     }
     if (isPointInGrid(end))
     {
-      cv::circle(grid_map_, end, 3, cv::Scalar(255, 0, 0), -1);
+      cv::circle(grid_map_, end, 3, cv::Scalar(255, 0, 0), -1);  // Blue end
     }
   }
 }
@@ -1473,7 +1476,7 @@ void RPPController::drawRobotOnGrid(const geometry_msgs::msg::PoseStamped& pose)
   cv::Point robot_pt = worldToGrid(pose.pose.position.x, pose.pose.position.y);
   if (isPointInGrid(robot_pt))
   {
-    cv::circle(grid_map_, robot_pt, 2, cv::Scalar(0, 165, 255), -1);
+    cv::circle(grid_map_, robot_pt, 2, cv::Scalar(0, 165, 255), -1);  // Orange robot
   }
 }
 
@@ -1487,7 +1490,7 @@ void RPPController::drawLookaheadPointOnGrid(const geometry_msgs::msg::Point& lo
   cv::Point lookahead_pt = worldToGrid(lookahead_point.x, lookahead_point.y);
   if (isPointInGrid(lookahead_pt))
   {
-    cv::circle(grid_map_, lookahead_pt, 3, cv::Scalar(255, 0, 255), -1);
+    cv::circle(grid_map_, lookahead_pt, 3, cv::Scalar(255, 0, 255), -1);  // Magenta lookahead
   }
 }
 
@@ -1498,9 +1501,10 @@ void RPPController::drawGridLines()
     return;
   }
 
-  cv::Scalar grid_color(200, 200, 200);
+  cv::Scalar grid_color(220, 220, 220);
 
-  for (double x = grid_origin_x_; x < grid_origin_x_ + grid_width_; x += 0.1)
+  // Draw vertical grid lines every 10mm
+  for (double x = grid_origin_x_; x < grid_origin_x_ + grid_width_; x += 0.01)
   {
     cv::Point pt1 = worldToGrid(x, grid_origin_y_);
     cv::Point pt2 = worldToGrid(x, grid_origin_y_ + grid_height_);
@@ -1510,7 +1514,8 @@ void RPPController::drawGridLines()
     }
   }
 
-  for (double y = grid_origin_y_; y < grid_origin_y_ + grid_height_; y += 0.1)
+  // Draw horizontal grid lines every 10mm
+  for (double y = grid_origin_y_; y < grid_origin_y_ + grid_height_; y += 0.01)
   {
     cv::Point pt1 = worldToGrid(grid_origin_x_, y);
     cv::Point pt2 = worldToGrid(grid_origin_x_ + grid_width_, y);
