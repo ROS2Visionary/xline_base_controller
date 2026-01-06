@@ -120,16 +120,16 @@ target_link_libraries(rpp_follow_controller
 )
 
 # LQR控制器库
-add_library(lqr_follow_controller SHARED
-  src/lqr_follow/lqr_follow_controller.cpp
+add_library(lqr_circle_controller SHARED
+  src/lqr_follow/lqr_circle_controller.cpp
 )
 
-target_include_directories(lqr_follow_controller PUBLIC
+target_include_directories(lqr_circle_controller PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
 )
 
-ament_target_dependencies(lqr_follow_controller
+ament_target_dependencies(lqr_circle_controller
   rclcpp
   geometry_msgs
   nav_msgs
@@ -140,7 +140,7 @@ ament_target_dependencies(lqr_follow_controller
   angles
 )
 
-target_link_libraries(lqr_follow_controller
+target_link_libraries(lqr_circle_controller
   yaml-cpp
 )
 
@@ -152,7 +152,7 @@ install(
 
 # 安装库
 install(
-  TARGETS path_strategy line_follow_controller rpp_follow_controller lqr_follow_controller
+  TARGETS path_strategy line_follow_controller rpp_follow_controller lqr_circle_controller
   EXPORT export_${PROJECT_NAME}
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
@@ -167,7 +167,7 @@ install(
 
 # 导出
 ament_export_include_directories(include)
-ament_export_libraries(path_strategy line_follow_controller rpp_follow_controller lqr_follow_controller)
+ament_export_libraries(path_strategy line_follow_controller rpp_follow_controller lqr_circle_controller)
 ament_export_targets(export_${PROJECT_NAME})
 ament_export_dependencies(
   rclcpp

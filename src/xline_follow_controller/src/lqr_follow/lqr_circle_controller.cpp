@@ -1,4 +1,4 @@
-#include "xline_follow_controller/lqr_follow/lqr_follow_controller.hpp"
+#include "xline_follow_controller/lqr_follow/lqr_circle_controller.hpp"
 #include "ament_index_cpp/get_package_share_directory.hpp"
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 
@@ -14,8 +14,8 @@ namespace follow_controller
 // 构造函数与初始化
 // ============================================================================
 
-LQRFollowController::LQRFollowController()
-  : BaseFollowController("lqr_follow_controller")
+LQRCircleController::LQRCircleController()
+  : BaseFollowController("lqr_circle_controller")
   , K1_(0.0)
   , K2_(0.0)
   , initialized_(false)
@@ -40,14 +40,14 @@ LQRFollowController::LQRFollowController()
     params_.grid_map_path = ws_root;
   }
 
-  updateParameters("/config/lqr.yaml");
+  updateParameters("/config/lqr_circle.yaml");
   initializeFilters();
   initialize();
 
   RCLCPP_INFO(get_logger(), "LQRFollowController 创建完成");
 }
 
-void LQRFollowController::initialize()
+void LQRCircleController::initialize()
 {
   // 计算控制周期
   params_.control_period = 1.0 / params_.control_frequency;
@@ -70,7 +70,7 @@ void LQRFollowController::initialize()
               params_.v_max);
 }
 
-void LQRFollowController::updateParameters(const std::string& config_path)
+void LQRCircleController::updateParameters(const std::string& config_path)
 {
   try
   {
@@ -160,7 +160,7 @@ void LQRFollowController::updateParameters(const std::string& config_path)
 // BaseFollowController 接口实现
 // ============================================================================
 
-bool LQRFollowController::setPlan(const nav_msgs::msg::Path& orig_global_plan)
+bool LQRCircleController::setPlan(const nav_msgs::msg::Path& orig_global_plan)
 {
   if (orig_global_plan.poses.empty())
   {
@@ -171,7 +171,7 @@ bool LQRFollowController::setPlan(const nav_msgs::msg::Path& orig_global_plan)
   // 重置状态
   reset();
 
-  updateParameters("/config/lqr.yaml");
+  updateParameters("/config/lqr_circle.yaml");
 
   // 转换路径格式并计算曲率
   path_.clear();
@@ -225,7 +225,7 @@ bool LQRFollowController::setPlan(const nav_msgs::msg::Path& orig_global_plan)
   return true;
 }
 
-void LQRFollowController::setAngleRange(double start_angle, double end_angle)
+void LQRCircleController::setAngleRange(double start_angle, double end_angle)
 {
   circle_total_angle_ = std::abs(end_angle - start_angle);
 
@@ -240,7 +240,7 @@ void LQRFollowController::setAngleRange(double start_angle, double end_angle)
               circle_total_angle_ * 180.0 / M_PI);
 }
 
-bool LQRFollowController::setPlanForCircle(double circle_center_x, double circle_center_y,
+bool LQRCircleController::setPlanForCircle(double circle_center_x, double circle_center_y,
                                           double circle_radius,
                                           const geometry_msgs::msg::PoseStamped& robot_pose)
 {
@@ -268,7 +268,7 @@ bool LQRFollowController::setPlanForCircle(double circle_center_x, double circle
   return setPlan(circle_path);
 }
 
-nav_msgs::msg::Path LQRFollowController::generateCirclePath(
+nav_msgs::msg::Path LQRCircleController::generateCirclePath(
     double center_x, double center_y, double radius,
     const geometry_msgs::msg::PoseStamped& start_pose) const
 {
@@ -345,7 +345,7 @@ nav_msgs::msg::Path LQRFollowController::generateCirclePath(
   return circle_path;
 }
 
-bool LQRFollowController::computeVelocityCommands(
+bool LQRCircleController::computeVelocityCommands(
     const geometry_msgs::msg::PoseStamped& pose,
     const geometry_msgs::msg::Twist& velocity,
     geometry_msgs::msg::TwistStamped& cmd_vel)
@@ -490,7 +490,7 @@ bool LQRFollowController::computeVelocityCommands(
   return true;
 }
 
-bool LQRFollowController::isGoalReached()
+bool LQRCircleController::isGoalReached()
 {
   if (goal_reached_)
   {
@@ -502,7 +502,7 @@ bool LQRFollowController::isGoalReached()
   return false;
 }
 
-bool LQRFollowController::cancel()
+bool LQRCircleController::cancel()
 {
   reset();
   RCLCPP_INFO(get_logger(), "LQR控制器已取消");
@@ -513,13 +513,13 @@ bool LQRFollowController::cancel()
 // LQR 特有接口
 // ============================================================================
 
-void LQRFollowController::getGains(double& K1, double& K2) const
+void LQRCircleController::getGains(double& K1, double& K2) const
 {
   K1 = K1_;
   K2 = K2_;
 }
 
-std::string LQRFollowController::getDebugInfo() const
+std::string LQRCircleController::getDebugInfo() const
 {
   std::ostringstream oss;
   oss << std::fixed << std::setprecision(3)
@@ -539,7 +539,7 @@ std::string LQRFollowController::getDebugInfo() const
 // 核心计算函数
 // ============================================================================
 
-void LQRFollowController::computeLQRGains(double v)
+void LQRCircleController::computeLQRGains(double v)
 {
   if (params_.use_direct_gains)
   {
@@ -562,7 +562,7 @@ void LQRFollowController::computeLQRGains(double v)
   }
 }
 
-void LQRFollowController::computePathCurvature()
+void LQRCircleController::computePathCurvature()
 {
   if (path_.size() < 3)
   {
@@ -608,7 +608,7 @@ void LQRFollowController::computePathCurvature()
   path_.back().curvature = path_[path_.size() - 2].curvature;
 }
 
-size_t LQRFollowController::findNearestPoint(double x, double y)
+size_t LQRCircleController::findNearestPoint(double x, double y)
 {
   if (path_.empty())
   {
@@ -643,7 +643,7 @@ size_t LQRFollowController::findNearestPoint(double x, double y)
   return nearest_idx;
 }
 
-PathPointWithCurvature LQRFollowController::findLookaheadPoint(size_t nearest_idx,
+PathPointWithCurvature LQRCircleController::findLookaheadPoint(size_t nearest_idx,
                                                                 double lookahead_dist)
 {
   if (path_.empty())
@@ -699,7 +699,7 @@ PathPointWithCurvature LQRFollowController::findLookaheadPoint(size_t nearest_id
   return path_.back();
 }
 
-double LQRFollowController::getLookaheadDistance(double speed)
+double LQRCircleController::getLookaheadDistance(double speed)
 {
   // 基于时间-速度模型计算前瞻距离
   double lookahead_dist = params_.lookahead_distance +
@@ -709,7 +709,7 @@ double LQRFollowController::getLookaheadDistance(double speed)
   return std::max(0.02, lookahead_dist);  // 最小20mm前瞻
 }
 
-void LQRFollowController::computeErrors(double current_x, double current_y,
+void LQRCircleController::computeErrors(double current_x, double current_y,
                                          double current_theta,
                                          const PathPointWithCurvature& ref,
                                          double& e_y, double& e_theta)
@@ -725,7 +725,7 @@ void LQRFollowController::computeErrors(double current_x, double current_y,
   e_theta = normalizeAngle(current_theta - ref.theta);
 }
 
-double LQRFollowController::applyLimits(double omega)
+double LQRCircleController::applyLimits(double omega)
 {
   // 角速度限幅
   omega = std::clamp(omega, -params_.omega_max, params_.omega_max);
@@ -743,7 +743,7 @@ double LQRFollowController::applyLimits(double omega)
   return omega;
 }
 
-double LQRFollowController::normalizeAngle(double angle)
+double LQRCircleController::normalizeAngle(double angle)
 {
   // 使用 fmod 实现 O(1) 复杂度，避免 while 循环
   angle = std::fmod(angle + M_PI, 2.0 * M_PI);
@@ -754,7 +754,7 @@ double LQRFollowController::normalizeAngle(double angle)
   return angle - M_PI;
 }
 
-bool LQRFollowController::performYawPrealignment(const geometry_msgs::msg::PoseStamped& current_pose,
+bool LQRCircleController::performYawPrealignment(const geometry_msgs::msg::PoseStamped& current_pose,
                                                   double target_yaw,
                                                   geometry_msgs::msg::TwistStamped& cmd_vel)
 {
@@ -785,7 +785,7 @@ bool LQRFollowController::performYawPrealignment(const geometry_msgs::msg::PoseS
   return false;  // 对准未完成
 }
 
-double LQRFollowController::calculateRotationVelocity(double angle_diff)
+double LQRCircleController::calculateRotationVelocity(double angle_diff)
 {
   // 使用sigmoid函数计算角速度因子（与line_follow_controller一致）
   double factor = 1.0 / (1.0 + std::exp(-params_.rotation_factor * std::abs(angle_diff)));
@@ -806,7 +806,7 @@ double LQRFollowController::calculateRotationVelocity(double angle_diff)
   return (angle_diff > 0.0) ? rot_vel : -rot_vel;
 }
 
-void LQRFollowController::reset()
+void LQRCircleController::reset()
 {
   goal_reached_ = false;
   last_nearest_idx_ = 0;
@@ -830,7 +830,7 @@ void LQRFollowController::reset()
   RCLCPP_DEBUG(get_logger(), "LQR控制器状态已重置");
 }
 
-void LQRFollowController::initializeFilters()
+void LQRCircleController::initializeFilters()
 {
   // 初始化位置滤波器（从参数配置）
   sg_x_filter_ = SavitzkyGolayFilter(params_.savgol_window, params_.savgol_order);
@@ -839,7 +839,7 @@ void LQRFollowController::initializeFilters()
   h_y_filter = HampelFilter(params_.hampel_window, params_.hampel_k);
 }
 
-geometry_msgs::msg::PoseStamped LQRFollowController::filterRobotPose(
+geometry_msgs::msg::PoseStamped LQRCircleController::filterRobotPose(
     const geometry_msgs::msg::PoseStamped& robot_pose)
 {
   geometry_msgs::msg::PoseStamped current_pose;
@@ -864,7 +864,7 @@ geometry_msgs::msg::PoseStamped LQRFollowController::filterRobotPose(
 // 栅格图可视化
 // ============================================================================
 
-void LQRFollowController::initializeGridMap(const nav_msgs::msg::Path& path)
+void LQRCircleController::initializeGridMap(const nav_msgs::msg::Path& path)
 {
   if (path.poses.empty())
   {
@@ -905,14 +905,14 @@ void LQRFollowController::initializeGridMap(const nav_msgs::msg::Path& path)
               grid_width_, grid_height_, width_pixels, height_pixels);
 }
 
-cv::Point LQRFollowController::worldToGrid(double x, double y)
+cv::Point LQRCircleController::worldToGrid(double x, double y)
 {
   int grid_x = static_cast<int>((x - grid_origin_x_) / grid_resolution_);
   int grid_y = grid_map_.rows - static_cast<int>((y - grid_origin_y_) / grid_resolution_) - 1;
   return cv::Point(grid_x, grid_y);
 }
 
-void LQRFollowController::drawPathOnGrid(const nav_msgs::msg::Path& path,
+void LQRCircleController::drawPathOnGrid(const nav_msgs::msg::Path& path,
                                           const cv::Scalar& color, int thickness)
 {
   if (path.poses.empty() || grid_map_.empty())
@@ -950,7 +950,7 @@ void LQRFollowController::drawPathOnGrid(const nav_msgs::msg::Path& path,
   }
 }
 
-void LQRFollowController::drawRobotOnGrid(const geometry_msgs::msg::PoseStamped& pose)
+void LQRCircleController::drawRobotOnGrid(const geometry_msgs::msg::PoseStamped& pose)
 {
   if (grid_map_.empty())
   {
@@ -964,7 +964,7 @@ void LQRFollowController::drawRobotOnGrid(const geometry_msgs::msg::PoseStamped&
   }
 }
 
-void LQRFollowController::drawLookaheadPointOnGrid(const PathPointWithCurvature& lookahead_point)
+void LQRCircleController::drawLookaheadPointOnGrid(const PathPointWithCurvature& lookahead_point)
 {
   if (grid_map_.empty())
   {
@@ -978,7 +978,7 @@ void LQRFollowController::drawLookaheadPointOnGrid(const PathPointWithCurvature&
   }
 }
 
-void LQRFollowController::drawGridLines()
+void LQRCircleController::drawGridLines()
 {
   if (grid_map_.empty())
   {
@@ -1010,7 +1010,7 @@ void LQRFollowController::drawGridLines()
   }
 }
 
-void LQRFollowController::saveGridMap()
+void LQRCircleController::saveGridMap()
 {
   if (grid_map_.empty() || params_.grid_map_path.empty())
   {
@@ -1021,7 +1021,7 @@ void LQRFollowController::saveGridMap()
   cv::imwrite(filename, grid_map_);
 }
 
-void LQRFollowController::updateGridMapIfNeeded(const geometry_msgs::msg::PoseStamped& current_pose,
+void LQRCircleController::updateGridMapIfNeeded(const geometry_msgs::msg::PoseStamped& current_pose,
                                                  const PathPointWithCurvature& lookahead_point)
 {
   if (!params_.enable_grid_map)
@@ -1039,7 +1039,7 @@ void LQRFollowController::updateGridMapIfNeeded(const geometry_msgs::msg::PoseSt
   }
 }
 
-bool LQRFollowController::isPointInGrid(const cv::Point& pt)
+bool LQRCircleController::isPointInGrid(const cv::Point& pt)
 {
   return pt.x >= 0 && pt.x < grid_map_.cols && pt.y >= 0 && pt.y < grid_map_.rows;
 }

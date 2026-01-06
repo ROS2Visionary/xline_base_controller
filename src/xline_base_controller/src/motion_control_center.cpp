@@ -66,7 +66,7 @@ namespace xline
       // 创建路径跟随控制器
       line_follow_controller_ = std::make_shared<xline::follow_controller::LineFollowController>();
       rpp_follow_controller_ = std::make_shared<xline::follow_controller::RPPController>();
-      lqr_follow_controller_ = std::make_shared<xline::follow_controller::LQRFollowController>();
+      lqr_circle_controller = std::make_shared<xline::follow_controller::LQRCircleController>();
       base_follow_controller_ = nullptr;
       inkjet_client_ = std::make_shared<InkjetClient>();
       RCLCPP_INFO(get_logger(), "喷墨控制器已创建（服务客户端已就绪）");
@@ -541,10 +541,10 @@ namespace xline
         geometry_msgs::msg::PoseStamped start_pose;
         start_pose.pose.position.x = circle_data.start_x;
         start_pose.pose.position.y = circle_data.start_y;
-        lqr_follow_controller_->setAngleRange(2 * M_PI, 0.0);
-        lqr_follow_controller_->setPlanForCircle(circle_data.center_x, circle_data.center_y, circle_data.radius, start_pose);
-        // lqr_follow_controller_->setBackFollow(false);
-        base_follow_controller_ = lqr_follow_controller_;
+        lqr_circle_controller->setAngleRange(2 * M_PI, 0.0);
+        lqr_circle_controller->setPlanForCircle(circle_data.center_x, circle_data.center_y, circle_data.radius, start_pose);
+        // lqr_circle_controller->setBackFollow(false);
+        base_follow_controller_ = lqr_circle_controller;
       }
       else if (current_layer_type == "arc")
       {

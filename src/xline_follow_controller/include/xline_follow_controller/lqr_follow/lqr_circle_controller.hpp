@@ -50,18 +50,18 @@ struct PathPointWithCurvature
  *
  * 继承自 BaseFollowController，可作为路径跟随控制器使用
  */
-class LQRFollowController : public BaseFollowController
+class LQRCircleController : public BaseFollowController
 {
 public:
   /**
    * @brief 构造函数
    */
-  LQRFollowController();
+  LQRCircleController();
 
   /**
    * @brief 析构函数
    */
-  ~LQRFollowController() override = default;
+  ~LQRCircleController() override = default;
 
   // ================================
   // BaseFollowController 接口实现
