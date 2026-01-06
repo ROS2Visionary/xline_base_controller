@@ -249,15 +249,6 @@ private:
   geometry_msgs::msg::PoseStamped filterRobotPose(const geometry_msgs::msg::PoseStamped& robot_pose);
 
   /**
-   * @brief 角速度平滑（使用多种平滑方法）
-   * @param desired_angular_vel 期望角速度
-   * @param dt 时间步长
-   * @param is_reset 是否重置滤波器
-   * @return 平滑后的角速度
-   */
-  double smoothAngularVelocity(double desired_angular_vel, double dt, bool is_reset = false);
-
-  /**
    * @brief 初始化滤波器（使用参数文件中的配置）
    */
   void initializeFilters();
@@ -371,18 +362,6 @@ private:
   SavitzkyGolayFilter sg_y_filter_ = SavitzkyGolayFilter(7, 2);
   HampelFilter h_x_filter = HampelFilter(5, 3.0);
   HampelFilter h_y_filter = HampelFilter(5, 3.0);
-
-  /// 角速度滤波器
-  FourthOrderLowpassFilter angle_vel_lowpass_filter_;
-
-  /// 角速度平滑器
-  SecondOrderSmoother second_order_filter_;
-
-  /// 角速度历史记录（用于移动平均）
-  std::deque<double> angular_vel_history_;
-
-  /// 上一次角速度（用于低通滤波）
-  double previous_angular_vel_;
 
   // ================================
   // 栅格图可视化相关
