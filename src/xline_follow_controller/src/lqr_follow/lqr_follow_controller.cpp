@@ -127,9 +127,6 @@ void LQRFollowController::updateParameters(const std::string& config_path)
     params_.rotation_angle_threshold = parser.getParameter<double>("rotation.angle_threshold");
     params_.rotation_smooth_factor = parser.getParameter<double>("rotation.smooth_factor");
 
-    // 加载路径类型参数
-    params_.is_circular_path = parser.getParameter<bool>("path.is_circular");
-
     // 加载反馈限制参数
     params_.feedback_limit_ratio = parser.getParameter<double>("feedback.limit_ratio");
     params_.feedback_min_limit = parser.getParameter<double>("feedback.min_limit");
@@ -258,6 +255,8 @@ bool LQRFollowController::setPlanForCircle(double circle_center_x, double circle
     RCLCPP_ERROR(get_logger(), "圆半径必须为正值");
     return false;
   }
+
+  params_.is_circular_path = true;
 
   nav_msgs::msg::Path circle_path =
       generateCirclePath(circle_center_x, circle_center_y, circle_radius, robot_pose);

@@ -105,13 +105,6 @@ rotation:
   # 平滑因子（小角度时的余弦平滑系数）
   smooth_factor: 0.6
 
-# 路径类型参数
-path:
-  # 是否为圆形路径
-  # true: 固定使用最大线速度（适合圆形路径保持稳定曲率跟踪）
-  # false: 线速度可变（适合一般路径）
-  is_circular: true
-
 
 # 反馈限制参数
 feedback:
