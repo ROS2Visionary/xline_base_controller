@@ -101,24 +101,6 @@ public:
    */
   void updateParameters(const std::string& config_path);
 
-  /**
-   * @brief 设置圆形路径角度范围（用于生成圆弧路径）
-   * @param start_angle 起始角（rad）
-   * @param end_angle 结束角（rad）
-   */
-  void setAngleRange(double start_angle, double end_angle);
-
-  /**
-   * @brief 生成并设置一条圆形（圆弧）路径
-   * @param circle_center_x 圆心X (m)
-   * @param circle_center_y 圆心Y (m)
-   * @param circle_radius   半径 (m)
-   * @param robot_pose      当前机器人位姿（用于生成切入点与航向）
-   * @return 是否成功
-   */
-  bool setPlanForCircle(double circle_center_x, double circle_center_y,
-                        double circle_radius,
-                        const geometry_msgs::msg::PoseStamped& robot_pose);
 
   /**
    * @brief 获取当前LQR增益
@@ -222,13 +204,6 @@ private:
    * @brief 重置控制器状态
    */
   void reset();
-
-  /**
-   * @brief 根据圆心/半径/起始位姿生成圆弧路径（包含切入点）
-   */
-  nav_msgs::msg::Path generateCirclePath(double center_x, double center_y,
-                                         double radius,
-                                         const geometry_msgs::msg::PoseStamped& start_pose) const;
 
   /**
    * @brief 位置滤波（使用Hampel滤波器和Savitzky-Golay滤波器）
