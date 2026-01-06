@@ -115,6 +115,38 @@ public:
    */
   std::string getDebugInfo() const;
 
+  /**
+   * @brief 设置 Spline 曲线路径
+   * @param vertices Spline 控制点列表
+   * @param degree Spline 阶数
+   * @param start_x 起点X坐标（米）
+   * @param start_y 起点Y坐标（米）
+   * @param end_x 终点X坐标（米）
+   * @param end_y 终点Y坐标（米）
+   * @return 是否成功设置
+   */
+  bool setPlanForSpline(const std::vector<std::pair<double, double>>& vertices,
+                        int degree,
+                        double start_x, double start_y,
+                        double end_x, double end_y);
+
+  /**
+   * @brief 设置椭圆路径
+   * @param center_x 椭圆中心X坐标（米）
+   * @param center_y 椭圆中心Y坐标（米）
+   * @param major_axis_x 主轴向量X分量（米）
+   * @param major_axis_y 主轴向量Y分量（米）
+   * @param ratio 短轴/长轴比例
+   * @param rotation 旋转角度（度）
+   * @param start_angle 起始角度（度）
+   * @param end_angle 结束角度（度）
+   * @return 是否成功设置
+   */
+  bool setPlanForEllipse(double center_x, double center_y,
+                         double major_axis_x, double major_axis_y,
+                         double ratio, double rotation,
+                         double start_angle, double end_angle);
+
 private:
   // ================================
   // 核心计算函数

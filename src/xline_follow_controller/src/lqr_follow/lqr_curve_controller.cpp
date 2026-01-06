@@ -917,5 +917,197 @@ bool LQRCurveController::isPointInGrid(const cv::Point& pt)
   return pt.x >= 0 && pt.x < grid_map_.cols && pt.y >= 0 && pt.y < grid_map_.rows;
 }
 
+// ============================================================================
+// Spline 和 Ellipse 路径设置
+// ============================================================================
+
+bool LQRCurveController::setPlanForSpline(const std::vector<std::pair<double, double>>& vertices,
+                                           int degree,
+                                           double start_x, double start_y,
+                                           double end_x, double end_y)
+{
+  if (!initialized_)
+  {
+    RCLCPP_ERROR(get_logger(), "控制器未初始化，请先调用 initialize()");
+    return false;
+  }
+
+  // 参数验证
+  if (vertices.size() < 2)
+  {
+    RCLCPP_ERROR(get_logger(), "Spline路径控制点数不足（至少需要2个点），当前: %zu", vertices.size());
+    return false;
+  }
+
+  // 重置状态
+  reset();
+  updateParameters("/config/lqr_curve.yaml");
+
+  // 生成 Spline 路径
+  nav_msgs::msg::Path spline_path;
+  spline_path.header.frame_id = "map";
+  spline_path.header.stamp = this->now();
+
+  // 直接使用控制点作为路径点（简化实现，实际可以进行插值）
+  for (const auto& vertex : vertices)
+  {
+    geometry_msgs::msg::PoseStamped pose;
+    pose.header = spline_path.header;
+    pose.pose.position.x = vertex.first;
+    pose.pose.position.y = vertex.second;
+    pose.pose.position.z = 0.0;
+
+    // 初始朝向（后续会计算）
+    pose.pose.orientation.w = 1.0;
+    pose.pose.orientation.x = 0.0;
+    pose.pose.orientation.y = 0.0;
+    pose.pose.orientation.z = 0.0;
+
+    spline_path.poses.push_back(pose);
+  }
+
+  // 为路径点计算朝向（每个点朝向下一个点）
+  for (size_t i = 0; i < spline_path.poses.size() - 1; ++i)
+  {
+    double dx = spline_path.poses[i + 1].pose.position.x - spline_path.poses[i].pose.position.x;
+    double dy = spline_path.poses[i + 1].pose.position.y - spline_path.poses[i].pose.position.y;
+    double yaw = std::atan2(dy, dx);
+
+    tf2::Quaternion q;
+    q.setRPY(0, 0, yaw);
+    spline_path.poses[i].pose.orientation.x = q.x();
+    spline_path.poses[i].pose.orientation.y = q.y();
+    spline_path.poses[i].pose.orientation.z = q.z();
+    spline_path.poses[i].pose.orientation.w = q.w();
+  }
+
+  // 最后一个点的朝向与前一个点相同
+  if (spline_path.poses.size() > 1)
+  {
+    spline_path.poses.back().pose.orientation =
+        spline_path.poses[spline_path.poses.size() - 2].pose.orientation;
+  }
+
+  RCLCPP_INFO(get_logger(),
+              "Spline路径已生成 - 控制点数: %zu, 阶数: %d, 路径点数: %zu, 起点(%.3f, %.3f), 终点(%.3f, %.3f)",
+              vertices.size(), degree, spline_path.poses.size(), start_x, start_y, end_x, end_y);
+
+  // 调用基类的 setPlan 方法
+  return setPlan(spline_path);
+}
+
+bool LQRCurveController::setPlanForEllipse(double center_x, double center_y,
+                                            double major_axis_x, double major_axis_y,
+                                            double ratio, double rotation,
+                                            double start_angle, double end_angle)
+{
+  if (!initialized_)
+  {
+    RCLCPP_ERROR(get_logger(), "控制器未初始化，请先调用 initialize()");
+    return false;
+  }
+
+  // 参数验证
+  if (ratio <= 0.0 || ratio > 1.0)
+  {
+    RCLCPP_ERROR(get_logger(), "Ellipse路径比例参数无效（应在0-1之间）: %.3f", ratio);
+    return false;
+  }
+
+  // 重置状态
+  reset();
+  updateParameters("/config/lqr_curve.yaml");
+
+  // 生成椭圆路径
+  nav_msgs::msg::Path ellipse_path;
+  ellipse_path.header.frame_id = "map";
+  ellipse_path.header.stamp = this->now();
+
+  // 计算椭圆的长轴和短轴长度
+  double a = std::sqrt(major_axis_x * major_axis_x + major_axis_y * major_axis_y);  // 长轴长度
+  double b = a * ratio;  // 短轴长度
+
+  // 旋转角度（转换为弧度）
+  double rotation_rad = rotation * M_PI / 180.0;
+
+  // 生成椭圆上的点（使用参数方程）
+  double start_angle_rad = start_angle * M_PI / 180.0;
+  double end_angle_rad = end_angle * M_PI / 180.0;
+
+  // 确定角度范围和步长
+  double angle_range = end_angle_rad - start_angle_rad;
+  if (angle_range < 0)
+  {
+    angle_range += 2 * M_PI;
+  }
+
+  // 生成足够密集的点以保证平滑（参考圆形路径：3mm点间距）
+  // 估算椭圆周长：Ramanujan近似公式
+  double h = std::pow((a - b) / (a + b), 2);
+  double perimeter_approx = M_PI * (a + b) * (1 + 3 * h / (10 + std::sqrt(4 - 3 * h)));
+  double arc_length = perimeter_approx * (angle_range / (2 * M_PI));
+
+  constexpr double kPointSpacingMeters = 0.003;  // 3mm点间距
+  int num_points = std::max(50, static_cast<int>(arc_length / kPointSpacingMeters));
+
+  constexpr int kMaxPoints = 20000;
+  if (num_points > kMaxPoints)
+  {
+    RCLCPP_WARN(get_logger(), "椭圆采样点过多(%d)，已限制到 %d 点", num_points, kMaxPoints);
+    num_points = kMaxPoints;
+  }
+
+  double angle_step = angle_range / num_points;
+
+  for (int i = 0; i <= num_points; ++i)
+  {
+    double theta = start_angle_rad + i * angle_step;
+
+    // 参数方程：椭圆上的点（未旋转）
+    double x_local = a * std::cos(theta);
+    double y_local = b * std::sin(theta);
+
+    // 应用旋转
+    double x_rotated = x_local * std::cos(rotation_rad) - y_local * std::sin(rotation_rad);
+    double y_rotated = x_local * std::sin(rotation_rad) + y_local * std::cos(rotation_rad);
+
+    // 平移到椭圆中心
+    double x_global = center_x + x_rotated;
+    double y_global = center_y + y_rotated;
+
+    geometry_msgs::msg::PoseStamped pose;
+    pose.header = ellipse_path.header;
+    pose.pose.position.x = x_global;
+    pose.pose.position.y = y_global;
+    pose.pose.position.z = 0.0;
+
+    // 计算切线方向作为朝向
+    // 对于椭圆参数方程，切线方向为：
+    // dx/dt = -a*sin(theta)*cos(rotation) - b*cos(theta)*sin(rotation)
+    // dy/dt = -a*sin(theta)*sin(rotation) + b*cos(theta)*cos(rotation)
+    double dx_dt = -a * std::sin(theta) * std::cos(rotation_rad) - b * std::cos(theta) * std::sin(rotation_rad);
+    double dy_dt = -a * std::sin(theta) * std::sin(rotation_rad) + b * std::cos(theta) * std::cos(rotation_rad);
+    double tangent_yaw = std::atan2(dy_dt, dx_dt);
+
+    tf2::Quaternion q;
+    q.setRPY(0, 0, tangent_yaw);
+    pose.pose.orientation.x = q.x();
+    pose.pose.orientation.y = q.y();
+    pose.pose.orientation.z = q.z();
+    pose.pose.orientation.w = q.w();
+
+    ellipse_path.poses.push_back(pose);
+  }
+
+  RCLCPP_INFO(get_logger(),
+              "Ellipse路径已生成 - 点数: %zu, 中心(%.3f, %.3f), 长轴=%.3fm, 短轴=%.3fm, "
+              "旋转=%.1f度, 角度范围[%.1f, %.1f]度",
+              ellipse_path.poses.size(), center_x, center_y, a, b, rotation,
+              start_angle, end_angle);
+
+  // 调用基类的 setPlan 方法
+  return setPlan(ellipse_path);
+}
+
 }  // namespace follow_controller
 }  // namespace xline
