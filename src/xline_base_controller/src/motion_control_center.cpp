@@ -541,10 +541,14 @@ namespace xline
         geometry_msgs::msg::PoseStamped start_pose;
         start_pose.pose.position.x = circle_data.start_x;
         start_pose.pose.position.y = circle_data.start_y;
-        lqr_circle_controller->setAngleRange(2 * M_PI, 0.0);
-        lqr_circle_controller->setPlanForCircle(circle_data.center_x, circle_data.center_y, circle_data.radius, start_pose);
-        // lqr_circle_controller->setBackFollow(false);
-        base_follow_controller_ = lqr_circle_controller;
+        // lqr_circle_controller->setAngleRange(2 * M_PI, 0.0);
+        // lqr_circle_controller->setPlanForCircle(circle_data.center_x, circle_data.center_y, circle_data.radius, start_pose);
+        // base_follow_controller_ = lqr_circle_controller;
+
+        rpp_follow_controller_->setAngleRange(2 * M_PI, 0.0);
+        rpp_follow_controller_->setPlanForCircle(circle_data.center_x, circle_data.center_y, circle_data.radius, start_pose);
+        rpp_follow_controller_->setBackFollow(false);
+        base_follow_controller_ = rpp_follow_controller_;
       }
       else if (current_layer_type == "arc")
       {
@@ -870,6 +874,9 @@ namespace xline
                         inkjet_client->stop_print(printer_name);
                       }).detach();
             RCLCPP_INFO(get_logger(), "停止打印: printer=%s", current_ink_printer_.c_str());
+
+            // 更新打印状态，避免重复发送停止命令
+            is_inkjet_printing = false;
         }
 
         // 发布线速度与角速度

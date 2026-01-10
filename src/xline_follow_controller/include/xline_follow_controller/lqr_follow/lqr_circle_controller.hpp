@@ -381,8 +381,29 @@ private:
   // 圆形路径参数（用于 setPlanForCircle）
   // ================================
 
+  /// 圆形半径（用于 updateAccumulatedAngle 计算）
+  double circle_radius_ = 0.0;
+
   /// 目标累计角度（rad），默认一圈
   double circle_total_angle_ = 2.0 * M_PI;
+
+  /// 角度累计相关
+  bool last_yaw_initialized_ = false;  ///< 是否已初始化上次航向角
+  double last_yaw_ = 0.0;              ///< 上次航向角
+  double accumulated_angle_ = 0.0;     ///< 累计角度
+
+  /// 打印窗口参数
+  bool print_window_initialized_ = false;   ///< 打印窗口是否已初始化
+  double start_print_angle_ = 0.0;          ///< 开始打印触发角度
+  double stop_print_start_angle_ = 0.0;     ///< 停止打印窗口起始角度
+  double stop_print_end_angle_ = 0.0;       ///< 停止打印窗口结束角度
+
+  /**
+   * @brief 更新累计角度
+   * @param current_yaw 当前航向角
+   * @return 是否完成圆形路径
+   */
+  bool updateAccumulatedAngle(double current_yaw);
 };
 
 }  // namespace follow_controller

@@ -8,7 +8,7 @@ lqr:
   q1: 200.0
 
   # 航向误差权重 q2（状态权重矩阵Q的第二个对角元素）
-  q2: 100.0
+  q2: 300.0
 
   # 控制量权重 r
   r: 1.0
@@ -37,7 +37,7 @@ lqr:
 # 速度限制参数
 velocity:
   # 最大线速度 (m/s)
-  max: 0.05
+  max: 0.07
 
   # 最小线速度 (m/s)
   min: 0.01
@@ -56,11 +56,11 @@ robot:
 # 前瞻参数
 lookahead:
   # 前瞻距离 (m) - 基于弧长的前瞻
-  distance: 0.01
+  distance: 0.015
 
   # 前瞻时间 (s) - 额外的时间前瞻
   # 总前瞻 = distance + time * v_max
-  time: 0.2
+  time: 0.05
 
 # 最近点搜索窗口
 search:
@@ -111,7 +111,7 @@ feedback:
   # 反馈角速度限制比例（相对于前馈的百分比）
   # 反馈量被限制在 ±|前馈| × limit_ratio 范围内
   # 建议：0.05 表示反馈不超过前馈的5%
-  limit_ratio: 0.1
+  limit_ratio: 0.05
 
   # 最小反馈限制 (rad/s)
   # 设置为0表示不使用最小限制，严格按照比例计算
@@ -136,7 +136,7 @@ filter:
 
     # Savitzky-Golay滤波器多项式阶数
     # 建议范围: 2-3，阶数越高拟合越精确但可能引入噪声
-    savgol_order: 2
+    savgol_order: 3
 
 # 调试参数
 debug:

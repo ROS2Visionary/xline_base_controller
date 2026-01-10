@@ -64,9 +64,8 @@ void LQRCircleController::initialize()
 
   initialized_ = true;
   RCLCPP_INFO(get_logger(),
-              "LQRFollowController 初始化完成 - K1=%.2f, K2=%.2f, 路径类型=%s, v_max=%.3f m/s",
+              "LQRFollowController 初始化完成 - K1=%.2f, K2=%.2f, v_max=%.3f m/s",
               K1_, K2_,
-              params_.is_circular_path ? "圆形路径(固定速度)" : "一般路径",
               params_.v_max);
 }
 
@@ -227,13 +226,8 @@ bool LQRCircleController::setPlan(const nav_msgs::msg::Path& orig_global_plan)
 
 void LQRCircleController::setAngleRange(double start_angle, double end_angle)
 {
-  circle_total_angle_ = std::abs(end_angle - start_angle);
 
-  // 兼容：如果输入角度范围为 0，则默认走一整圈
-  if (circle_total_angle_ < 1e-6)
-  {
-    circle_total_angle_ = 2.0 * M_PI;
-  }
+  circle_total_angle_ = std::abs(end_angle - start_angle) + 1.5 * M_PI;
 
   RCLCPP_INFO(get_logger(), "设置圆形角度范围: [%.2f, %.2f], 总角度: %.2f rad (%.1f°)",
               start_angle, end_angle, circle_total_angle_,
@@ -256,8 +250,6 @@ bool LQRCircleController::setPlanForCircle(double circle_center_x, double circle
     return false;
   }
 
-  params_.is_circular_path = true;
-
   nav_msgs::msg::Path circle_path =
       generateCirclePath(circle_center_x, circle_center_y, circle_radius, robot_pose);
 
@@ -265,7 +257,14 @@ bool LQRCircleController::setPlanForCircle(double circle_center_x, double circle
               circle_center_x, circle_center_y, circle_radius, circle_total_angle_,
               circle_path.poses.size());
 
-  return setPlan(circle_path);
+  // 先调用 setPlan()（内部会调用 reset() 清空所有状态）
+  bool result = setPlan(circle_path);
+
+  // 再保存圆形路径特有的参数（在 reset() 之后保存，避免被清零）
+  // 这个半径用于 updateAccumulatedAngle() 中计算角速度补偿
+  circle_radius_ = circle_radius;
+
+  return result;
 }
 
 nav_msgs::msg::Path LQRCircleController::generateCirclePath(
@@ -380,19 +379,7 @@ bool LQRCircleController::computeVelocityCommands(
   // 根据路径类型设置期望速度
   // 无论圆形路径还是一般路径，都使用期望速度计算前馈
   // 原因：底层速度控制良好，使用期望速度可避免测量噪声影响前馈稳定性
-  double current_v;
-  if (params_.is_circular_path)
-  {
-    // 圆形路径：固定使用最大速度以保持稳定的曲率跟踪
-    // 前馈控制 ω_ff = v × κ 要求速度恒定才能准确跟踪圆弧
-    current_v = params_.v_max;
-  }
-  else
-  {
-    // 一般路径：同样使用期望速度
-    // 保持前馈的稳定性和可预测性
-    current_v = params_.v_max;
-  }
+  double current_v = params_.v_max;
 
   // 0. 检查是否需要航向预对准
   if (need_yaw_prealign_ && !yaw_prealign_done_)
@@ -460,6 +447,22 @@ bool LQRCircleController::computeVelocityCommands(
 
   // 11. 应用角速度和角加速度限幅
   omega = applyLimits(omega);
+
+  // 12. 对于圆形路径，检查是否完成
+  bool completed = updateAccumulatedAngle(current_theta);
+  if (completed)
+  {
+    goal_reached_ = true;
+    cmd_vel.header.stamp = this->now();
+    cmd_vel.header.frame_id = pose.header.frame_id;
+    cmd_vel.twist.linear.x = 0.0;
+    cmd_vel.twist.angular.z = 0.0;
+
+    RCLCPP_INFO(get_logger(), "圆形路径完成 - 累计角度: %.4f rad (%.2f°)",
+                  accumulated_angle_, accumulated_angle_ * 180.0 / M_PI);
+    return true;
+  }
+  
 
   // 13. 设置输出
   cmd_vel.header.stamp = this->now();
@@ -819,6 +822,19 @@ void LQRCircleController::reset()
   debug_ref_curvature_ = 0.0;
   debug_ref_index_ = 0;
 
+  // 重置圆形路径参数
+  circle_radius_ = 0.0;
+
+  // 重置角度累计相关状态
+  last_yaw_initialized_ = false;
+  last_yaw_ = 0.0;
+  accumulated_angle_ = 0.0;
+  start_print = false;
+  stop_print = false;
+  print_window_initialized_ = false;
+  start_print_angle_ = 0.0;
+  stop_print_start_angle_ = 0.0;
+  stop_print_end_angle_ = 0.0;
 
   // 重置位置滤波器（使用配置参数）
   sg_x_filter_.reset(params_.savgol_window, params_.savgol_order);
@@ -1042,6 +1058,127 @@ void LQRCircleController::updateGridMapIfNeeded(const geometry_msgs::msg::PoseSt
 bool LQRCircleController::isPointInGrid(const cv::Point& pt)
 {
   return pt.x >= 0 && pt.x < grid_map_.cols && pt.y >= 0 && pt.y < grid_map_.rows;
+}
+
+
+bool LQRCircleController::updateAccumulatedAngle(double current_yaw)
+{
+
+  if (!last_yaw_initialized_)
+  {
+    last_yaw_ = current_yaw;
+    last_yaw_initialized_ = true;
+    accumulated_angle_ = 0.0;
+    RCLCPP_INFO(get_logger(), "圆形路径跟踪开始，初始航向角: %.2f", current_yaw);
+    return false;  // 初始化阶段不判定为完成
+  }
+
+  double delta_yaw = current_yaw - last_yaw_;
+
+  if (delta_yaw > M_PI)
+  {
+    delta_yaw -= 2.0 * M_PI;  // 修正正向跳变
+  }
+  else if (delta_yaw < -M_PI)
+  {
+    delta_yaw += 2.0 * M_PI;  // 修正负向跳变
+  }
+
+  if (delta_yaw > 0)
+  {
+    // 只累计"正向"旋转的角度，避免来回抖动时累计角度不合理地增大
+    accumulated_angle_ += delta_yaw;
+  }
+
+  // 更新上次航向角，用于下次计算
+  last_yaw_ = current_yaw;
+
+  constexpr double print_start_delay = 1.0;  // 喷码机出墨延时 (秒)
+
+  // 根据弧长计算期望的开始角度
+  // 弧长公式: s = r × θ, 因此 θ = s / r
+  constexpr double arc_length_for_start = 0.4;  // 弧长 0.4m
+  const double angle_from_arc = arc_length_for_start / circle_radius_;  // θ = s / r
+  const double quarter_circle = 0.5 * M_PI;  // 四分之一圆
+  // 如果弧长对应的角度超过四分之一圆，则取四分之一圆
+  const double desired_start_angle = std::min(angle_from_arc, quarter_circle);
+
+  // 计算机器人沿圆形路径的角速度 ω = v / r
+  double omega_for_delay = params_.v_max / circle_radius_;  // 正常情况：ω = v_max / R0;
+
+  const double start_lead_angle = omega_for_delay * print_start_delay;
+
+  const double start_trigger_angle = std::max(0.0, desired_start_angle - start_lead_angle);
+
+  if (accumulated_angle_ > start_trigger_angle)
+  {
+    if (!print_window_initialized_)
+    {
+      // 记录触发"开始打印"信号时的累计角度
+      start_print_angle_ = accumulated_angle_;
+
+      // 计算有效开始喷印角度（考虑延时后的实际喷印位置）
+      // effective_start_print_angle = 触发角度 + 延时期间转过的角度
+      const double effective_start_print_angle = start_print_angle_ + start_lead_angle;
+
+      // 定义停止打印窗口参数
+      constexpr double kStopArcLengthMeters = 0.03;        // 停止窗口弧长：3cm
+      constexpr double kClosureCompensationMeters = 0.06;  // 闭合补偿弧长：6cm
+
+      // 将弧长转换为角度：θ = L / R
+      // 停止窗口角度跨度（最多不超过2π）
+      const double stop_delta_angle = std::min(2.0 * M_PI, kStopArcLengthMeters / circle_radius_);
+
+      const double closure_comp_angle =
+          std::min(2.0 * M_PI, kClosureCompensationMeters / circle_radius_);
+
+      stop_print_end_angle_ = effective_start_print_angle + 2.0 * M_PI + closure_comp_angle;
+
+      stop_print_start_angle_ = stop_print_end_angle_ - stop_delta_angle;
+
+      print_window_initialized_ = true;  // 标记窗口已初始化
+      // RCLCPP_INFO(get_logger(),"stop_print_end_angle_: %.5f, stop_delta_angle: %.5f,stop_delta_angle: %.5f, closure_comp_angle: %.5f, circle_radius_: %.5f",stop_print_end_angle_,stop_delta_angle,closure_comp_angle,circle_radius_);
+    }
+  }
+
+
+  if (print_window_initialized_)
+  {
+    // 打印窗口已初始化，根据当前累计角度判断打印状态
+    if (accumulated_angle_ < stop_print_start_angle_)
+    {
+      // 情况1：累计角度 < 停止打印开始角度
+      // → 应该继续打印
+      start_print = true;
+      stop_print = false;
+    }
+    else
+    {
+      // 情况2：累计角度 >= 停止打印开始角度
+      // → 应该停止打印（进入3cm停止窗口）
+      start_print = false;
+      stop_print = true;
+    }
+
+    // 判断圆形路径是否完成
+    if (accumulated_angle_ >= stop_print_end_angle_)
+    {
+      // 累计角度达到或超过停止打印结束角度，圆形路径完成
+      return true;
+    }
+  }
+  else if (accumulated_angle_ >= 2.63 * M_PI)
+  {
+
+    // 若打印窗口未初始化（异常情况），但累计角度已超过 2.63π (约 474°)
+    // 则强制认为路径完成，避免无限循环
+    start_print = false;
+    stop_print = true;
+    return true;
+  }
+
+  // 路径未完成，继续跟踪
+  return false;
 }
 
 }  // namespace follow_controller
