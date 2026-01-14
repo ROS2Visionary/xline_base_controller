@@ -25,20 +25,15 @@ namespace follow_controller
 {
 
 /**
- * @brief 前馈+LQR高精度路径跟踪控制器
- *
- * 核心思想：控制量 = 前馈控制 + 反馈控制
- *           ω = ω_feedforward + ω_feedback
- *             = v × κ + (-K₁·e_y - K₂·e_θ)
- *
- * 特点：
- * - 实现 < 5mm 精度的曲线路径跟踪
- * - 前馈控制提供主要控制量（~90%）
- * - LQR反馈仅做误差修正（~10%）
- * - 适用于贝塞尔曲线、圆弧、任意光滑曲线
- *
- * 继承自 BaseFollowController，可作为路径跟随控制器使用
+ * @brief 路径类型枚举
  */
+enum class PathType
+{
+  CIRCLE, 
+  ARC   
+};
+
+
 class LQRCircleController : public BaseFollowController
 {
 public:
@@ -381,11 +376,15 @@ private:
   // 圆形路径参数（用于 setPlanForCircle）
   // ================================
 
+  /// 路径类型（圆形或圆弧）
+  PathType path_type_ = PathType::ARC;
+
   /// 圆形半径（用于 updateAccumulatedAngle 计算）
   double circle_radius_ = 0.0;
 
-  /// 目标累计角度（rad），默认一圈
-  double circle_total_angle_ = 2.0 * M_PI;
+  double path_total_angle_ = 2.0 * M_PI;
+
+  double target_total_angle_ = 2.0 * M_PI;
 
   /// 角度累计相关
   bool last_yaw_initialized_ = false;  ///< 是否已初始化上次航向角

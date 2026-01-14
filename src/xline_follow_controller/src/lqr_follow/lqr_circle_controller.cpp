@@ -227,11 +227,13 @@ bool LQRCircleController::setPlan(const nav_msgs::msg::Path& orig_global_plan)
 void LQRCircleController::setAngleRange(double start_angle, double end_angle)
 {
 
-  circle_total_angle_ = std::abs(end_angle - start_angle) + 1.5 * M_PI;
+  target_total_angle_ = std::abs(end_angle - start_angle);
+
+  path_total_angle_ = target_total_angle_ + 1.5 * M_PI;
 
   RCLCPP_INFO(get_logger(), "设置圆形角度范围: [%.2f, %.2f], 总角度: %.2f rad (%.1f°)",
-              start_angle, end_angle, circle_total_angle_,
-              circle_total_angle_ * 180.0 / M_PI);
+              start_angle, end_angle, target_total_angle_,
+              target_total_angle_ * 180.0 / M_PI);
 }
 
 bool LQRCircleController::setPlanForCircle(double circle_center_x, double circle_center_y,
@@ -254,7 +256,7 @@ bool LQRCircleController::setPlanForCircle(double circle_center_x, double circle
       generateCirclePath(circle_center_x, circle_center_y, circle_radius, robot_pose);
 
   RCLCPP_INFO(get_logger(), "圆形路径已生成 - 圆心: (%.3f, %.3f), 半径: %.3f m, 总角度: %.2f rad, 点数: %zu",
-              circle_center_x, circle_center_y, circle_radius, circle_total_angle_,
+              circle_center_x, circle_center_y, circle_radius, path_total_angle_,
               circle_path.poses.size());
 
   // 先调用 setPlan()（内部会调用 reset() 清空所有状态）
@@ -263,6 +265,22 @@ bool LQRCircleController::setPlanForCircle(double circle_center_x, double circle
   // 再保存圆形路径特有的参数（在 reset() 之后保存，避免被清零）
   // 这个半径用于 updateAccumulatedAngle() 中计算角速度补偿
   circle_radius_ = circle_radius;
+
+  // 根据 circle_total_angle_ 自动判断路径类型
+  // 如果总角度 >= 1.95π，视为完整圆形；否则视为圆弧
+  constexpr double kCircleThreshold = 1.95 * M_PI;
+  if (target_total_angle_ >= kCircleThreshold)
+  {
+    path_type_ = PathType::CIRCLE;
+    RCLCPP_INFO(get_logger(), "路径类型: 完整圆形 (总角度: %.2f°)",
+                target_total_angle_ * 180.0 / M_PI);
+  }
+  else
+  {
+    path_type_ = PathType::ARC;
+    RCLCPP_INFO(get_logger(), "路径类型: 圆弧 (总角度: %.2f°)",
+                target_total_angle_ * 180.0 / M_PI);
+  }
 
   return result;
 }
@@ -305,7 +323,7 @@ nav_msgs::msg::Path LQRCircleController::generateCirclePath(
       entry_pose.pose.position.y - center_y,
       entry_pose.pose.position.x - center_x);
 
-  const double total_angle = std::max(circle_total_angle_, 1e-6);
+  const double total_angle = std::max(path_total_angle_, 1e-6);
 
   size_t num_segments = static_cast<size_t>(std::ceil(total_angle / max_step_angle));
   num_segments = std::max<size_t>(num_segments, 1);
@@ -823,6 +841,7 @@ void LQRCircleController::reset()
   debug_ref_index_ = 0;
 
   // 重置圆形路径参数
+  path_type_ = PathType::ARC;  // 重置为默认类型
   circle_radius_ = 0.0;
 
   // 重置角度累计相关状态
@@ -1132,7 +1151,17 @@ bool LQRCircleController::updateAccumulatedAngle(double current_yaw)
       const double closure_comp_angle =
           std::min(2.0 * M_PI, kClosureCompensationMeters / circle_radius_);
 
-      stop_print_end_angle_ = effective_start_print_angle + 2.0 * M_PI + closure_comp_angle;
+    
+      if (path_type_ == PathType::CIRCLE)
+      {
+        stop_print_end_angle_ = effective_start_print_angle + 2.0 * M_PI + closure_comp_angle;
+      }
+
+      if (path_type_ == PathType::ARC)
+      {
+        stop_print_end_angle_ = effective_start_print_angle + target_total_angle_ + closure_comp_angle;
+      }
+      
 
       stop_print_start_angle_ = stop_print_end_angle_ - stop_delta_angle;
 

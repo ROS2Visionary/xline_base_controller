@@ -541,14 +541,14 @@ namespace xline
         geometry_msgs::msg::PoseStamped start_pose;
         start_pose.pose.position.x = circle_data.start_x;
         start_pose.pose.position.y = circle_data.start_y;
-        // lqr_circle_controller->setAngleRange(2 * M_PI, 0.0);
-        // lqr_circle_controller->setPlanForCircle(circle_data.center_x, circle_data.center_y, circle_data.radius, start_pose);
-        // base_follow_controller_ = lqr_circle_controller;
+        lqr_circle_controller->setAngleRange(2 * M_PI, 0.0);
+        lqr_circle_controller->setPlanForCircle(circle_data.center_x, circle_data.center_y, circle_data.radius, start_pose);
+        base_follow_controller_ = lqr_circle_controller;
 
-        rpp_follow_controller_->setAngleRange(2 * M_PI, 0.0);
-        rpp_follow_controller_->setPlanForCircle(circle_data.center_x, circle_data.center_y, circle_data.radius, start_pose);
-        rpp_follow_controller_->setBackFollow(false);
-        base_follow_controller_ = rpp_follow_controller_;
+        // rpp_follow_controller_->setAngleRange(2 * M_PI, 0.0);
+        // rpp_follow_controller_->setPlanForCircle(circle_data.center_x, circle_data.center_y, circle_data.radius, start_pose);
+        // rpp_follow_controller_->setBackFollow(false);
+        // base_follow_controller_ = rpp_follow_controller_;
       }
       else if (current_layer_type == "arc")
       {
@@ -558,9 +558,16 @@ namespace xline
         geometry_msgs::msg::PoseStamped current_pose;
         getLatestPose(current_pose);
 
-        rpp_follow_controller_->setAngleRange(arc_data.start_angle, arc_data.end_angle);
-        rpp_follow_controller_->setPlanForCircle(arc_data.center_x, arc_data.center_y, arc_data.radius, current_pose);
-        base_follow_controller_ = rpp_follow_controller_;
+        geometry_msgs::msg::PoseStamped start_pose;
+        start_pose.pose.position.x = arc_data.start_x;
+        start_pose.pose.position.y = arc_data.start_y;
+        lqr_circle_controller->setAngleRange(arc_data.start_angle, arc_data.end_angle);
+        lqr_circle_controller->setPlanForCircle(arc_data.center_x, arc_data.center_y, arc_data.radius, start_pose);
+        base_follow_controller_ = lqr_circle_controller;
+
+        // rpp_follow_controller_->setAngleRange(arc_data.start_angle, arc_data.end_angle);
+        // rpp_follow_controller_->setPlanForCircle(arc_data.center_x, arc_data.center_y, arc_data.radius, current_pose);
+        // base_follow_controller_ = rpp_follow_controller_;
       }
       else if (current_layer_type == "spline")
       {
@@ -991,9 +998,11 @@ namespace xline
     MotionControlCenter::ArcData MotionControlCenter::extractArcData(const Json::Value &arc_obj)
     {
       ArcData data;
-      data.center_x = arc_obj["center"]["x"].asDouble();
-      data.center_y = arc_obj["center"]["y"].asDouble();
-      data.radius = arc_obj["radius"].asDouble();
+      data.center_x = arc_obj["center"]["x"].asDouble() / 1000;
+      data.center_y = arc_obj["center"]["y"].asDouble() / 1000;
+      data.radius = arc_obj["radius"].asDouble() / 1000;
+      data.start_x = arc_obj["start"]["x"].asDouble() / 1000;
+      data.start_y = arc_obj["start"]["y"].asDouble() / 1000;
 
       // 度转弧度
       data.start_angle = arc_obj["start_angle"].asDouble() * M_PI / 180.0;

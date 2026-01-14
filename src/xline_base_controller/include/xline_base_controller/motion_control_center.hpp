@@ -200,6 +200,8 @@ namespace xline
         double radius;
         double start_angle; // 弧度
         double end_angle;   // 弧度
+        double start_x;
+        double start_y;
       };
 
       struct SplineData

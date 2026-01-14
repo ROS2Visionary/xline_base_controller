@@ -34,7 +34,6 @@ LineFollowController::LineFollowController()
   , received_plan_(false)
   , goal_reached_(false)
   , back_follow_(false)
-  , m_work_state_(true)
   , short_path_(false)
   , decel_phase_entered_(false)
   , is_transition_path_(false)
@@ -452,7 +451,7 @@ bool LineFollowController::setPlan(const nav_msgs::msg::Path& orig_global_plan)
   }
   else
   {
-    double current_max_speed = m_work_state_ ? runtime_work_max_vel_ : runtime_walk_max_vel_;
+    double current_max_speed = is_transition_path_ ? runtime_work_max_vel_ : runtime_walk_max_vel_;
     const double speed_threshold = 0.3;
 
     if (current_max_speed > speed_threshold)
@@ -465,7 +464,7 @@ bool LineFollowController::setPlan(const nav_msgs::msg::Path& orig_global_plan)
         double speed_reduction_factor = std::max(0.5, available_high_speed_distance / (path_length_ * 0.3));
         double optimized_max_speed = speed_threshold + (current_max_speed - speed_threshold) * speed_reduction_factor;
 
-        if (m_work_state_)
+        if (is_transition_path_)
         {
           runtime_work_max_vel_ = optimized_max_speed;
         }
@@ -487,7 +486,7 @@ bool LineFollowController::setPlan(const nav_msgs::msg::Path& orig_global_plan)
         double optimized_max_speed = speed_threshold * 1.5 * conservative_factor +
                                      speed_threshold * 0.5 * (1.0 - conservative_factor);
 
-        if (m_work_state_)
+        if (is_transition_path_)
         {
           runtime_work_max_vel_ = optimized_max_speed;
         }
@@ -502,7 +501,7 @@ bool LineFollowController::setPlan(const nav_msgs::msg::Path& orig_global_plan)
     }
   }
 
-  double current_max_speed = m_work_state_ ? runtime_work_max_vel_ : runtime_walk_max_vel_;
+  double current_max_speed = is_transition_path_ ? runtime_work_max_vel_ : runtime_walk_max_vel_;
   double min_decel_distance = std::max(0.15, current_max_speed * 0.5);
   runtime_decel_dist_ = std::max(runtime_decel_dist_, min_decel_distance);
 
@@ -619,32 +618,6 @@ void LineFollowController::setSpeedLimit(const double& speed_limit)
   }
 }
 
-void LineFollowController::setWorkState(bool state)
-{
-  m_work_state_ = state;
-
-  if (!m_work_state_)
-  {
-    bool should_back = shouldGoBackward(
-        current_pose_.pose.position.x, current_pose_.pose.position.y,
-        tf2::getYaw(current_pose_.pose.orientation),
-        end_pose_.pose.position.x, end_pose_.pose.position.y,
-        tf2::getYaw(end_pose_.pose.orientation));
-
-    double distance = std::sqrt(
-        std::pow(current_pose_.pose.position.x - end_pose_.pose.position.x, 2) +
-        std::pow(current_pose_.pose.position.y - end_pose_.pose.position.y, 2));
-
-    if (should_back && distance < 1.5)
-    {
-      setBackFollow(true);
-    }
-    else
-    {
-      setBackFollow(false);
-    }
-  }
-}
 
 void LineFollowController::setBackFollow(bool back)
 {
@@ -688,7 +661,7 @@ double LineFollowController::computeLinearSpeed(double distance_to_target, doubl
       prev_speed = 0.0;
     }
 
-    const double precise_stop_distance = m_work_state_ ? 0.05 : 0.1;
+    const double precise_stop_distance = is_transition_path_ ? 0.05 : 0.1;
 
     if (distance_to_target <= precise_stop_distance)
     {
@@ -713,14 +686,15 @@ double LineFollowController::computeLinearSpeed(double distance_to_target, doubl
     constexpr double kMinAccelStartDistance = 0.2;
     const bool allow_linear_accel_by_distance = is_transition_path_ ? true : (distance_to_start >= kMinAccelStartDistance);
 
-    if (current_state_ == ControlState::ALIGNING_START || !start_line_aligned_ || !allow_linear_accel_by_distance)
+    // if (current_state_ == ControlState::ALIGNING_START || !start_line_aligned_ || !allow_linear_accel_by_distance)
+    if ( !start_line_aligned_ && !is_transition_path_)
     {
       target_speed = prev_speed + acceFactor();
       max_linear_speed_ = runtime_alignment_vel_;
     }
     else
     {
-      max_linear_speed_ = m_work_state_ ? runtime_work_max_vel_ : runtime_walk_max_vel_;
+      max_linear_speed_ = is_transition_path_ ? runtime_work_max_vel_ : runtime_walk_max_vel_;
 
       if (short_path_)
       {
@@ -741,7 +715,7 @@ double LineFollowController::computeLinearSpeed(double distance_to_target, doubl
           max_linear_speed_ = runtime_alignment_vel_ * 1.5;
         }
 
-        double standard_max_speed = m_work_state_ ? runtime_work_max_vel_ : runtime_walk_max_vel_;
+        double standard_max_speed = is_transition_path_ ? runtime_work_max_vel_ : runtime_walk_max_vel_;
         max_linear_speed_ = std::min(max_linear_speed_, standard_max_speed * 0.5);
       }
 

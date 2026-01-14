@@ -65,8 +65,6 @@ public:
   bool setPlan(const std::shared_ptr<std::vector<geometry_msgs::msg::PoseStamped>>& plan);
   /// 限制最大运行速度（会同时调整内部运行时参数和阶段权重）
   void setSpeedLimit(const double& speed_limit);
-  /// 设置工作/非工作模式（影响速度上限和短路径策略）
-  void setWorkState(bool state);
   /// 切换是否采用后退方式跟随路径
   void setBackFollow(bool back);
   /// 标记是否为“转场路径”（用于缩短起步进入跟随阶段的条件）
@@ -99,7 +97,6 @@ private:
   bool received_plan_;                ///< 是否接收到路径
   bool goal_reached_;                 ///< 是否到达目标
   bool back_follow_;                  ///< 是否后退模式
-  bool m_work_state_;                 ///< 工作状态（影响最大速度）
   bool short_path_;                   ///< 是否为短路径
   bool decel_phase_entered_;          ///< 是否已进入减速阶段
   bool is_transition_path_;           ///< 是否为转场路径（外部设置）
