@@ -1141,7 +1141,7 @@ bool LQRCurveController::setPlanForEllipse(double center_x, double center_y,
   }
 
   // 类似圆形路径，路径总角度 = 目标角度 + 1.5π（用于平滑启停）
-  double path_total_angle = target_angle_range + 0.0 * M_PI;
+  double path_total_angle = target_angle_range + 0.5 * M_PI;
 
   // 5. 判断路径类型（完整椭圆 vs 椭圆弧）
   constexpr double kEllipseThreshold = 1.95 * M_PI;
@@ -1201,7 +1201,7 @@ bool LQRCurveController::setPlanForEllipse(double center_x, double center_y,
   // 跳过入口处一小段，减少"入口过密"对控制的干扰
   const size_t start_idx = (num_segments > 5) ? 5 : 1;
 
-  for (size_t idx = start_idx; idx <= num_segments; ++idx)
+  for (size_t idx = 0; idx <= num_segments; ++idx)
   {
     double theta = actual_start_angle + static_cast<double>(idx) * angle_step;
 
