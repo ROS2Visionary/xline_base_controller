@@ -20,6 +20,7 @@
 #include "xline_base_controller/inkjet_client.hpp"
 #include <xline_msgs/srv/motor_command.hpp>
 #include <xline_follow_controller/lqr_follow/lqr_circle_controller.hpp>
+#include <xline_follow_controller/lqr_follow/lqr_curve_controller.hpp>
 
 /**
  * MotionControlCenter 运动控制中心
@@ -67,6 +68,7 @@ namespace xline
       std::shared_ptr<xline::follow_controller::LineFollowController> line_follow_controller_;
       std::shared_ptr<xline::follow_controller::RPPController> rpp_follow_controller_;
       std::shared_ptr<xline::follow_controller::LQRCircleController> lqr_circle_controller;
+      std::shared_ptr<xline::follow_controller::LQRCurveController> lqr_curve_controller;
       std::shared_ptr<InkjetClient> inkjet_client_;
 
       // 位姿订阅器(从状态估计器获取融合后的位姿)

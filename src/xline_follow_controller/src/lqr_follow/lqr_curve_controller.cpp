@@ -168,9 +168,8 @@ bool LQRCurveController::setPlan(const nav_msgs::msg::Path& orig_global_plan)
   }
 
   // 重置状态
-  reset();
-
-  updateParameters("/config/lqr_curve.yaml");
+  // reset();
+  // updateParameters("/config/lqr_curve.yaml");
 
   // 转换路径格式并计算曲率
   path_.clear();
@@ -333,6 +332,21 @@ bool LQRCurveController::computeVelocityCommands(
 
   // 11. 应用角速度和角加速度限幅
   omega = applyLimits(omega);
+
+  // 12. 对于椭圆路径，检查是否完成
+  bool completed = updateAccumulatedDistance(current_x, current_y);
+  if (completed)
+  {
+    goal_reached_ = true;
+    cmd_vel.header.stamp = this->now();
+    cmd_vel.header.frame_id = pose.header.frame_id;
+    cmd_vel.twist.linear.x = 0.0;
+    cmd_vel.twist.angular.z = 0.0;
+
+    RCLCPP_INFO(get_logger(), "椭圆路径完成 - 累计距离: %.4f m",
+                accumulated_distance_);
+    return true;
+  }
 
   // 13. 设置输出
   cmd_vel.header.stamp = this->now();
@@ -692,6 +706,26 @@ void LQRCurveController::reset()
   debug_ref_curvature_ = 0.0;
   debug_ref_index_ = 0;
 
+  // 重置椭圆路径参数
+  ellipse_a_ = 0.0;
+  ellipse_b_ = 0.0;
+  ellipse_center_x_ = 0.0;
+  ellipse_center_y_ = 0.0;
+  ellipse_rotation_ = 0.0;
+  target_arc_length_ = 0.0;
+  ellipse_perimeter_ = 0.0;
+
+  // 重置距离累计相关状态
+  last_position_initialized_ = false;
+  last_x_ = 0.0;
+  last_y_ = 0.0;
+  accumulated_distance_ = 0.0;
+  start_print = false;
+  stop_print = false;
+  print_window_initialized_ = false;
+  start_print_distance_ = 0.0;
+  stop_print_start_distance_ = 0.0;
+  stop_print_end_distance_ = 0.0;
 
   // 重置位置滤波器（使用配置参数）
   sg_x_filter_.reset(params_.savgol_window, params_.savgol_order);
@@ -731,6 +765,67 @@ geometry_msgs::msg::PoseStamped LQRCurveController::filterRobotPose(
   current_pose.pose.position.y = filtered_y;
 
   return current_pose;
+}
+
+// ============================================================================
+// 椭圆路径辅助函数
+// ============================================================================
+
+double LQRCurveController::projectPointToEllipse(double px, double py,
+                                                   double center_x, double center_y,
+                                                   double a, double b,
+                                                   double rotation) const
+{
+  // 将点转换到椭圆局部坐标系（未旋转状态）
+  double dx = px - center_x;
+  double dy = py - center_y;
+
+  // 应用逆旋转
+  double cos_r = std::cos(-rotation);
+  double sin_r = std::sin(-rotation);
+  double x_local = dx * cos_r - dy * sin_r;
+  double y_local = dx * sin_r + dy * cos_r;
+
+  // 使用迭代法求解最近点（牛顿法）
+  // 椭圆参数方程：(a*cos(t), b*sin(t))
+  // 初始猜测：使用atan2得到的角度
+  double t = std::atan2(y_local / b, x_local / a);
+
+  // 牛顿迭代优化
+  for (int i = 0; i < 10; ++i)
+  {
+    double x_ellipse = a * std::cos(t);
+    double y_ellipse = b * std::sin(t);
+
+    // 误差向量
+    double ex = x_ellipse - x_local;
+    double ey = y_ellipse - y_local;
+
+    // 椭圆切线方向（参数方程的导数）
+    double dx_dt = -a * std::sin(t);
+    double dy_dt = b * std::cos(t);
+
+    // 误差向量与切线的点积（应该为0）
+    double f = ex * dx_dt + ey * dy_dt;
+
+    // 导数
+    double df = -a * std::cos(t) * dx_dt - a * std::sin(t) * ex
+                - b * std::sin(t) * dy_dt + b * std::cos(t) * ey;
+
+    if (std::abs(df) < 1e-10)
+    {
+      break;
+    }
+
+    // 牛顿更新
+    t = t - f / df;
+  }
+
+  // 归一化角度到 [0, 2π]
+  while (t < 0) t += 2.0 * M_PI;
+  while (t >= 2.0 * M_PI) t -= 2.0 * M_PI;
+
+  return t;
 }
 
 // ============================================================================
@@ -999,7 +1094,8 @@ bool LQRCurveController::setPlanForSpline(const std::vector<std::pair<double, do
 bool LQRCurveController::setPlanForEllipse(double center_x, double center_y,
                                             double major_axis_x, double major_axis_y,
                                             double ratio, double rotation,
-                                            double start_angle, double end_angle)
+                                            double start_angle, double end_angle,
+                                            const geometry_msgs::msg::PoseStamped& robot_pose)
 {
   if (!initialized_)
   {
@@ -1018,58 +1114,104 @@ bool LQRCurveController::setPlanForEllipse(double center_x, double center_y,
   reset();
   updateParameters("/config/lqr_curve.yaml");
 
-  // 生成椭圆路径
-  nav_msgs::msg::Path ellipse_path;
-  ellipse_path.header.frame_id = "map";
-  ellipse_path.header.stamp = this->now();
-
   // 计算椭圆的长轴和短轴长度
   double a = std::sqrt(major_axis_x * major_axis_x + major_axis_y * major_axis_y);  // 长轴长度
   double b = a * ratio;  // 短轴长度
 
-  // 旋转角度（转换为弧度）
-  double rotation_rad = rotation * M_PI / 180.0;
+  // 1. 计算机器人在椭圆上的投影点角度
+  double robot_x = robot_pose.pose.position.x;
+  double robot_y = robot_pose.pose.position.y;
+  double projection_angle = projectPointToEllipse(robot_x, robot_y, center_x, center_y, a, b, rotation);
 
-  // 生成椭圆上的点（使用参数方程）
-  double start_angle_rad = start_angle * M_PI / 180.0;
-  double end_angle_rad = end_angle * M_PI / 180.0;
+  RCLCPP_INFO(get_logger(), "机器人位置(%.3f, %.3f)在椭圆上的投影角度: %.2f度",
+              robot_x, robot_y, projection_angle * 180.0 / M_PI);
 
-  // 确定角度范围和步长
-  double angle_range = end_angle_rad - start_angle_rad;
-  if (angle_range < 0)
-  {
-    angle_range += 2 * M_PI;
-  }
+  // 2. 路径起始角度就是机器人的投影点（机器人已经在偏移位置）
+  double actual_start_angle = projection_angle;
 
-  // 生成足够密集的点以保证平滑（参考圆形路径：3mm点间距）
-  // 估算椭圆周长：Ramanujan近似公式
+  // 3. 估算椭圆周长（用于后续路径点生成）
   double h = std::pow((a - b) / (a + b), 2);
   double perimeter_approx = M_PI * (a + b) * (1 + 3 * h / (10 + std::sqrt(4 - 3 * h)));
-  double arc_length = perimeter_approx * (angle_range / (2 * M_PI));
 
-  constexpr double kPointSpacingMeters = 0.003;  // 3mm点间距
-  int num_points = std::max(50, static_cast<int>(arc_length / kPointSpacingMeters));
-
-  constexpr int kMaxPoints = 20000;
-  if (num_points > kMaxPoints)
+  // 4. 确定角度范围和路径类型
+  double target_angle_range = end_angle - start_angle;
+  if (target_angle_range < 0)
   {
-    RCLCPP_WARN(get_logger(), "椭圆采样点过多(%d)，已限制到 %d 点", num_points, kMaxPoints);
-    num_points = kMaxPoints;
+    target_angle_range += 2.0 * M_PI;
   }
 
-  double angle_step = angle_range / num_points;
+  // 类似圆形路径，路径总角度 = 目标角度 + 1.5π（用于平滑启停）
+  double path_total_angle = target_angle_range + 0.0 * M_PI;
 
-  for (int i = 0; i <= num_points; ++i)
+  // 5. 判断路径类型（完整椭圆 vs 椭圆弧）
+  constexpr double kEllipseThreshold = 1.95 * M_PI;
+  bool is_complete_ellipse = (target_angle_range >= kEllipseThreshold);
+
+  RCLCPP_INFO(get_logger(), "路径类型: %s (目标角度: %.2f度, 路径总角度: %.2f度)",
+              is_complete_ellipse ? "完整椭圆" : "椭圆弧",
+              target_angle_range * 180.0 / M_PI,
+              path_total_angle * 180.0 / M_PI);
+
+  // 6. 生成椭圆路径
+  nav_msgs::msg::Path ellipse_path;
+  ellipse_path.header.frame_id = robot_pose.header.frame_id.empty() ?
+                                  std::string("map") : robot_pose.header.frame_id;
+  ellipse_path.header.stamp = this->now();
+
+  // 生成入口点（机器人投影点，用于航向预对准）
+  geometry_msgs::msg::PoseStamped entry_pose = robot_pose;
+
+  // 计算入口点在椭圆上的切线方向
+  double x_ellipse_entry = a * std::cos(projection_angle);
+  double y_ellipse_entry = b * std::sin(projection_angle);
+
+  // 切线方向（参数方程的导数）
+  double dx_dt_entry = -a * std::sin(projection_angle);
+  double dy_dt_entry = b * std::cos(projection_angle);
+
+  // 应用旋转
+  double tangent_x = dx_dt_entry * std::cos(rotation) - dy_dt_entry * std::sin(rotation);
+  double tangent_y = dx_dt_entry * std::sin(rotation) + dy_dt_entry * std::cos(rotation);
+  double entry_yaw = std::atan2(tangent_y, tangent_x);
+
+  tf2::Quaternion entry_q;
+  entry_q.setRPY(0, 0, entry_yaw);
+  entry_pose.pose.orientation = tf2::toMsg(entry_q);
+
+  ellipse_path.poses.push_back(entry_pose);
+
+  // 7. 生成路径点（从实际起始角度开始）
+  // 以"弧长间距"决定采样密度：点间距固定 0.003m（3mm）
+  constexpr double kPointSpacingMeters = 0.003;
+  double arc_length_total = perimeter_approx * (path_total_angle / (2.0 * M_PI));
+  size_t num_segments = static_cast<size_t>(std::ceil(arc_length_total / kPointSpacingMeters));
+  num_segments = std::max<size_t>(num_segments, 1);
+
+  constexpr size_t kMaxSegments = 20000;
+  if (num_segments > kMaxSegments)
   {
-    double theta = start_angle_rad + i * angle_step;
+    RCLCPP_WARN(get_logger(),
+                "椭圆采样点过多(%zu)，已限制到 %zu 段",
+                num_segments, kMaxSegments);
+    num_segments = kMaxSegments;
+  }
+
+  double angle_step = path_total_angle / static_cast<double>(num_segments);
+
+  // 跳过入口处一小段，减少"入口过密"对控制的干扰
+  const size_t start_idx = (num_segments > 5) ? 5 : 1;
+
+  for (size_t idx = start_idx; idx <= num_segments; ++idx)
+  {
+    double theta = actual_start_angle + static_cast<double>(idx) * angle_step;
 
     // 参数方程：椭圆上的点（未旋转）
     double x_local = a * std::cos(theta);
     double y_local = b * std::sin(theta);
 
     // 应用旋转
-    double x_rotated = x_local * std::cos(rotation_rad) - y_local * std::sin(rotation_rad);
-    double y_rotated = x_local * std::sin(rotation_rad) + y_local * std::cos(rotation_rad);
+    double x_rotated = x_local * std::cos(rotation) - y_local * std::sin(rotation);
+    double y_rotated = x_local * std::sin(rotation) + y_local * std::cos(rotation);
 
     // 平移到椭圆中心
     double x_global = center_x + x_rotated;
@@ -1079,34 +1221,170 @@ bool LQRCurveController::setPlanForEllipse(double center_x, double center_y,
     pose.header = ellipse_path.header;
     pose.pose.position.x = x_global;
     pose.pose.position.y = y_global;
-    pose.pose.position.z = 0.0;
+    pose.pose.position.z = robot_pose.pose.position.z;
 
     // 计算切线方向作为朝向
-    // 对于椭圆参数方程，切线方向为：
-    // dx/dt = -a*sin(theta)*cos(rotation) - b*cos(theta)*sin(rotation)
-    // dy/dt = -a*sin(theta)*sin(rotation) + b*cos(theta)*cos(rotation)
-    double dx_dt = -a * std::sin(theta) * std::cos(rotation_rad) - b * std::cos(theta) * std::sin(rotation_rad);
-    double dy_dt = -a * std::sin(theta) * std::sin(rotation_rad) + b * std::cos(theta) * std::cos(rotation_rad);
+    double dx_dt = -a * std::sin(theta) * std::cos(rotation) - b * std::cos(theta) * std::sin(rotation);
+    double dy_dt = -a * std::sin(theta) * std::sin(rotation) + b * std::cos(theta) * std::cos(rotation);
     double tangent_yaw = std::atan2(dy_dt, dx_dt);
 
     tf2::Quaternion q;
     q.setRPY(0, 0, tangent_yaw);
-    pose.pose.orientation.x = q.x();
-    pose.pose.orientation.y = q.y();
-    pose.pose.orientation.z = q.z();
-    pose.pose.orientation.w = q.w();
+    pose.pose.orientation = tf2::toMsg(q);
 
     ellipse_path.poses.push_back(pose);
   }
 
   RCLCPP_INFO(get_logger(),
-              "Ellipse路径已生成 - 点数: %zu, 中心(%.3f, %.3f), 长轴=%.3fm, 短轴=%.3fm, "
-              "旋转=%.1f度, 角度范围[%.1f, %.1f]度",
-              ellipse_path.poses.size(), center_x, center_y, a, b, rotation,
-              start_angle, end_angle);
+              "椭圆路径已生成 - 点数: %zu, 中心(%.3f, %.3f), 长轴=%.3fm, 短轴=%.3fm, "
+              "旋转=%.1f度, 起始角度(投影点)=%.1f度",
+              ellipse_path.poses.size(), center_x, center_y, a, b,
+              rotation * 180.0 / M_PI,
+              actual_start_angle * 180.0 / M_PI);
 
-  // 调用基类的 setPlan 方法
-  return setPlan(ellipse_path);
+  // 先调用 setPlan()（内部不会调用 reset()，因为已注释）
+  bool result = setPlan(ellipse_path);
+
+  // 保存椭圆路径特有的参数
+  ellipse_a_ = a;
+  ellipse_b_ = b;
+  ellipse_center_x_ = center_x;
+  ellipse_center_y_ = center_y;
+  ellipse_rotation_ = rotation;
+
+  // 计算椭圆周长（使用拉马努金第二近似公式）
+  // L ≈ π * [3(a+b) - sqrt((3a+b)(a+3b))]
+  ellipse_perimeter_ = M_PI * (3.0 * (a + b) - std::sqrt((3.0 * a + b) * (a + 3.0 * b)));
+
+  // 计算目标弧长（只计算用户指定的角度范围，不包括延长的缓冲部分）
+  target_arc_length_ = ellipse_perimeter_ * (target_angle_range / (2.0 * M_PI));
+
+  RCLCPP_INFO(get_logger(), "椭圆路径类型: %s (目标角度: %.2f°, 目标弧长: %.3fm, 周长: %.3fm)",
+              is_complete_ellipse ? "完整椭圆" : "椭圆弧",
+              target_angle_range * 180.0 / M_PI,
+              target_arc_length_,
+              ellipse_perimeter_);
+
+  return result;
+}
+
+// ============================================================================
+// 椭圆路径终点判定（基于距离）
+// ============================================================================
+
+bool LQRCurveController::updateAccumulatedDistance(double current_x, double current_y)
+{
+  // 如果椭圆参数未设置（长轴为0），说明不是椭圆路径，跳过判定
+  if (ellipse_a_ <= 1e-6)
+  {
+    return false;
+  }
+
+  if (!last_position_initialized_)
+  {
+    last_x_ = current_x;
+    last_y_ = current_y;
+    last_position_initialized_ = true;
+    accumulated_distance_ = 0.0;
+    RCLCPP_INFO(get_logger(), "椭圆路径跟踪开始，初始位置: (%.3f, %.3f)", current_x, current_y);
+    return false;  // 初始化阶段不判定为完成
+  }
+
+  // 计算距离增量
+  double dx = current_x - last_x_;
+  double dy = current_y - last_y_;
+  double delta_distance = std::hypot(dx, dy);
+
+  // 累计距离（避免倒退时累计负值）
+  if (delta_distance > 1e-6)  // 过滤噪声
+  {
+    accumulated_distance_ += delta_distance;
+  }
+
+  // 更新上次位置，用于下次计算
+  last_x_ = current_x;
+  last_y_ = current_y;
+
+  constexpr double print_start_delay = 1.0;  // 喷码机出墨延时 (秒)
+  constexpr double arc_length_for_start = 0.4;  // 期望开始打印的弧长 0.4m
+  const double quarter_perimeter = ellipse_perimeter_ / 4.0;  // 四分之一周长
+
+  // 如果期望距离超过四分之一周长，则取四分之一周长
+  const double desired_start_distance = std::min(arc_length_for_start, quarter_perimeter);
+
+  // 计算延时补偿距离：延时期间机器人行驶的距离
+  const double start_lead_distance = params_.v_max * print_start_delay;
+
+  // 开始打印的触发距离（提前触发以补偿延时）
+  const double start_trigger_distance = std::max(0.0, desired_start_distance - start_lead_distance);
+
+  if (accumulated_distance_ > start_trigger_distance)
+  {
+    if (!print_window_initialized_)
+    {
+      // 记录触发"开始打印"信号时的累计距离
+      start_print_distance_ = accumulated_distance_;
+
+      // 计算有效开始喷印距离（考虑延时后的实际喷印位置）
+      const double effective_start_print_distance = start_print_distance_ + start_lead_distance;
+
+      // 定义停止打印窗口参数
+      constexpr double kStopArcLengthMeters = 0.03;        // 停止窗口弧长：3cm
+      constexpr double kClosureCompensationMeters = 0.06;  // 闭合补偿弧长：6cm
+
+      // 计算停止打印结束距离
+      // 只算目标弧长（不包括延长的缓冲部分）
+      stop_print_end_distance_ = effective_start_print_distance + target_arc_length_ + kClosureCompensationMeters;
+
+      // 停止打印开始距离 = 结束距离 - 停止窗口长度
+      stop_print_start_distance_ = stop_print_end_distance_ - kStopArcLengthMeters;
+
+      print_window_initialized_ = true;  // 标记窗口已初始化
+
+      RCLCPP_INFO(get_logger(),
+                  "打印窗口初始化 - 触发距离: %.3fm, 有效开始: %.3fm, 停止开始: %.3fm, 停止结束: %.3fm",
+                  start_print_distance_, effective_start_print_distance,
+                  stop_print_start_distance_, stop_print_end_distance_);
+    }
+  }
+
+  if (print_window_initialized_)
+  {
+    // 打印窗口已初始化，根据当前累计距离判断打印状态
+    if (accumulated_distance_ < stop_print_start_distance_)
+    {
+      // 情况1：累计距离 < 停止打印开始距离
+      // → 应该继续打印
+      start_print = true;
+      stop_print = false;
+    }
+    else
+    {
+      // 情况2：累计距离 >= 停止打印开始距离
+      // → 应该停止打印（进入3cm停止窗口）
+      start_print = false;
+      stop_print = true;
+    }
+
+    // 判断椭圆路径是否完成
+    if (accumulated_distance_ >= stop_print_end_distance_)
+    {
+      // 累计距离达到或超过停止打印结束距离，椭圆路径完成
+      return true;
+    }
+  }
+  else if (accumulated_distance_ >= ellipse_perimeter_ * 1.3)
+  {
+    // 若打印窗口未初始化（异常情况），但累计距离已超过周长的1.3倍
+    // 则强制认为路径完成，避免无限循环
+    start_print = false;
+    stop_print = true;
+    RCLCPP_WARN(get_logger(), "打印窗口未初始化但距离已超限，强制完成");
+    return true;
+  }
+
+  // 路径未完成，继续跟踪
+  return false;
 }
 
 }  // namespace follow_controller

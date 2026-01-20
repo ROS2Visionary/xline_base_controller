@@ -137,15 +137,17 @@ public:
    * @param major_axis_x 主轴向量X分量（米）
    * @param major_axis_y 主轴向量Y分量（米）
    * @param ratio 短轴/长轴比例
-   * @param rotation 旋转角度（度）
-   * @param start_angle 起始角度（度）
-   * @param end_angle 结束角度（度）
+   * @param rotation 旋转角度（弧度）
+   * @param start_angle 起始角度（弧度）
+   * @param end_angle 结束角度（弧度）
+   * @param robot_pose 机器人当前位姿
    * @return 是否成功设置
    */
   bool setPlanForEllipse(double center_x, double center_y,
                          double major_axis_x, double major_axis_y,
                          double ratio, double rotation,
-                         double start_angle, double end_angle);
+                         double start_angle, double end_angle,
+                         const geometry_msgs::msg::PoseStamped& robot_pose);
 
 private:
   // ================================
@@ -312,6 +314,22 @@ private:
    */
   bool isPointInGrid(const cv::Point& pt);
 
+  /**
+   * @brief 计算点在椭圆上的投影角度（参数方程的参数t）
+   * @param px 点的X坐标
+   * @param py 点的Y坐标
+   * @param center_x 椭圆中心X坐标
+   * @param center_y 椭圆中心Y坐
+   * @param a 椭圆长轴长度
+   * @param b 椭圆短轴长度
+   * @param rotation 椭圆旋转角度（弧度）
+   * @return 投影点对应的参数角度（弧度）
+   */
+  double projectPointToEllipse(double px, double py,
+                                 double center_x, double center_y,
+                                 double a, double b,
+                                 double rotation) const;
+
   // ================================
   // 参数与状态
   // ================================
@@ -385,11 +403,49 @@ private:
   rclcpp::Time last_grid_update_time_;
 
   // ================================
-  // 圆形路径参数（用于 setPlanForCircle）
+  // 椭圆路径参数
   // ================================
 
-  /// 目标累计角度（rad），默认一圈
-  double circle_total_angle_ = 2.0 * M_PI;
+  /// 椭圆长轴长度（米）
+  double ellipse_a_ = 0.0;
+
+  /// 椭圆短轴长度（米）
+  double ellipse_b_ = 0.0;
+
+  /// 椭圆中心X坐标（米）
+  double ellipse_center_x_ = 0.0;
+
+  /// 椭圆中心Y坐标（米）
+  double ellipse_center_y_ = 0.0;
+
+  /// 椭圆旋转角度（弧度）
+  double ellipse_rotation_ = 0.0;
+
+  /// 目标弧长（用户指定的有效路径长度，米）
+  double target_arc_length_ = 0.0;
+
+  /// 完整椭圆周长（米）
+  double ellipse_perimeter_ = 0.0;
+
+  /// 距离累计相关
+  bool last_position_initialized_ = false;  ///< 是否已初始化上次位置
+  double last_x_ = 0.0;                     ///< 上次X坐标
+  double last_y_ = 0.0;                     ///< 上次Y坐标
+  double accumulated_distance_ = 0.0;       ///< 累计距离（米）
+
+  /// 打印窗口参数
+  bool print_window_initialized_ = false;   ///< 打印窗口是否已初始化
+  double start_print_distance_ = 0.0;       ///< 开始打印触发距离（米）
+  double stop_print_start_distance_ = 0.0;  ///< 停止打印窗口起始距离（米）
+  double stop_print_end_distance_ = 0.0;    ///< 停止打印窗口结束距离（米）
+
+  /**
+   * @brief 更新累计距离并判断椭圆路径是否完成
+   * @param current_x 当前X坐标
+   * @param current_y 当前Y坐标
+   * @return 是否完成椭圆路径
+   */
+  bool updateAccumulatedDistance(double current_x, double current_y);
 };
 
 }  // namespace follow_controller

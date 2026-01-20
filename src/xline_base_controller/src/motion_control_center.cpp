@@ -67,6 +67,7 @@ namespace xline
       line_follow_controller_ = std::make_shared<xline::follow_controller::LineFollowController>();
       rpp_follow_controller_ = std::make_shared<xline::follow_controller::RPPController>();
       lqr_circle_controller = std::make_shared<xline::follow_controller::LQRCircleController>();
+      lqr_curve_controller = std::make_shared<xline::follow_controller::LQRCurveController>();
       base_follow_controller_ = nullptr;
       inkjet_client_ = std::make_shared<InkjetClient>();
       RCLCPP_INFO(get_logger(), "喷墨控制器已创建（服务客户端已就绪）");
@@ -592,14 +593,17 @@ namespace xline
                     ellipse_data.major_axis_x, ellipse_data.major_axis_y,
                     ellipse_data.ratio, ellipse_data.start_angle, ellipse_data.end_angle);
 
+        geometry_msgs::msg::PoseStamped start_pose;
+        start_pose.pose.position.x = ellipse_data.start_x;
+        start_pose.pose.position.y = ellipse_data.start_y;
         // 使用 RPP 控制器的 setPlanForEllipse 方法设置 Ellipse 路径
         // 路径生成由 CurvePathStrategy 内部完成
-        rpp_follow_controller_->setPlanForEllipse(ellipse_data.center_x, ellipse_data.center_y,
+        lqr_curve_controller->setPlanForEllipse(ellipse_data.center_x, ellipse_data.center_y,
                                                    ellipse_data.major_axis_x, ellipse_data.major_axis_y,
                                                    ellipse_data.ratio, ellipse_data.rotation,
-                                                   ellipse_data.start_angle, ellipse_data.end_angle);
-        rpp_follow_controller_->setBackFollow(is_backward);
-        base_follow_controller_ = rpp_follow_controller_;
+                                                   ellipse_data.start_angle, ellipse_data.end_angle,start_pose);
+
+        base_follow_controller_ = lqr_curve_controller;
       }
       else
       {
@@ -1063,13 +1067,14 @@ namespace xline
       data.major_axis_x = ellipse_obj["major_axis"]["x"].asDouble() / 1000.0;
       data.major_axis_y = ellipse_obj["major_axis"]["y"].asDouble() / 1000.0;
 
-      // 提取比例和旋转角度
+      // 提取比例
       data.ratio = ellipse_obj["ratio"].asDouble();
-      data.rotation = ellipse_obj["rotation"].asDouble();
+      // 提取旋转角度
+      data.rotation = ellipse_obj["rotation"].asDouble() * M_PI / 180.0;
 
       // 提取起始和结束角度
-      data.start_angle = ellipse_obj["start_angle"].asDouble();
-      data.end_angle = ellipse_obj["end_angle"].asDouble();
+      data.start_angle = ellipse_obj["start_angle"].asDouble() * M_PI / 180.0;
+      data.end_angle = ellipse_obj["end_angle"].asDouble() * M_PI / 180.0;
 
       // 提取起点和终点
       data.start_x = ellipse_obj["start"]["x"].asDouble() / 1000.0;
