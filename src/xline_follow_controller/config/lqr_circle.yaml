@@ -51,7 +51,7 @@ velocity:
 # 机器人参数
 robot:
   # 轮距 (m)
-  wheel_base: 0.3
+  wheel_base: 0.31
 
 # 前瞻参数
 lookahead:

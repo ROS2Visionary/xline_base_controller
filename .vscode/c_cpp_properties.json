@@ -30,7 +30,8 @@
                 "/opt/ros/humble/include/rclcpp_action",
                 "${workspaceFolder}/src/xline_obstacle_detector/include",
                 "${workspaceFolder}/build/xline_msgs/rosidl_generator_cpp",
-                "${workspaceFolder}/install/xline_msgs/include/xline_msgs"
+                "${workspaceFolder}/install/xline_msgs/include/xline_msgs",
+                "/usr/include/eigen3"
             ],
             "name": "ros2",
             "intelliSenseMode": "gcc-x64",

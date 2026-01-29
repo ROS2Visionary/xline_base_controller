@@ -333,19 +333,39 @@ bool LQRCurveController::computeVelocityCommands(
   // 11. 应用角速度和角加速度限幅
   omega = applyLimits(omega);
 
-  // 12. 对于椭圆路径，检查是否完成
-  bool completed = updateAccumulatedDistance(current_x, current_y);
-  if (completed)
+  // 12. 根据路径类型检查是否完成
+  bool completed = false;
+  if (is_spline_path_)
   {
-    goal_reached_ = true;
-    cmd_vel.header.stamp = this->now();
-    cmd_vel.header.frame_id = pose.header.frame_id;
-    cmd_vel.twist.linear.x = 0.0;
-    cmd_vel.twist.angular.z = 0.0;
+    completed = updateAccumulatedDistanceForSpline(current_x, current_y);
+    if (completed)
+    {
+      goal_reached_ = true;
+      cmd_vel.header.stamp = this->now();
+      cmd_vel.header.frame_id = pose.header.frame_id;
+      cmd_vel.twist.linear.x = 0.0;
+      cmd_vel.twist.angular.z = 0.0;
 
-    RCLCPP_INFO(get_logger(), "椭圆路径完成 - 累计距离: %.4f m",
-                accumulated_distance_);
-    return true;
+      RCLCPP_INFO(get_logger(), "Spline路径完成 - 累计距离: %.4f m",
+                  accumulated_distance_);
+      return true;
+    }
+  }
+  else
+  {
+    completed = updateAccumulatedDistance(current_x, current_y);
+    if (completed)
+    {
+      goal_reached_ = true;
+      cmd_vel.header.stamp = this->now();
+      cmd_vel.header.frame_id = pose.header.frame_id;
+      cmd_vel.twist.linear.x = 0.0;
+      cmd_vel.twist.angular.z = 0.0;
+
+      RCLCPP_INFO(get_logger(), "椭圆路径完成 - 累计距离: %.4f m",
+                  accumulated_distance_);
+      return true;
+    }
   }
 
   // 13. 设置输出
@@ -715,6 +735,10 @@ void LQRCurveController::reset()
   target_arc_length_ = 0.0;
   ellipse_perimeter_ = 0.0;
 
+  // 重置 Spline 路径参数
+  is_spline_path_ = false;
+  spline_total_length_ = 0.0;
+
   // 重置距离累计相关状态
   last_position_initialized_ = false;
   last_x_ = 0.0;
@@ -1016,6 +1040,87 @@ bool LQRCurveController::isPointInGrid(const cv::Point& pt)
 // Spline 和 Ellipse 路径设置
 // ============================================================================
 
+// B-spline 基函数（Cox-de Boor 递归公式）
+static double bsplineBasis(int i, int p, double t, const std::vector<double>& knots)
+{
+  if (p == 0)
+  {
+    // 0 阶基函数
+    if (knots[i] <= t && t < knots[i + 1])
+    {
+      return 1.0;
+    }
+    // 特殊处理：当 t 等于最后一个节点时
+    if (i == static_cast<int>(knots.size()) - p - 2 && t == knots[i + 1])
+    {
+      return 1.0;
+    }
+    return 0.0;
+  }
+
+  double left = 0.0;
+  double right = 0.0;
+
+  double denom_left = knots[i + p] - knots[i];
+  if (denom_left > 1e-10)
+  {
+    left = (t - knots[i]) / denom_left * bsplineBasis(i, p - 1, t, knots);
+  }
+
+  double denom_right = knots[i + p + 1] - knots[i + 1];
+  if (denom_right > 1e-10)
+  {
+    right = (knots[i + p + 1] - t) / denom_right * bsplineBasis(i + 1, p - 1, t, knots);
+  }
+
+  return left + right;
+}
+
+// 计算 B-spline 曲线上的点
+static std::pair<double, double> evaluateBspline(
+    double t,
+    const std::vector<std::pair<double, double>>& control_points,
+    int degree,
+    const std::vector<double>& knots)
+{
+  double x = 0.0;
+  double y = 0.0;
+  int n = static_cast<int>(control_points.size());
+
+  for (int i = 0; i < n; ++i)
+  {
+    double basis = bsplineBasis(i, degree, t, knots);
+    x += basis * control_points[i].first;
+    y += basis * control_points[i].second;
+  }
+
+  return {x, y};
+}
+
+// 生成均匀 B-spline 节点向量（clamped）
+static std::vector<double> generateClampedKnots(int num_control_points, int degree)
+{
+  int n = num_control_points;
+  int num_knots = n + degree + 1;
+  std::vector<double> knots(num_knots);
+
+  // Clamped B-spline: 前 (degree+1) 个节点为 0，后 (degree+1) 个节点为 1
+  for (int i = 0; i <= degree; ++i)
+  {
+    knots[i] = 0.0;
+  }
+  for (int i = degree + 1; i < n; ++i)
+  {
+    knots[i] = static_cast<double>(i - degree) / static_cast<double>(n - degree);
+  }
+  for (int i = n; i < num_knots; ++i)
+  {
+    knots[i] = 1.0;
+  }
+
+  return knots;
+}
+
 bool LQRCurveController::setPlanForSpline(const std::vector<std::pair<double, double>>& vertices,
                                            int degree,
                                            double start_x, double start_y,
@@ -1034,29 +1139,100 @@ bool LQRCurveController::setPlanForSpline(const std::vector<std::pair<double, do
     return false;
   }
 
+  // 确保阶数不超过控制点数-1
+  int actual_degree = std::min(degree, static_cast<int>(vertices.size()) - 1);
+  if (actual_degree < 1)
+  {
+    actual_degree = 1;
+  }
+
   // 重置状态
   reset();
   updateParameters("/config/lqr_curve.yaml");
+
+  // 生成 clamped B-spline 节点向量
+  std::vector<double> knots = generateClampedKnots(static_cast<int>(vertices.size()), actual_degree);
+
+  // 第一步：粗采样计算曲线总长度
+  constexpr int kCoarseSamples = 1000;
+  std::vector<std::pair<double, double>> coarse_points;
+  coarse_points.reserve(kCoarseSamples + 1);
+
+  for (int i = 0; i <= kCoarseSamples; ++i)
+  {
+    double t = static_cast<double>(i) / static_cast<double>(kCoarseSamples);
+    coarse_points.push_back(evaluateBspline(t, vertices, actual_degree, knots));
+  }
+
+  // 计算粗采样曲线总长度
+  double total_length = 0.0;
+  for (size_t i = 1; i < coarse_points.size(); ++i)
+  {
+    double dx = coarse_points[i].first - coarse_points[i - 1].first;
+    double dy = coarse_points[i].second - coarse_points[i - 1].second;
+    total_length += std::hypot(dx, dy);
+  }
+
+  // 第二步：按固定弧长间距重新采样
+  constexpr double kPointSpacingMeters = 0.003;  // 3mm 间距
+  size_t num_points = static_cast<size_t>(std::ceil(total_length / kPointSpacingMeters)) + 1;
+  num_points = std::max<size_t>(num_points, 2);
+
+  constexpr size_t kMaxPoints = 20000;
+  if (num_points > kMaxPoints)
+  {
+    RCLCPP_WARN(get_logger(), "Spline采样点过多(%zu)，已限制到 %zu 点", num_points, kMaxPoints);
+    num_points = kMaxPoints;
+  }
 
   // 生成 Spline 路径
   nav_msgs::msg::Path spline_path;
   spline_path.header.frame_id = "map";
   spline_path.header.stamp = this->now();
+  spline_path.poses.reserve(num_points);
 
-  // 直接使用控制点作为路径点（简化实现，实际可以进行插值）
-  for (const auto& vertex : vertices)
+  // 使用弧长参数化重新采样
+  double target_spacing = total_length / static_cast<double>(num_points - 1);
+  double accumulated_length = 0.0;
+  size_t coarse_idx = 0;
+  double segment_progress = 0.0;  // 当前段内的进度
+
+  for (size_t i = 0; i < num_points; ++i)
   {
+    double target_length = static_cast<double>(i) * target_spacing;
+
+    // 找到目标长度对应的位置
+    while (coarse_idx < coarse_points.size() - 1)
+    {
+      double dx = coarse_points[coarse_idx + 1].first - coarse_points[coarse_idx].first;
+      double dy = coarse_points[coarse_idx + 1].second - coarse_points[coarse_idx].second;
+      double segment_length = std::hypot(dx, dy);
+
+      if (accumulated_length + segment_length >= target_length || coarse_idx == coarse_points.size() - 2)
+      {
+        // 在当前段内插值
+        double remaining = target_length - accumulated_length;
+        segment_progress = (segment_length > 1e-10) ? (remaining / segment_length) : 0.0;
+        segment_progress = std::clamp(segment_progress, 0.0, 1.0);
+        break;
+      }
+
+      accumulated_length += segment_length;
+      ++coarse_idx;
+    }
+
+    // 线性插值得到精确位置
+    double px = coarse_points[coarse_idx].first +
+                segment_progress * (coarse_points[coarse_idx + 1].first - coarse_points[coarse_idx].first);
+    double py = coarse_points[coarse_idx].second +
+                segment_progress * (coarse_points[coarse_idx + 1].second - coarse_points[coarse_idx].second);
+
     geometry_msgs::msg::PoseStamped pose;
     pose.header = spline_path.header;
-    pose.pose.position.x = vertex.first;
-    pose.pose.position.y = vertex.second;
+    pose.pose.position.x = px;
+    pose.pose.position.y = py;
     pose.pose.position.z = 0.0;
-
-    // 初始朝向（后续会计算）
     pose.pose.orientation.w = 1.0;
-    pose.pose.orientation.x = 0.0;
-    pose.pose.orientation.y = 0.0;
-    pose.pose.orientation.z = 0.0;
 
     spline_path.poses.push_back(pose);
   }
@@ -1070,10 +1246,7 @@ bool LQRCurveController::setPlanForSpline(const std::vector<std::pair<double, do
 
     tf2::Quaternion q;
     q.setRPY(0, 0, yaw);
-    spline_path.poses[i].pose.orientation.x = q.x();
-    spline_path.poses[i].pose.orientation.y = q.y();
-    spline_path.poses[i].pose.orientation.z = q.z();
-    spline_path.poses[i].pose.orientation.w = q.w();
+    spline_path.poses[i].pose.orientation = tf2::toMsg(q);
   }
 
   // 最后一个点的朝向与前一个点相同
@@ -1083,9 +1256,13 @@ bool LQRCurveController::setPlanForSpline(const std::vector<std::pair<double, do
         spline_path.poses[spline_path.poses.size() - 2].pose.orientation;
   }
 
+  // 标记为 Spline 路径并保存路径长度
+  is_spline_path_ = true;
+  spline_total_length_ = total_length;
+
   RCLCPP_INFO(get_logger(),
-              "Spline路径已生成 - 控制点数: %zu, 阶数: %d, 路径点数: %zu, 起点(%.3f, %.3f), 终点(%.3f, %.3f)",
-              vertices.size(), degree, spline_path.poses.size(), start_x, start_y, end_x, end_y);
+              "B-Spline路径已生成 - 控制点数: %zu, 阶数: %d, 路径点数: %zu, 总长度: %.3fm",
+              vertices.size(), actual_degree, spline_path.poses.size(), spline_total_length_);
 
   // 调用基类的 setPlan 方法
   return setPlan(spline_path);
@@ -1380,6 +1557,123 @@ bool LQRCurveController::updateAccumulatedDistance(double current_x, double curr
     start_print = false;
     stop_print = true;
     RCLCPP_WARN(get_logger(), "打印窗口未初始化但距离已超限，强制完成");
+    return true;
+  }
+
+  // 路径未完成，继续跟踪
+  return false;
+}
+
+// ============================================================================
+// Spline 路径终点判定（基于距离）
+// ============================================================================
+
+bool LQRCurveController::updateAccumulatedDistanceForSpline(double current_x, double current_y)
+{
+  // 如果不是 Spline 路径，跳过判定
+  if (!is_spline_path_ || spline_total_length_ <= 1e-6)
+  {
+    return false;
+  }
+
+  if (!last_position_initialized_)
+  {
+    last_x_ = current_x;
+    last_y_ = current_y;
+    last_position_initialized_ = true;
+    accumulated_distance_ = 0.0;
+    RCLCPP_INFO(get_logger(), "Spline路径跟踪开始，初始位置: (%.3f, %.3f)", current_x, current_y);
+    return false;  // 初始化阶段不判定为完成
+  }
+
+  // 计算距离增量
+  double dx = current_x - last_x_;
+  double dy = current_y - last_y_;
+  double delta_distance = std::hypot(dx, dy);
+
+  // 累计距离（避免倒退时累计负值）
+  if (delta_distance > 1e-6)  // 过滤噪声
+  {
+    accumulated_distance_ += delta_distance;
+  }
+
+  // 更新上次位置，用于下次计算
+  last_x_ = current_x;
+  last_y_ = current_y;
+
+  // Spline 路径的打印参数（固定开始距离 0.4m）
+  constexpr double print_start_delay = 1.0;       // 喷码机出墨延时 (秒)
+  constexpr double arc_length_for_start = 0.4;    // 开始打印的弧长 0.4m（固定值）
+
+  // 计算延时补偿距离：延时期间机器人行驶的距离
+  const double start_lead_distance = params_.v_max * print_start_delay;
+
+  // 开始打印的触发距离（提前触发以补偿延时）
+  const double start_trigger_distance = std::max(0.0, arc_length_for_start - start_lead_distance);
+
+  if (accumulated_distance_ > start_trigger_distance)
+  {
+    if (!print_window_initialized_)
+    {
+      // 记录触发"开始打印"信号时的累计距离
+      start_print_distance_ = accumulated_distance_;
+
+      // 计算有效开始喷印距离（考虑延时后的实际喷印位置）
+      const double effective_start_print_distance = start_print_distance_ + start_lead_distance;
+
+      // 定义停止打印窗口参数
+      constexpr double kStopArcLengthMeters = 0.03;  // 停止窗口弧长：3cm
+
+      // 计算目标弧长（从开始打印位置到路径终点的距离）
+      const double target_print_length = spline_total_length_ - arc_length_for_start;
+
+      // 计算停止打印结束距离
+      stop_print_end_distance_ = effective_start_print_distance + target_print_length;
+
+      // 停止打印开始距离 = 结束距离 - 停止窗口长度
+      stop_print_start_distance_ = stop_print_end_distance_ - kStopArcLengthMeters;
+
+      print_window_initialized_ = true;  // 标记窗口已初始化
+
+      RCLCPP_INFO(get_logger(),
+                  "Spline打印窗口初始化 - 触发距离: %.3fm, 有效开始: %.3fm, 停止开始: %.3fm, 停止结束: %.3fm",
+                  start_print_distance_, effective_start_print_distance,
+                  stop_print_start_distance_, stop_print_end_distance_);
+    }
+  }
+
+  if (print_window_initialized_)
+  {
+    // 打印窗口已初始化，根据当前累计距离判断打印状态
+    if (accumulated_distance_ < stop_print_start_distance_)
+    {
+      // 情况1：累计距离 < 停止打印开始距离
+      // → 应该继续打印
+      start_print = true;
+      stop_print = false;
+    }
+    else
+    {
+      // 情况2：累计距离 >= 停止打印开始距离
+      // → 应该停止打印（进入3cm停止窗口）
+      start_print = false;
+      stop_print = true;
+    }
+
+    // 判断 Spline 路径是否完成
+    if (accumulated_distance_ >= stop_print_end_distance_)
+    {
+      // 累计距离达到或超过停止打印结束距离，Spline 路径完成
+      return true;
+    }
+  }
+  else if (accumulated_distance_ >= spline_total_length_ * 1.3)
+  {
+    // 若打印窗口未初始化（异常情况），但累计距离已超过路径长度的1.3倍
+    // 则强制认为路径完成，避免无限循环
+    start_print = false;
+    stop_print = true;
+    RCLCPP_WARN(get_logger(), "Spline打印窗口未初始化但距离已超限，强制完成");
     return true;
   }
 

@@ -219,6 +219,13 @@ private:
   void reset();
 
   /**
+   * @brief 处理等待状态（对齐完成后的延时）
+   * @param cmd_vel 输出速度命令
+   * @return 是否仍在等待中
+   */
+  bool handleWaitingState(geometry_msgs::msg::TwistStamped& cmd_vel);
+
+  /**
    * @brief 根据圆心/半径/起始位姿生成圆弧路径（包含切入点）
    */
   nav_msgs::msg::Path generateCirclePath(double center_x, double center_y,
@@ -322,6 +329,11 @@ private:
   bool need_yaw_prealign_;  ///< 是否需要航向预对准
   bool yaw_prealign_done_;  ///< 航向预对准是否完成
   double target_yaw_;       ///< 目标航向角
+
+  /// 等待状态（对齐完成后的延时）
+  double wait_duration_;                        ///< 等待时长（秒）
+  bool waiting_;                                ///< 是否正在等待
+  std::chrono::steady_clock::time_point wait_start_time_;  ///< 等待开始时间
 
   /// 积分项状态
   double integral_e_y_;    ///< 横向误差积分

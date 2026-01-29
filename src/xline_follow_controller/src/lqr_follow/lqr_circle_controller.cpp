@@ -24,6 +24,8 @@ LQRCircleController::LQRCircleController()
   , need_yaw_prealign_(true)
   , yaw_prealign_done_(false)
   , target_yaw_(0.0)
+  , wait_duration_(0.2)
+  , waiting_(false)
   , integral_e_y_(0.0)
   , last_omega_(0.0)
   , debug_e_y_(0.0)
@@ -43,6 +45,8 @@ LQRCircleController::LQRCircleController()
   updateParameters("/config/lqr_circle.yaml");
   initializeFilters();
   initialize();
+
+  wait_start_time_ = std::chrono::steady_clock::now();
 
   RCLCPP_INFO(get_logger(), "LQRFollowController 创建完成");
 }
@@ -409,6 +413,15 @@ bool LQRCircleController::computeVelocityCommands(
       RCLCPP_INFO(get_logger(), "LQR航向预对准完成，开始路径跟随");
     }
     return true;  // 预对准期间返回 true，继续执行预对准
+  }
+
+  // 0.5. 检查是否在等待状态（对齐完成后的延时）
+  if (waiting_)
+  {
+    if (handleWaitingState(cmd_vel))
+    {
+      return true;  // 等待期间返回 true，继续等待
+    }
   }
 
   // 1. 找到最近的路径点
@@ -791,6 +804,11 @@ bool LQRCircleController::performYawPrealignment(const geometry_msgs::msg::PoseS
   {
     cmd_vel.twist.linear.x = 0.0;
     cmd_vel.twist.angular.z = 0.0;
+
+    // 设置等待状态
+    waiting_ = true;
+    wait_start_time_ = std::chrono::steady_clock::now();
+
     return true;  // 对准完成
   }
 
@@ -827,10 +845,28 @@ double LQRCircleController::calculateRotationVelocity(double angle_diff)
   return (angle_diff > 0.0) ? rot_vel : -rot_vel;
 }
 
+bool LQRCircleController::handleWaitingState(geometry_msgs::msg::TwistStamped& cmd_vel)
+{
+  auto current_time = std::chrono::steady_clock::now();
+  double wait_time = std::chrono::duration_cast<std::chrono::duration<double>>(
+      current_time - wait_start_time_).count();
+
+  if (wait_time >= wait_duration_)
+  {
+    waiting_ = false;
+    return false;
+  }
+
+  cmd_vel.twist.linear.x = 0.0;
+  cmd_vel.twist.angular.z = 0.0;
+  return true;
+}
+
 void LQRCircleController::reset()
 {
   goal_reached_ = false;
   last_nearest_idx_ = 0;
+  waiting_ = false;
   integral_e_y_ = 0.0;
   last_omega_ = 0.0;
   debug_e_y_ = 0.0;

@@ -446,6 +446,18 @@ private:
    * @return 是否完成椭圆路径
    */
   bool updateAccumulatedDistance(double current_x, double current_y);
+
+  /// Spline 路径相关参数
+  bool is_spline_path_ = false;              ///< 是否为 Spline 路径
+  double spline_total_length_ = 0.0;         ///< Spline 路径总长度（米）
+
+  /**
+   * @brief 更新累计距离并判断 Spline 路径是否完成
+   * @param current_x 当前X坐标
+   * @param current_y 当前Y坐标
+   * @return 是否完成 Spline 路径
+   */
+  bool updateAccumulatedDistanceForSpline(double current_x, double current_y);
 };
 
 }  // namespace follow_controller
