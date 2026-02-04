@@ -4,6 +4,7 @@
 #include "xline_follow_controller/common/follow_common.hpp"
 #include "xline_follow_controller/common/logging_compat.hpp"
 #include "xline_follow_controller/line_follow/line_params.hpp"
+#include "xline_follow_controller/lqr_follow/lqr_path_types.hpp"
 #include "xline_follow_controller/common/yaml_parser.hpp"
 #include "ament_index_cpp/get_package_share_directory.hpp"
 
@@ -146,10 +147,16 @@ private:
   double original_path_length_;       ///< 原始路径长度（延长前）
 
   // 路径延长参数
-  // 为了保证终点对齐时有一定“缓冲区”，在原始终点之后再向前延长一小段直线。
+  // 为了保证终点对齐时有一定"缓冲区"，在原始终点之后再向前延长一小段直线。
   static constexpr double PATH_EXTENSION_LENGTH = 0.5;  ///< 路径延长距离 [m]
   static constexpr double PATH_POINT_INTERVAL = 0.003;  ///< 路径点间隔 [m]
 
+  // LQR 相关成员变量
+  std::vector<PathPointWithCurvature> path_with_curvature_;  ///< 带曲率的路径
+  double K1_;                         ///< LQR 横向误差增益
+  double K2_;                         ///< LQR 航向误差增益
+  size_t last_nearest_idx_;           ///< 上次最近点索引（用于优化搜索）
+  double last_omega_;                 ///< 上次角速度（用于角加速度限制）
 
   std::shared_ptr<PIDController> heading_pid_controller_;  ///< 航向 PID 控制器
 
@@ -223,10 +230,23 @@ private:
   // ================================
 
   double computeLinearSpeed(double distance_to_target, double distance_to_start);
-  double computeAngularVelocity(double yaw_error, double dt, 
+  double computeAngularVelocity(double yaw_error, double dt,
                                 double distance_to_target, double distance_to_start,
                                 double linear_speed);
   double calculateRotationVelocity(const double& angle_diff);
+
+  // ================================
+  // 私有方法 - LQR 控制
+  // ================================
+
+  void computeLQRGains(double v);
+  void computeLQRErrors(double current_x, double current_y, double current_theta,
+                        const PathPointWithCurvature& ref,
+                        double& e_y, double& e_theta);
+  double computeAngularVelocityLQR(double robot_x, double robot_y, double robot_yaw,
+                                   double linear_speed, double dt);
+  size_t findNearestPointIndex(double x, double y);
+  double applyAngularLimits(double omega, double dt);
 
   // ================================
   // 私有方法 - 控制逻辑

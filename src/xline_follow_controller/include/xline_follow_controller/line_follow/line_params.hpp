@@ -106,7 +106,7 @@ struct LinePhaseParams
   LinePhaseConfig following;             ///< 跟随阶段
 };
 
-// 直线路径“回线/进线”制导参数 (guidance.*)
+// 直线路径"回线/进线"制导参数 (guidance.*)
 struct LineGuidanceParams
 {
   /// 制导模式：
@@ -123,8 +123,20 @@ struct LineGuidanceParams
   double stanley_k = 1.0;                ///< Stanley 增益 k
   double stanley_v0 = 0.05;              ///< 低速软化项 v0 [m/s]
 
-  // 限制“截获角”，避免目标航向过于激进
+  // 限制"截获角"，避免目标航向过于激进
   double theta_max = 0.7;                ///< 最大截获角 [rad]
+};
+
+// LQR 角速度控制参数 (lqr_angular_control.*)
+struct LineLQRParams
+{
+  bool enabled = false;                  ///< 是否启用LQR角速度控制
+  double q1 = 200.0;                     ///< 横向误差权重
+  double q2 = 300.0;                     ///< 航向误差权重
+  double r = 1.0;                        ///< 控制量权重
+  bool use_direct_gains = false;         ///< 是否直接指定增益
+  double K1_direct = 20.0;               ///< 横向误差增益（直接指定）
+  double K2_direct = 15.0;               ///< 航向误差增益（直接指定）
 };
 
 // 顶层参数结构体
@@ -138,6 +150,7 @@ struct LineParams
   LineFilterParams filter;               ///< 滤波器参数
   LinePhaseParams phase;                 ///< 阶段控制参数
   LineGuidanceParams guidance;           ///< 制导参数（回线/进线）
+  LineLQRParams lqr;                     ///< LQR 角速度控制参数
 };
 
 // 运行时参数（从PhaseConfig展开）

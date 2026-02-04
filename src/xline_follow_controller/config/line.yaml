@@ -99,3 +99,19 @@ rotation:
   factor: 1.2                        # 角速度调节因子
   angle_threshold: 0.6               # 角度阈值 [rad]
   smooth_factor: 0.6                 # 平滑因子
+
+
+# LQR 角速度控制参数
+lqr_angular_control:
+  # 是否启用 LQR 方式计算角速度（false 则使用 PID）
+  enabled: true
+
+  # LQR 权重参数（影响精度和响应速度）
+  q1: 300.0      # 横向误差权重（越大越重视横向精度）
+  q2: 400.0      # 航向误差权重（越大越重视航向精度）
+  r: 1.0         # 控制量权重（越大控制越温和）
+
+  # 是否直接指定增益（false 则从 q1, q2, r 计算）
+  use_direct_gains: false
+  K1_direct: 20.0    # 横向误差增益（直接指定时使用）
+  K2_direct: 15.0    # 航向误差增益（直接指定时使用）

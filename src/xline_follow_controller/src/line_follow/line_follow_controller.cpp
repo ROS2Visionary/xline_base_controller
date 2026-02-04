@@ -51,6 +51,10 @@ LineFollowController::LineFollowController()
   , start_line_aligned_(false)
   , start_line_aligned_count_(0)
   , accel_start_distance_to_start_(0.0)
+  , K1_(0.0)
+  , K2_(0.0)
+  , last_nearest_idx_(0)
+  , last_omega_(0.0)
 {
   updateParameters();
   initializeFilters();
@@ -213,6 +217,38 @@ void LineFollowController::updateParameters()
       params_.guidance.theta_max = parser.getParameter<double>("guidance.theta_max");
     }
 
+    // ================================
+    // 9. LQR 角速度控制参数（可选）
+    // ================================
+    if (parser.hasParameter("lqr_angular_control.enabled"))
+    {
+      params_.lqr.enabled = parser.getParameter<bool>("lqr_angular_control.enabled");
+    }
+    if (parser.hasParameter("lqr_angular_control.q1"))
+    {
+      params_.lqr.q1 = parser.getParameter<double>("lqr_angular_control.q1");
+    }
+    if (parser.hasParameter("lqr_angular_control.q2"))
+    {
+      params_.lqr.q2 = parser.getParameter<double>("lqr_angular_control.q2");
+    }
+    if (parser.hasParameter("lqr_angular_control.r"))
+    {
+      params_.lqr.r = parser.getParameter<double>("lqr_angular_control.r");
+    }
+    if (parser.hasParameter("lqr_angular_control.use_direct_gains"))
+    {
+      params_.lqr.use_direct_gains = parser.getParameter<bool>("lqr_angular_control.use_direct_gains");
+    }
+    if (parser.hasParameter("lqr_angular_control.K1_direct"))
+    {
+      params_.lqr.K1_direct = parser.getParameter<double>("lqr_angular_control.K1_direct");
+    }
+    if (parser.hasParameter("lqr_angular_control.K2_direct"))
+    {
+      params_.lqr.K2_direct = parser.getParameter<double>("lqr_angular_control.K2_direct");
+    }
+
     // 同步到运行时变量
     syncRuntimeParams();
   }
@@ -291,6 +327,10 @@ void LineFollowController::resetControllerState()
   second_prev_angular_velocity_ = 0.0;
   prev_smoothed_angular_velocity_ = 0.0;
   angular_vel_history_.clear();
+
+  // 重置 LQR 状态
+  last_nearest_idx_ = 0;
+  last_omega_ = 0.0;
 
   if (heading_pid_controller_)
   {
@@ -408,6 +448,21 @@ bool LineFollowController::setPlan(const nav_msgs::msg::Path& orig_global_plan)
   }
 
   extendPath();
+
+  // 构建带曲率的路径（用于 LQR 控制）
+  // 对于直线路径，曲率恒为 0
+  path_with_curvature_.clear();
+  path_with_curvature_.reserve(global_plan_.poses.size());
+  for (const auto& pose : global_plan_.poses)
+  {
+    PathPointWithCurvature pt;
+    pt.x = pose.pose.position.x;
+    pt.y = pose.pose.position.y;
+    pt.theta = tf2::getYaw(pose.pose.orientation);
+    pt.curvature = 0.0;  // 直线路径曲率为0
+    pt.arc_length = 0.0; // 不需要弧长参数
+    path_with_curvature_.push_back(pt);
+  }
 
   dx = target_pose_.pose.position.x - original_start_pose_.pose.position.x;
   dy = target_pose_.pose.position.y - original_start_pose_.pose.position.y;
@@ -1208,10 +1263,21 @@ void LineFollowController::handlePathFollowing(double robot_x, double robot_y,
   current_pose_.pose.position.x = robot_x;
   current_pose_.pose.position.y = robot_y;
 
-  double yaw_error = angles::shortest_angular_distance(robot_yaw_, final_target_yaw);
   double dt = getDeltaTime();
-  double angular_output =
-      computeAngularVelocity(yaw_error, dt, distance_to_original_target, distance_to_original_start, linear_speed);
+  double angular_output = 0.0;
+
+  // 根据配置选择 LQR 或 PID 控制
+  if (params_.lqr.enabled)
+  {
+    // 使用 LQR 控制角速度
+    angular_output = computeAngularVelocityLQR(robot_x, robot_y, robot_yaw_, linear_speed, dt);
+  }
+  else
+  {
+    // 使用 PID 控制角速度
+    double yaw_error = angles::shortest_angular_distance(robot_yaw_, final_target_yaw);
+    angular_output = computeAngularVelocity(yaw_error, dt, distance_to_original_target, distance_to_original_start, linear_speed);
+  }
 
   current_angular_speed_ = angular_output;
 
@@ -1233,8 +1299,10 @@ void LineFollowController::handlePathFollowing(double robot_x, double robot_y,
 
   if (isDebugEnabled())
   {
+    // 计算用于调试显示的航向误差
+    double debug_yaw_error = angles::shortest_angular_distance(robot_yaw_, final_target_yaw);
     LOG_INFO("路径跟随 - 航向误差: %.4f, 横向误差: %.4f, 速度: [%.3f, %.3f], 后退: %d",
-             yaw_error, cross_track_error, cmd_vel.twist.linear.x, cmd_vel.twist.angular.z, back_follow_);
+             debug_yaw_error, cross_track_error, cmd_vel.twist.linear.x, cmd_vel.twist.angular.z, back_follow_);
     LOG_INFO(" ");
   }
 }
@@ -1491,6 +1559,161 @@ void LineFollowController::exportDebugData(const std::string& file_path,
   }
 
   file.close();
+}
+
+// ============================================================================
+// LQR 控制方法
+// ============================================================================
+
+void LineFollowController::computeLQRGains(double v)
+{
+  // 根据速度和 Q/R 权重计算 LQR 增益
+  // 如果配置为直接指定增益，则跳过计算
+  if (params_.lqr.use_direct_gains)
+  {
+    K1_ = params_.lqr.K1_direct;
+    K2_ = params_.lqr.K2_direct;
+    return;
+  }
+
+  // 对速度做保护，避免除零或负值
+  const double v_abs = std::max(0.01, std::abs(v));
+
+  const double q1 = params_.lqr.q1;
+  const double q2 = params_.lqr.q2;
+  const double r = params_.lqr.r;
+
+  // LQR 增益公式（来自离散 Riccati 方程的近似解）
+  // K1 = sqrt(q1/r) / v
+  // K2 = sqrt(2*sqrt(q1*q2)/r + q2/r)
+  K1_ = std::sqrt(q1 / r) / v_abs;
+  K2_ = std::sqrt(2.0 * std::sqrt(q1 * q2) / r + q2 / r);
+}
+
+void LineFollowController::computeLQRErrors(double current_x, double current_y, double current_theta,
+                                            const PathPointWithCurvature& ref,
+                                            double& e_y, double& e_theta)
+{
+  // 计算 Frenet 坐标系下的横向误差和航向误差
+  const double dx = current_x - ref.x;
+  const double dy = current_y - ref.y;
+
+  // 横向误差（垂直于路径方向）
+  e_y = -std::sin(ref.theta) * dx + std::cos(ref.theta) * dy;
+
+  // 航向误差
+  e_theta = angles::shortest_angular_distance(ref.theta, current_theta);
+}
+
+double LineFollowController::computeAngularVelocityLQR(double robot_x, double robot_y, double robot_yaw,
+                                                       double linear_speed, double dt)
+{
+  // LQR 角速度控制主函数
+  if (path_with_curvature_.empty())
+  {
+    return 0.0;
+  }
+
+  // 1. 查找最近的路径点
+  const size_t nearest_idx = findNearestPointIndex(robot_x, robot_y);
+  PathPointWithCurvature ref_point = path_with_curvature_[nearest_idx];
+
+  // 适配后退模式：后退时参考航向需要加 π
+  if (back_follow_)
+  {
+    ref_point.theta = normalizeAngle(ref_point.theta + M_PI);
+    // 后退时曲率符号也需要翻转（虽然对于直线路径曲率为0，此处为通用性考虑）
+    ref_point.curvature = -ref_point.curvature;
+  }
+
+  // 2. 计算误差
+  double e_y = 0.0;
+  double e_theta = 0.0;
+  computeLQRErrors(robot_x, robot_y, robot_yaw, ref_point, e_y, e_theta);
+
+  // 3. 根据当前速度更新 LQR 增益
+  computeLQRGains(linear_speed);
+
+  // 4. LQR 控制律
+  // ω = ω_ff + ω_fb
+  // ω_ff = v * κ (前馈项，对于直线路径 κ=0，故前馈为0)
+  // ω_fb = -K1 * e_y - K2 * e_theta (反馈项)
+  const double omega_ff = linear_speed * ref_point.curvature;  // 对于直线路径，这项为0
+  const double omega_fb = -K1_ * e_y - K2_ * e_theta;
+  double omega = omega_ff + omega_fb;
+
+  // 5. 应用角速度和角加速度限制（与 PID 相同的物理限制）
+  omega = applyAngularLimits(omega, dt);
+
+  // 6. 记录当前角速度供下次使用
+  last_omega_ = omega;
+
+  return omega;
+}
+
+size_t LineFollowController::findNearestPointIndex(double x, double y)
+{
+  // 查找距离机器人最近的路径点索引
+  // 为了优化性能，从上次的最近点附近开始搜索
+  if (path_with_curvature_.empty())
+  {
+    return 0;
+  }
+
+  // 限制搜索起点在有效范围内
+  const size_t start_idx = std::min(last_nearest_idx_, path_with_curvature_.size() - 1);
+
+  // 设置搜索窗口（前后各看一定数量的点）
+  const size_t search_window = 50;
+  const size_t begin_idx = (start_idx > search_window) ? (start_idx - search_window) : 0;
+  const size_t end_idx = std::min(start_idx + search_window, path_with_curvature_.size());
+
+  size_t nearest_idx = start_idx;
+  double min_dist_sq = std::numeric_limits<double>::max();
+
+  for (size_t i = begin_idx; i < end_idx; ++i)
+  {
+    const double dx = path_with_curvature_[i].x - x;
+    const double dy = path_with_curvature_[i].y - y;
+    const double dist_sq = dx * dx + dy * dy;
+
+    if (dist_sq < min_dist_sq)
+    {
+      min_dist_sq = dist_sq;
+      nearest_idx = i;
+    }
+  }
+
+  last_nearest_idx_ = nearest_idx;
+  return nearest_idx;
+}
+
+double LineFollowController::applyAngularLimits(double omega, double dt)
+{
+  // 应用角速度和角加速度限制
+  // 根据当前阶段（对齐/跟随）选择不同的限制值
+  const bool is_alignment_phase = !start_line_aligned_;
+
+  const double max_angular_vel = is_alignment_phase ?
+      alignment_params_.max_angular_vel : following_params_.max_angular_vel;
+  const double max_angular_accel = is_alignment_phase ?
+      alignment_params_.max_angular_accel : following_params_.max_angular_accel;
+
+  // 1. 角速度限幅
+  omega = std::clamp(omega, -max_angular_vel, max_angular_vel);
+
+  // 2. 角加速度限幅
+  if (dt > 1e-6)
+  {
+    const double angular_accel = (omega - last_omega_) / dt;
+    if (std::abs(angular_accel) > max_angular_accel)
+    {
+      const double limited_accel = (angular_accel > 0) ? max_angular_accel : -max_angular_accel;
+      omega = last_omega_ + limited_accel * dt;
+    }
+  }
+
+  return omega;
 }
 
 }  // namespace follow_controller
