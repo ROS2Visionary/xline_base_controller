@@ -246,6 +246,8 @@ private:
   double computeAngularVelocityLQR(double robot_x, double robot_y, double robot_yaw,
                                    double linear_speed, double dt);
   size_t findNearestPointIndex(double x, double y);
+  size_t findLookaheadPointIndex(size_t start_idx, double robot_x, double robot_y,
+                                 double lookahead_dist);
   double applyAngularLimits(double omega, double dt);
 
   // ================================

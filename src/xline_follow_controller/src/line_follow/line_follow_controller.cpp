@@ -1608,15 +1608,23 @@ void LineFollowController::computeLQRErrors(double current_x, double current_y, 
 double LineFollowController::computeAngularVelocityLQR(double robot_x, double robot_y, double robot_yaw,
                                                        double linear_speed, double dt)
 {
-  // LQR 角速度控制主函数
+  // LQR 角速度控制主函数（使用前瞻点）
   if (path_with_curvature_.empty())
   {
     return 0.0;
   }
 
-  // 1. 查找最近的路径点
+  // 1. 先找到最近的路径点
   const size_t nearest_idx = findNearestPointIndex(robot_x, robot_y);
-  PathPointWithCurvature ref_point = path_with_curvature_[nearest_idx];
+
+  // 2. 计算基于速度的动态前瞻距离
+  const double lookahead_dist = getLookaheadDistance(linear_speed);
+
+  // 3. 在最近点前方查找前瞻点
+  const size_t lookahead_idx = findLookaheadPointIndex(nearest_idx, robot_x, robot_y, lookahead_dist);
+
+  // 4. 使用前瞻点作为参考点
+  PathPointWithCurvature ref_point = path_with_curvature_[lookahead_idx];
 
   // 适配后退模式：后退时参考航向需要加 π
   if (back_follow_)
@@ -1626,15 +1634,15 @@ double LineFollowController::computeAngularVelocityLQR(double robot_x, double ro
     ref_point.curvature = -ref_point.curvature;
   }
 
-  // 2. 计算误差
+  // 5. 计算误差（使用前瞻点作为参考）
   double e_y = 0.0;
   double e_theta = 0.0;
   computeLQRErrors(robot_x, robot_y, robot_yaw, ref_point, e_y, e_theta);
 
-  // 3. 根据当前速度更新 LQR 增益
+  // 6. 根据当前速度更新 LQR 增益
   computeLQRGains(linear_speed);
 
-  // 4. LQR 控制律
+  // 7. LQR 控制律
   // ω = ω_ff + ω_fb
   // ω_ff = v * κ (前馈项，对于直线路径 κ=0，故前馈为0)
   // ω_fb = -K1 * e_y - K2 * e_theta (反馈项)
@@ -1642,10 +1650,10 @@ double LineFollowController::computeAngularVelocityLQR(double robot_x, double ro
   const double omega_fb = -K1_ * e_y - K2_ * e_theta;
   double omega = omega_ff + omega_fb;
 
-  // 5. 应用角速度和角加速度限制（与 PID 相同的物理限制）
+  // 8. 应用角速度和角加速度限制（与 PID 相同的物理限制）
   omega = applyAngularLimits(omega, dt);
 
-  // 6. 记录当前角速度供下次使用
+  // 9. 记录当前角速度供下次使用
   last_omega_ = omega;
 
   return omega;
@@ -1686,6 +1694,36 @@ size_t LineFollowController::findNearestPointIndex(double x, double y)
 
   last_nearest_idx_ = nearest_idx;
   return nearest_idx;
+}
+
+size_t LineFollowController::findLookaheadPointIndex(size_t start_idx, double robot_x, double robot_y,
+                                                     double lookahead_dist)
+{
+  // 从 start_idx 开始向前搜索，找到第一个距离 >= lookahead_dist 的点
+  // 这样可以保证前瞻点在机器人前方，且距离不小于期望的前瞻距离
+  if (path_with_curvature_.empty())
+  {
+    return 0;
+  }
+
+  // 确保起始索引有效
+  start_idx = std::min(start_idx, path_with_curvature_.size() - 1);
+
+  // 从最近点开始向前搜索
+  for (size_t i = start_idx; i < path_with_curvature_.size(); ++i)
+  {
+    const double dx = path_with_curvature_[i].x - robot_x;
+    const double dy = path_with_curvature_[i].y - robot_y;
+    const double dist = std::sqrt(dx * dx + dy * dy);
+
+    if (dist >= lookahead_dist)
+    {
+      return i;
+    }
+  }
+
+  // 如果没找到满足条件的点，返回路径最后一个点
+  return path_with_curvature_.size() - 1;
 }
 
 double LineFollowController::applyAngularLimits(double omega, double dt)
