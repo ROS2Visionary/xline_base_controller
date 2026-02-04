@@ -130,8 +130,33 @@ void LQRCircleController::updateParameters(const std::string& config_path)
     params_.rotation_angle_threshold = parser.getParameter<double>("rotation.angle_threshold");
     params_.rotation_smooth_factor = parser.getParameter<double>("rotation.smooth_factor");
 
-    // 加载反馈限制参数
-    params_.feedback_limit_ratio = parser.getParameter<double>("feedback.limit_ratio");
+    // 加载反馈限制参数（分段控制）
+    // 优先加载分段参数，如果不存在则使用统一参数（向后兼容）
+    if (parser.hasParameter("feedback.limit_ratio_before_print") &&
+        parser.hasParameter("feedback.limit_ratio_after_print"))
+    {
+      params_.feedback_limit_ratio_before_print =
+          parser.getParameter<double>("feedback.limit_ratio_before_print");
+      params_.feedback_limit_ratio_after_print =
+          parser.getParameter<double>("feedback.limit_ratio_after_print");
+
+      RCLCPP_INFO(get_logger(),
+                  "使用分段反馈限制: 喷墨前=%.1f%%, 喷墨后=%.1f%%",
+                  params_.feedback_limit_ratio_before_print * 100.0,
+                  params_.feedback_limit_ratio_after_print * 100.0);
+    }
+    else if (parser.hasParameter("feedback.limit_ratio"))
+    {
+      // 向后兼容：统一参数
+      params_.feedback_limit_ratio = parser.getParameter<double>("feedback.limit_ratio");
+      params_.feedback_limit_ratio_before_print = params_.feedback_limit_ratio;
+      params_.feedback_limit_ratio_after_print = params_.feedback_limit_ratio;
+
+      RCLCPP_WARN(get_logger(),
+                  "使用统一反馈限制(已弃用): %.1f%%，建议使用分段参数",
+                  params_.feedback_limit_ratio * 100.0);
+    }
+
     params_.feedback_min_limit = parser.getParameter<double>("feedback.min_limit");
 
     // 加载滤波器参数
@@ -457,12 +482,18 @@ bool LQRCircleController::computeVelocityCommands(
     omega_i = -params_.Ki * integral_e_y_;
   }
 
-  // 9. 限制反馈量不超过前馈的指定比例
+  // 9. 限制反馈量不超过前馈的指定比例（分段控制）
   // 总反馈量 = LQR反馈 + 积分项
   double omega_correction = omega_fb + omega_i;
 
-  // 计算反馈限制：前馈 × 限制比例（默认5%）
-  double feedback_limit = std::abs(omega_ff) * params_.feedback_limit_ratio;
+  // 根据喷墨状态选择不同的反馈限制比例
+  // start_print 是从 base_follow_controller 继承的成员变量
+  double current_limit_ratio = start_print
+      ? params_.feedback_limit_ratio_after_print   // 喷墨后：更严格的限制
+      : params_.feedback_limit_ratio_before_print;  // 喷墨前：更宽松的限制
+
+  // 计算反馈限制：前馈 × 限制比例
+  double feedback_limit = std::abs(omega_ff) * current_limit_ratio;
 
   // 仅当配置了最小限制（>0）时才使用
   if (params_.feedback_min_limit > 0.0 && feedback_limit < params_.feedback_min_limit)
@@ -513,9 +544,10 @@ bool LQRCircleController::computeVelocityCommands(
   if (params_.enable_debug && params_.verbose)
   {
     RCLCPP_INFO(get_logger(),
-                "LQR控制: 横向误差=%.1fmm, 航向角误差=%.2f°, 前馈角速度=%.3f, 反馈角速度=%.3f(限幅±%.3f), 总角速度=%.3f, 曲率=%.3f",
+                "LQR控制: 横向误差=%.1fmm, 航向角误差=%.2f°, 前馈角速度=%.3f, 反馈角速度=%.3f(限幅±%.3f, %.0f%%), 总角速度=%.3f, 曲率=%.3f, 喷墨=%s",
                 e_y * 1000, e_theta * 180 / M_PI,
-                omega_ff, omega_correction, feedback_limit, omega, ref.curvature);
+                omega_ff, omega_correction, feedback_limit, current_limit_ratio * 100.0,
+                omega, ref.curvature, start_print ? "是" : "否");
   }
 
   // 更新栅格图可视化
