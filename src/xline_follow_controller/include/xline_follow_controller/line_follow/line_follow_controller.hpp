@@ -216,6 +216,7 @@ private:
   size_t findNearestSegment(double robot_x, double robot_y);
   double computeCrossTrackError(double robot_x, double robot_y);
   void extendPath();
+  double getLookaheadDistance(double speed);
 
   // ================================
   // 私有方法 - 速度计算

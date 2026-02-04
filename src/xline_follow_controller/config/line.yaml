@@ -39,7 +39,8 @@ distance:
   alignment: 0.08                    # 对齐距离阈值 [m]
   deceleration: 0.25                  # 减速距离 [m]
   acceleration: 0.15                 # 加速阶段距离 [m]
-  lookahead: 0.25                    # 前瞻距离 [m]
+  lookahead: 0.15                    # 前瞻基础距离 [m]
+  lookahead_time: 0.05                # 前瞻时间系数 [s], 总前瞻 = lookahead + lookahead_time * speed
   waypoint_tolerance: 0.01          # 路径点容差 [m]
 
 

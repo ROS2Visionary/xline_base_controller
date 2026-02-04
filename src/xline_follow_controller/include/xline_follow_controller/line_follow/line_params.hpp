@@ -53,7 +53,8 @@ struct LineDistanceParams
   double alignment = 0.08;           ///< 对齐距离阈值 [m]
   double deceleration = 0.3;         ///< 减速距离（工作模式）[m]
   double acceleration = 0.15;        ///< 加速阶段距离 [m]
-  double lookahead = 0.25;           ///< 前瞻距离 [m]
+  double lookahead = 0.25;           ///< 前瞻基础距离 [m]
+  double lookahead_time = 0.0;       ///< 前瞻时间系数 [s], 总前瞻 = lookahead + lookahead_time * speed
   double waypoint_tolerance = 0.005; ///< 路径点容差 [m]
 };
 

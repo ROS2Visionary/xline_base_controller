@@ -130,6 +130,7 @@ void LineFollowController::updateParameters()
     params_.distance.deceleration = parser.getParameter<double>("distance.deceleration");
     params_.distance.acceleration = parser.getParameter<double>("distance.acceleration");
     params_.distance.lookahead = parser.getParameter<double>("distance.lookahead");
+    params_.distance.lookahead_time = parser.getParameter<double>("distance.lookahead_time");
     params_.distance.waypoint_tolerance = parser.getParameter<double>("distance.waypoint_tolerance");
 
     // ================================
@@ -917,6 +918,17 @@ bool LineFollowController::isAlignedWithTarget(double robot_yaw,
 }
 
 
+double LineFollowController::getLookaheadDistance(double speed)
+{
+  // 基于时间-速度模型计算前瞻距离（与LQR控制器一致）
+  // 总前瞻距离 = 基础前瞻距离 + 前瞻时间 × 速度
+  double lookahead_dist = params_.distance.lookahead +
+                          params_.distance.lookahead_time * std::abs(speed);
+
+  // 简单限幅（最小前瞻距离）
+  return std::max(0.02, lookahead_dist);
+}
+
 geometry_msgs::msg::PoseStamped LineFollowController::getNextWaypoint(double robot_x, double robot_y)
 {
   if (current_waypoint_index_ >= global_plan_.poses.size() - 1)
@@ -924,13 +936,16 @@ geometry_msgs::msg::PoseStamped LineFollowController::getNextWaypoint(double rob
     return target_pose_;
   }
 
+  // 使用动态前瞻距离（基于上一个输出的线速度）
+  double dynamic_lookahead = getLookaheadDistance(current_linear_speed_);
+
   for (size_t i = current_waypoint_index_; i < global_plan_.poses.size(); ++i)
   {
     double dx = global_plan_.poses[i].pose.position.x - robot_x;
     double dy = global_plan_.poses[i].pose.position.y - robot_y;
     double distance = std::sqrt(dx * dx + dy * dy);
 
-    if (distance >= lookaheadDist())
+    if (distance >= dynamic_lookahead)
     {
       current_waypoint_index_ = i;
       return global_plan_.poses[i];
