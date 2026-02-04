@@ -1215,10 +1215,10 @@ void LineFollowController::handlePathFollowing(double robot_x, double robot_y,
 
   current_angular_speed_ = angular_output;
 
-  if (distance_to_original_target < 0.07)
-  {
-    angular_output = 0.0;
-  }
+  // if (distance_to_original_target < 0.07)
+  // {
+  //   angular_output = 0.0;
+  // }
 
   cmd_vel.twist.linear.x = linear_speed;
   cmd_vel.twist.angular.z = angular_output;
