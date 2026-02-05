@@ -152,6 +152,8 @@ struct LineLQRParams
   double K1_direct = 20.0;               ///< 横向误差增益（直接指定）
   double K2_direct = 15.0;               ///< 航向误差增益（直接指定）
   LineLQROutputFilterParams output_filter;  ///< LQR 输出滤波（单独一组，避免与 PID 干扰）
+  double K1_max = 50;
+  double K1_min = 13;
 };
 
 // 顶层参数结构体

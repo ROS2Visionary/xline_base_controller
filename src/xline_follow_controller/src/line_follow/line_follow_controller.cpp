@@ -274,7 +274,14 @@ void LineFollowController::updateParameters()
     if (parser.hasParameter("lqr_angular_control.output_filter.lowpass_alpha"))
     {
       params_.lqr.output_filter.lowpass_alpha = parser.getParameter<double>("lqr_angular_control.output_filter.lowpass_alpha");
+    }if (parser.hasParameter("lqr_angular_control.K1_max"))
+    {
+      params_.lqr.K1_max = parser.getParameter<double>("lqr_angular_control.K1_max");
+    }if (parser.hasParameter("lqr_angular_control.K1_min"))
+    {
+      params_.lqr.K1_min = parser.getParameter<double>("lqr_angular_control.K1_min");
     }
+
 
     // 同步到运行时变量
     syncRuntimeParams();
@@ -356,6 +363,8 @@ void LineFollowController::resetControllerState()
   second_prev_angular_velocity_ = 0.0;
   prev_smoothed_angular_velocity_ = 0.0;
   angular_vel_history_.clear();
+
+  current_min_K1_ = params_.lqr.K1_max;
 
   // 重置 LQR 状态
   last_nearest_idx_ = 0;
@@ -773,8 +782,8 @@ double LineFollowController::computeLinearSpeed(double distance_to_target, doubl
     constexpr double kMinAccelStartDistance = 0.2;
     const bool allow_linear_accel_by_distance = is_transition_path_ ? true : (distance_to_start >= kMinAccelStartDistance);
 
-    // if (current_state_ == ControlState::ALIGNING_START || !start_line_aligned_ || !allow_linear_accel_by_distance)
-    if ( !start_line_aligned_ && !is_transition_path_)
+    if (current_state_ == ControlState::ALIGNING_START || !start_line_aligned_ || !allow_linear_accel_by_distance)
+    // if ( !start_line_aligned_ && !is_transition_path_)
     {
       target_speed = prev_speed + acceFactor();
       max_linear_speed_ = runtime_alignment_vel_;
@@ -1328,8 +1337,8 @@ void LineFollowController::handlePathFollowing(double robot_x, double robot_y,
   {
     // 计算用于调试显示的航向误差
     double debug_yaw_error = angles::shortest_angular_distance(robot_yaw_, final_target_yaw);
-    LOG_INFO("路径跟随 - 航向误差: %.4f, 横向误差: %.4f, 速度: [%.3f, %.3f], 后退: %d",
-             debug_yaw_error, cross_track_error, cmd_vel.twist.linear.x, cmd_vel.twist.angular.z, back_follow_);
+    LOG_INFO("路径跟随 - 航向误差: %.4f, 横向误差: %.4f, 速度: [%.3f, %.3f], 后退: %d, k1: %.3f, k2: %.3f",
+             debug_yaw_error, cross_track_error, cmd_vel.twist.linear.x, cmd_vel.twist.angular.z, back_follow_,K1_,K2_);
     LOG_INFO(" ");
   }
 }
@@ -1615,6 +1624,16 @@ void LineFollowController::computeLQRGains(double v)
   // K2 = sqrt(2*sqrt(q1*q2)/r + q2/r)
   K1_ = std::sqrt(q1 / r) / v_abs;
   K2_ = std::sqrt(2.0 * std::sqrt(q1 * q2) / r + q2 / r);
+
+
+  // 限制K1_
+  K1_ = std::clamp(K1_,params_.lqr.K1_min,params_.lqr.K1_max);
+  if (K1_ < current_min_K1_)
+  {
+    current_min_K1_ = K1_;
+  }else{
+    K1_ = current_min_K1_;
+  }
 }
 
 void LineFollowController::computeLQRErrors(double current_x, double current_y, double current_theta,

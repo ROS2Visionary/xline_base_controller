@@ -155,6 +155,7 @@ private:
   std::vector<PathPointWithCurvature> path_with_curvature_;  ///< 带曲率的路径
   double K1_;                         ///< LQR 横向误差增益
   double K2_;                         ///< LQR 航向误差增益
+  double current_min_K1_;
   size_t last_nearest_idx_;           ///< 上次最近点索引（用于优化搜索）
   double last_omega_;                 ///< 上次角速度（用于角加速度限制）
   SecondOrderSmoother lqr_angular_smoother_;  ///< LQR 输出二阶平滑器（独立于 PID）
