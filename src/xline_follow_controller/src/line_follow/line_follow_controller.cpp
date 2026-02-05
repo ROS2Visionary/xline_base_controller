@@ -1281,10 +1281,6 @@ void LineFollowController::handlePathFollowing(double robot_x, double robot_y,
 
   current_angular_speed_ = angular_output;
 
-  // if (distance_to_original_target < 0.07)
-  // {
-  //   angular_output = 0.0;
-  // }
 
   cmd_vel.twist.linear.x = linear_speed;
   cmd_vel.twist.angular.z = angular_output;
@@ -1614,46 +1610,49 @@ double LineFollowController::computeAngularVelocityLQR(double robot_x, double ro
     return 0.0;
   }
 
+  // 说明：
+  // - 本控制器内部的 LQR 推导基于“沿路径切向前进”的运动方向。
+  // - 后退跟随(back_follow_)时，底盘线速度会在外层被取反（cmd_vel.linear.x < 0），
+  //   但机器人在世界坐标中的“运动方向”仍与路径切向一致（等效为航向 + π 前进）。
+  // - 因此这里统一使用“运动方向航向”(robot_yaw + π)来计算误差，并使用速度幅值参与增益/前馈；
+  //   角速度 ω 本身是底盘的真实偏航角速度（ψ_dot = ω），与前进/后退无关，不应在此额外取反。
+  const double motion_speed = std::max(0.01, std::abs(linear_speed));
+
   // 1. 先找到最近的路径点
   const size_t nearest_idx = findNearestPointIndex(robot_x, robot_y);
 
   // 2. 计算基于速度的动态前瞻距离
-  const double lookahead_dist = getLookaheadDistance(linear_speed);
+  const double lookahead_dist = getLookaheadDistance(motion_speed);
 
   // 3. 在最近点前方查找前瞻点
   const size_t lookahead_idx = findLookaheadPointIndex(nearest_idx, robot_x, robot_y, lookahead_dist);
 
-  // 4. 使用前瞻点作为参考点
-  PathPointWithCurvature ref_point = path_with_curvature_[lookahead_idx];
+  // 4. 使用前瞻点作为参考点（保持原始路径方向不变）
+  const PathPointWithCurvature& ref_point = path_with_curvature_[lookahead_idx];
 
-  // 适配后退模式：后退时参考航向需要加 π
-  if (back_follow_)
-  {
-    ref_point.theta = normalizeAngle(ref_point.theta + M_PI);
-    // 后退时曲率符号也需要翻转（虽然对于直线路径曲率为0，此处为通用性考虑）
-    ref_point.curvature = -ref_point.curvature;
-  }
+  // 5. 后退模式：用“运动方向航向”计算误差
+  double effective_robot_yaw = back_follow_ ? normalizeAngle(robot_yaw + M_PI) : robot_yaw;
 
-  // 5. 计算误差（使用前瞻点作为参考）
+  // 6. 计算误差（在统一的前进等效坐标系中）
   double e_y = 0.0;
   double e_theta = 0.0;
-  computeLQRErrors(robot_x, robot_y, robot_yaw, ref_point, e_y, e_theta);
+  computeLQRErrors(robot_x, robot_y, effective_robot_yaw, ref_point, e_y, e_theta);
 
-  // 6. 根据当前速度更新 LQR 增益
-  computeLQRGains(linear_speed);
+  // 7. 根据当前速度更新 LQR 增益
+  computeLQRGains(motion_speed);
 
-  // 7. LQR 控制律
+  // 8. LQR 控制律
   // ω = ω_ff + ω_fb
   // ω_ff = v * κ (前馈项，对于直线路径 κ=0，故前馈为0)
-  // ω_fb = -K1 * e_y - K2 * e_theta (反馈项)
-  const double omega_ff = linear_speed * ref_point.curvature;  // 对于直线路径，这项为0
+  // ω_fb = -K1 * e_y - K2 * e_theta (反馈项，在前进等效系中计算)
+  const double omega_ff = motion_speed * ref_point.curvature;  // 直线路径时为 0
   const double omega_fb = -K1_ * e_y - K2_ * e_theta;
   double omega = omega_ff + omega_fb;
 
-  // 8. 应用角速度和角加速度限制（与 PID 相同的物理限制）
+  // 9. 应用角速度和角加速度限制（与 PID 相同的物理限制）
   omega = applyAngularLimits(omega, dt);
 
-  // 9. 记录当前角速度供下次使用
+  // 10. 记录当前角速度供下次使用
   last_omega_ = omega;
 
   return omega;

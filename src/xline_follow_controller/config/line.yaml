@@ -69,7 +69,7 @@ guidance:
 # 阶段控制参数
 phase:
   alignment:                         # 对齐阶段
-    max_angular_vel: 0.03           # 最大角速度 [rad/s]
+    max_angular_vel: 0.02           # 最大角速度 [rad/s]
     max_angular_accel: 2.0          # 最大角加速度 [rad/s²]
     current_heading_weight: 0.0      # 当前航向权重
     target_heading_weight: 1.0       # 目标航向权重
@@ -113,5 +113,5 @@ lqr_angular_control:
 
   # 是否直接指定增益（false 则从 q1, q2, r 计算）
   use_direct_gains: true
-  K1_direct: 10.0    # 横向误差增益（直接指定时使用）
-  K2_direct: 2.0    # 航向误差增益（直接指定时使用）
+  K1_direct: 12.5    # 横向误差增益（直接指定时使用）
+  K2_direct: 2.5    # 航向误差增益（直接指定时使用）
