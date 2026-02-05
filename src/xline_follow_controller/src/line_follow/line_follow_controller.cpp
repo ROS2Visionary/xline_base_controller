@@ -779,7 +779,7 @@ double LineFollowController::computeLinearSpeed(double distance_to_target, doubl
     // - 在 distance_to_start < 0.2m 之前，即使已经满足加速标准（start_line_aligned_==true），也不允许进入加速段；
     // - 一旦 distance_to_start > 0.2m，如果仍未满足加速标准，则维持现有逻辑（对齐段低速），不做额外延后；
     // - 注意：该约束只限制线速度，角速度控制保持原有逻辑。
-    constexpr double kMinAccelStartDistance = 0.2;
+    constexpr double kMinAccelStartDistance = 0.25;
     const bool allow_linear_accel_by_distance = is_transition_path_ ? true : (distance_to_start >= kMinAccelStartDistance);
 
     if (current_state_ == ControlState::ALIGNING_START || !start_line_aligned_ || !allow_linear_accel_by_distance)
@@ -1289,7 +1289,7 @@ void LineFollowController::handlePathFollowing(double robot_x, double robot_y,
     final_target_yaw = path_ideal_yaw;
   }
 
-  if(distance_to_original_start > 0.14){
+  if(distance_to_original_start > 0.19){
     start_print = true;
     stop_print = false;
   }

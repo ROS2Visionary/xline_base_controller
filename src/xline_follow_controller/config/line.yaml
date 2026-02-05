@@ -21,10 +21,10 @@ heading_pid:
 # 速度控制
 velocity:
   # 速度限制
-  accel_min: 0.05                    # 加速时最小线速度 [m/s]
+  accel_min: 0.03                    # 加速时最小线速度 [m/s]
   decel_min: 0.03                    # 减速时最小线速度 [m/s]
-  walk_max: 0.28                     # 步行模式最大速度 [m/s]
-  work_max: 0.28                     # 工作模式最大速度 [m/s]
+  walk_max: 0.25                     # 步行模式最大速度 [m/s]
+  work_max: 0.25                     # 工作模式最大速度 [m/s]
   alignment: 0.05                    # 对齐阶段速度 [m/s]
   # 调速参数
   acce_factor: 0.002                # 加速因子
@@ -69,7 +69,7 @@ guidance:
 # 阶段控制参数
 phase:
   alignment:                         # 对齐阶段
-    max_angular_vel: 0.015           # 最大角速度 [rad/s]
+    max_angular_vel: 0.02           # 最大角速度 [rad/s]
     max_angular_accel: 2.0          # 最大角加速度 [rad/s²]
     current_heading_weight: 0.0      # 当前航向权重
     target_heading_weight: 1.0       # 目标航向权重
@@ -78,7 +78,7 @@ phase:
     smoother_freq: 15.0              # 平滑器频率 [Hz]
     smoother_damping: 0.96           # 平滑器阻尼比
     line_cross_track_tolerance: 0.0025 # 起步：到直线的横向误差阈值 [m]
-    line_heading_tolerance: 0.015     # 起步：相对直线航向的误差阈值 [rad]
+    line_heading_tolerance: 0.01     # 起步：相对直线航向的误差阈值 [rad]
     line_alignment_stable_count: 10   # 起步：连续满足次数（抗抖）
 
   following:                         # 跟随阶段
@@ -107,12 +107,12 @@ lqr_angular_control:
   enabled: true
 
   # LQR 权重参数（影响精度和响应速度）
-  q1: 5.0      # 横向误差权重（越大越重视横向精度）
-  q2: 2.5      # 航向误差权重（越大越重视航向精度）
-  r: 0.6         # 控制量权重（越大控制越温和）
+  q1: 4.5      # 横向误差权重（越大越重视横向精度）
+  q2: 3.0      # 航向误差权重（越大越重视航向精度）
+  r: 1.0         # 控制量权重（越大控制越温和）
 
-  K1_max: 25.0
-  K1_min: 13.0
+  K1_max: 30.0
+  K1_min: 15.0
 
   # 是否直接指定增益（false 则从 q1, q2, r 计算）
   use_direct_gains: false
@@ -122,9 +122,9 @@ lqr_angular_control:
   # LQR 输出滤波（单独一组，避免与 PID 的滤波状态相互干扰）
   # - 一般建议先只开 smoother，lowpass 视噪声情况再开
   output_filter:
-    enabled: false
+    enabled: true
     use_smoother: false
     smoother_freq: 15.0
     smoother_damping: 0.9
-    use_lowpass: true
+    use_lowpass: false
     lowpass_alpha: 0.95
