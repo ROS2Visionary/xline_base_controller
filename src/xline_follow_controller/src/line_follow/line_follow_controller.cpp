@@ -55,6 +55,8 @@ LineFollowController::LineFollowController()
   , K2_(0.0)
   , last_nearest_idx_(0)
   , last_omega_(0.0)
+  , lqr_angular_smoother_(2.0, 0.7)
+  , prev_lqr_smoothed_omega_(0.0)
 {
   updateParameters();
   initializeFilters();
@@ -248,6 +250,31 @@ void LineFollowController::updateParameters()
     {
       params_.lqr.K2_direct = parser.getParameter<double>("lqr_angular_control.K2_direct");
     }
+    if (parser.hasParameter("lqr_angular_control.output_filter.enabled"))
+    {
+      params_.lqr.output_filter.enabled = parser.getParameter<bool>("lqr_angular_control.output_filter.enabled");
+    }
+    if (parser.hasParameter("lqr_angular_control.output_filter.use_smoother"))
+    {
+      params_.lqr.output_filter.use_smoother = parser.getParameter<bool>("lqr_angular_control.output_filter.use_smoother");
+    }
+    if (parser.hasParameter("lqr_angular_control.output_filter.smoother_freq"))
+    {
+      params_.lqr.output_filter.smoother_freq = parser.getParameter<double>("lqr_angular_control.output_filter.smoother_freq");
+    }
+    if (parser.hasParameter("lqr_angular_control.output_filter.smoother_damping"))
+    {
+      params_.lqr.output_filter.smoother_damping =
+          parser.getParameter<double>("lqr_angular_control.output_filter.smoother_damping");
+    }
+    if (parser.hasParameter("lqr_angular_control.output_filter.use_lowpass"))
+    {
+      params_.lqr.output_filter.use_lowpass = parser.getParameter<bool>("lqr_angular_control.output_filter.use_lowpass");
+    }
+    if (parser.hasParameter("lqr_angular_control.output_filter.lowpass_alpha"))
+    {
+      params_.lqr.output_filter.lowpass_alpha = parser.getParameter<double>("lqr_angular_control.output_filter.lowpass_alpha");
+    }
 
     // 同步到运行时变量
     syncRuntimeParams();
@@ -287,6 +314,8 @@ void LineFollowController::syncRuntimeParams()
 
   // 二阶平滑器
   angular_smoother_.setParameters(alignment_params_.smoother_freq, alignment_params_.smoother_damping);
+  lqr_angular_smoother_.setParameters(params_.lqr.output_filter.smoother_freq,
+                                      params_.lqr.output_filter.smoother_damping);
 
   // PID控制器
   if (heading_pid_controller_)
@@ -331,6 +360,8 @@ void LineFollowController::resetControllerState()
   // 重置 LQR 状态
   last_nearest_idx_ = 0;
   last_omega_ = 0.0;
+  lqr_angular_smoother_.reset();
+  prev_lqr_smoothed_omega_ = 0.0;
 
   if (heading_pid_controller_)
   {
@@ -1649,10 +1680,38 @@ double LineFollowController::computeAngularVelocityLQR(double robot_x, double ro
   const double omega_fb = -K1_ * e_y - K2_ * e_theta;
   double omega = omega_ff + omega_fb;
 
-  // 9. 应用角速度和角加速度限制（与 PID 相同的物理限制）
+  // 9. LQR 输出滤波（独立于 PID，避免相互干扰）
+  double omega_before_limits = omega;
+  if (params_.lqr.output_filter.enabled)
+  {
+    if (params_.lqr.output_filter.use_smoother)
+    {
+      omega = lqr_angular_smoother_.filter(omega, dt);
+    }
+
+    if (params_.lqr.output_filter.use_lowpass)
+    {
+      const double alpha = std::clamp(params_.lqr.output_filter.lowpass_alpha, 0.0, 1.0);
+      omega = alpha * omega + (1.0 - alpha) * prev_lqr_smoothed_omega_;
+    }
+
+    omega_before_limits = omega;
+  }
+
+  // 10. 应用角速度和角加速度限制（与 PID 相同的物理限制）
   omega = applyAngularLimits(omega, dt);
 
-  // 10. 记录当前角速度供下次使用
+  if (params_.lqr.output_filter.enabled)
+  {
+    // 若限幅/限加速度显著改变输出，则将滤波器状态对齐到实际输出，避免积累偏差
+    if (std::abs(omega - omega_before_limits) > 1e-9)
+    {
+      lqr_angular_smoother_.reset();
+    }
+    prev_lqr_smoothed_omega_ = omega;
+  }
+
+  // 11. 记录当前角速度供下次使用
   last_omega_ = omega;
 
   return omega;

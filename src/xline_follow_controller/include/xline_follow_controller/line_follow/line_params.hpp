@@ -128,6 +128,20 @@ struct LineGuidanceParams
 };
 
 // LQR 角速度控制参数 (lqr_angular_control.*)
+struct LineLQROutputFilterParams
+{
+  bool enabled = false;              ///< 是否启用 LQR 输出滤波
+
+  // 二阶平滑器（推荐：优先用这个做“手感”平滑）
+  bool use_smoother = true;          ///< 是否启用二阶平滑器
+  double smoother_freq = 15.0;       ///< 平滑器自然频率 [Hz]
+  double smoother_damping = 0.8;     ///< 平滑器阻尼比
+
+  // 一阶低通（可选：用于抑制高频噪声，alpha 越小越“糊”）
+  bool use_lowpass = false;          ///< 是否启用一阶低通
+  double lowpass_alpha = 0.95;       ///< 低通系数 alpha ∈ (0, 1]，越接近 1 越接近原始输出
+};
+
 struct LineLQRParams
 {
   bool enabled = false;                  ///< 是否启用LQR角速度控制
@@ -137,6 +151,7 @@ struct LineLQRParams
   bool use_direct_gains = false;         ///< 是否直接指定增益
   double K1_direct = 20.0;               ///< 横向误差增益（直接指定）
   double K2_direct = 15.0;               ///< 航向误差增益（直接指定）
+  LineLQROutputFilterParams output_filter;  ///< LQR 输出滤波（单独一组，避免与 PID 干扰）
 };
 
 // 顶层参数结构体

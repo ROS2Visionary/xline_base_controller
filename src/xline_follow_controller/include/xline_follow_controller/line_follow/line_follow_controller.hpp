@@ -157,6 +157,8 @@ private:
   double K2_;                         ///< LQR 航向误差增益
   size_t last_nearest_idx_;           ///< 上次最近点索引（用于优化搜索）
   double last_omega_;                 ///< 上次角速度（用于角加速度限制）
+  SecondOrderSmoother lqr_angular_smoother_;  ///< LQR 输出二阶平滑器（独立于 PID）
+  double prev_lqr_smoothed_omega_;    ///< LQR 输出低通记忆项（独立于 PID）
 
   std::shared_ptr<PIDController> heading_pid_controller_;  ///< 航向 PID 控制器
 

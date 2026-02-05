@@ -115,3 +115,13 @@ lqr_angular_control:
   use_direct_gains: true
   K1_direct: 12.5    # 横向误差增益（直接指定时使用）
   K2_direct: 2.5    # 航向误差增益（直接指定时使用）
+
+  # LQR 输出滤波（单独一组，避免与 PID 的滤波状态相互干扰）
+  # - 一般建议先只开 smoother，lowpass 视噪声情况再开
+  output_filter:
+    enabled: false
+    use_smoother: true
+    smoother_freq: 15.0
+    smoother_damping: 0.8
+    use_lowpass: false
+    lowpass_alpha: 0.95
