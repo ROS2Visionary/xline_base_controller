@@ -41,7 +41,7 @@ distance:
   acceleration: 0.15                 # 加速阶段距离 [m]
   lookahead: 0.25                    # 前瞻基础距离 [m]
   lookahead_time: 0.0                # 前瞻时间系数 [s], 总前瞻 = lookahead + lookahead_time * speed
-  waypoint_tolerance: 0.015          # 路径点容差 [m]
+  waypoint_tolerance: 0.008          # 路径点容差 [m]
 
 
 # 滤波器配置
@@ -69,7 +69,7 @@ guidance:
 # 阶段控制参数
 phase:
   alignment:                         # 对齐阶段
-    max_angular_vel: 0.02           # 最大角速度 [rad/s]
+    max_angular_vel: 0.03           # 最大角速度 [rad/s]
     max_angular_accel: 2.0          # 最大角加速度 [rad/s²]
     current_heading_weight: 0.0      # 当前航向权重
     target_heading_weight: 1.0       # 目标航向权重
@@ -77,12 +77,12 @@ phase:
 
     smoother_freq: 15.0              # 平滑器频率 [Hz]
     smoother_damping: 0.96           # 平滑器阻尼比
-    line_cross_track_tolerance: 0.003 # 起步：到直线的横向误差阈值 [m]
-    line_heading_tolerance: 0.02     # 起步：相对直线航向的误差阈值 [rad]
+    line_cross_track_tolerance: 0.002 # 起步：到直线的横向误差阈值 [m]
+    line_heading_tolerance: 0.01     # 起步：相对直线航向的误差阈值 [rad]
     line_alignment_stable_count: 10   # 起步：连续满足次数（抗抖）
 
   following:                         # 跟随阶段
-    max_angular_vel: 0.015           # 最大角速度 [rad/s]
+    max_angular_vel: 0.01           # 最大角速
     max_angular_accel: 1.5          # 最大角加速度 [rad/s²]
     current_heading_weight: 0.0      # 当前航向权重
     target_heading_weight: 1.0       # 目标航向权重
@@ -112,6 +112,6 @@ lqr_angular_control:
   r: 1.0         # 控制量权重（越大控制越温和）
 
   # 是否直接指定增益（false 则从 q1, q2, r 计算）
-  use_direct_gains: false
-  K1_direct: 20.0    # 横向误差增益（直接指定时使用）
-  K2_direct: 15.0    # 航向误差增益（直接指定时使用）
+  use_direct_gains: true
+  K1_direct: 10.0    # 横向误差增益（直接指定时使用）
+  K2_direct: 2.0    # 航向误差增益（直接指定时使用）
