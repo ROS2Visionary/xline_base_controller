@@ -28,7 +28,7 @@ transition:
   # ============================================================================
   # 到达判定
   # ============================================================================
-  arrival_tolerance: 0.005        # 位置到达容差 [m]
+  arrival_tolerance: 0.005        # 位置到达容差 [m]（0.5cm，高精度要求）
   arrival_angle_tolerance: 0.01   # 角度到达容差 [rad]（5.7° = 0.1 rad）
   arrival_confirm_count: 3       # 连续确认次数（防抖动）
 
@@ -79,6 +79,25 @@ transition:
   # - 越大：到点越快，朝向调整更平滑，避免目标航向跳变
   # - 越小：朝向收敛越早，但可能路径更长，切换时可能抖动
   # - 推荐范围：0.5 - 0.8m（0.3m可能导致频繁切换）
+
+  # ============================================================================
+  # 阶段1重入控制（从阶段2退回阶段1时的速度限制）
+  # ============================================================================
+  allow_stage2_exit: true                 # 是否允许从阶段2退回阶段1（位置漂移过大时）
+  stage1_reentry_max_velocity: 0.015      # 重入时最大线速度 [m/s]（比正常速度小，避免震荡）
+  stage1_reentry_max_angular_vel: 0.08    # 重入时最大角速度 [rad/s]（使用最小角速度，减少漂移）
+
+  # 说明：
+  # allow_stage2_exit 模式选择：
+  # - true（高精度模式）：位置漂移 > 阈值时退回阶段1重新收敛，保证 0.5cm 精度
+  #   适用场景：精密对接、充电桩、货架对接等需要高位置精度的场景
+  # - false（快速模式）：进入阶段2后不再退出，只专注朝向对准，允许位置漂移
+  #   适用场景：巡航导航、一般转场等对位置精度要求不高的场景（可能有2-5cm漂移）
+  #
+  # 重入速度限制（仅在 allow_stage2_exit=true 时生效）：
+  # - 当从阶段2退回阶段1时，使用更小的速度避免震荡
+  # - stage1_reentry_max_velocity 建议为 max_velocity 的 1/2 到 1/4
+  # - stage1_reentry_max_angular_vel 建议使用 rotation.absolute_min_w 或稍大
 
   # ============================================================================
   # 阶段2航向对准（原地旋转对准终点朝向）
@@ -134,58 +153,3 @@ transition:
   # 调试
   # ============================================================================
   debug_enabled: true           # 是否启用调试输出
-
-# ============================================================================
-# 应用场景示例配置
-# ============================================================================
-
-# 场景1：快速配送机器人
-fast_delivery:
-  max_velocity: 0.8
-  k_linear: 1.2
-  k_angular: 3.0
-  arrival_tolerance: 0.05
-  arrival_angle_tolerance: 0.15
-  large_angle_vel_ratio: 0.5
-  pose_servo_distance: 0.8
-  enable_backward: true
-  backward_angle_threshold: 0.785  # 45度，宽松
-
-# 场景2：精密对接（充电桩）
-precision_docking:
-  max_velocity: 0.3
-  k_linear: 0.8
-  k_angular: 2.0
-  arrival_tolerance: 0.01
-  arrival_angle_tolerance: 0.05
-  arrival_confirm_count: 5
-  creep_velocity: 0.03
-  pose_servo_distance: 0.3
-  enable_backward: true
-  backward_angle_threshold: 0.262  # 15度，严格
-
-# 场景3：载人观光车（舒适优先）
-passenger_comfort:
-  max_velocity: 0.4
-  max_angular_vel: 0.6
-  k_linear: 0.8
-  k_angular: 2.0
-  arrival_tolerance: 0.05
-  arrival_angle_tolerance: 0.12
-  large_angle_vel_ratio: 0.3
-  velocity_smooth_alpha: 0.5
-  pose_servo_distance: 0.6
-  enable_backward: true
-  backward_angle_threshold: 0.524  # 30度
-
-# 场景4：仓储AGV（快速转场）
-warehouse_agv:
-  max_velocity: 0.6
-  k_linear: 1.2
-  k_angular: 2.8
-  arrival_tolerance: 0.05
-  arrival_angle_tolerance: 0.1
-  slow_down_distance: 0.8
-  pose_servo_distance: 0.6
-  enable_backward: true
-  backward_angle_threshold: 0.524  # 30度

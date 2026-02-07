@@ -42,6 +42,7 @@ TransitionController::TransitionController()
   , last_stage2_yaw_error_(0.0)
   , stage2_entry_distance_(0.0)
   , stage2_position_relaxed_(false)
+  , stage1_reentry_mode_(false)
 {
   updateParameters();
   last_time_ = std::chrono::steady_clock::now();
@@ -99,6 +100,14 @@ void TransitionController::updateParameters()
     // 姿态伺服
     params_.pose_servo_distance = parser.getParameter<double>("transition.pose_servo_distance");
 
+    // 阶段1重入控制
+    params_.allow_stage2_exit = parser.hasParameter("transition.allow_stage2_exit") ?
+        parser.getParameter<bool>("transition.allow_stage2_exit") : true;
+    params_.stage1_reentry_max_velocity = parser.hasParameter("transition.stage1_reentry_max_velocity") ?
+        parser.getParameter<double>("transition.stage1_reentry_max_velocity") : params_.max_velocity * 0.5;
+    params_.stage1_reentry_max_angular_vel = parser.hasParameter("transition.stage1_reentry_max_angular_vel") ?
+        parser.getParameter<double>("transition.stage1_reentry_max_angular_vel") : 0.08;
+
     // 阶段2航向对准（原地旋转，rotation 方式）
     params_.rotation_enabled = parser.hasParameter("transition.rotation.enabled") ?
         parser.getParameter<bool>("transition.rotation.enabled") : true;
@@ -138,6 +147,10 @@ void TransitionController::updateParameters()
         params_.rotation_stop_tolerance, 0.0, params_.arrival_angle_tolerance);
     params_.rotation_crossing_window = std::max(params_.rotation_crossing_window, params_.rotation_stop_tolerance);
 
+    // 阶段1重入速度限制
+    params_.stage1_reentry_max_velocity = std::clamp(params_.stage1_reentry_max_velocity, 0.0, params_.max_velocity);
+    params_.stage1_reentry_max_angular_vel = std::clamp(params_.stage1_reentry_max_angular_vel, 0.0, params_.max_angular_vel);
+
     // 后退模式
     params_.enable_backward = parser.getParameter<bool>("transition.enable_backward");
     params_.backward_angle_threshold = parser.getParameter<double>("transition.backward_angle_threshold");
@@ -156,6 +169,10 @@ void TransitionController::updateParameters()
              params_.pose_servo_distance,
              params_.enable_backward ? "启用" : "禁用",
              params_.backward_angle_threshold * 57.3);
+    LOG_INFO("  阶段2控制: %s | 重入速度限制: v=%.3fm/s, ω=%.2frad/s",
+             params_.allow_stage2_exit ? "允许退出(高精度)" : "不退出(快速)",
+             params_.stage1_reentry_max_velocity,
+             params_.stage1_reentry_max_angular_vel);
 
   } catch (const std::exception& e) {
     LOG_WARN("参数加载失败，使用默认值: %s", e.what());
@@ -354,17 +371,29 @@ bool TransitionController::computeVelocityCommands(
     bool use_stage2 = false;
 
     if (stage2_position_relaxed_) {
-      // 已经进入过阶段2：只要位置漂移不超过阈值，就保持阶段2
+      // 已经进入过阶段2：根据配置决定是否允许退出
       if (distance <= stage2_exit_distance) {
         use_stage2 = true;
-      } else {
-        // 漂移过大：回到阶段1重新收敛位置
-        LOG_INFO("⚠ 退出阶段2，位置漂移过大: %.4fm > %.4fm（阈值）| 重新进入阶段1收敛位置",
+      } else if (params_.allow_stage2_exit) {
+        // 允许退出阶段2：漂移过大时回到阶段1重新收敛位置
+        LOG_INFO("⚠ 退出阶段2，位置漂移过大: %.4fm > %.4fm（阈值）| 重新进入阶段1收敛位置 | 启用速度限制",
                  distance, stage2_exit_distance);
         stage2_position_relaxed_ = false;
         stage2_entry_distance_ = 0.0;
         last_stage2_yaw_error_ = 0.0;
         arrival_count_ = 0;
+        stage1_reentry_mode_ = true;  // 启用阶段1重入模式
+      } else {
+        // 不允许退出阶段2：继续保持阶段2，专注朝向对准（允许位置漂移）
+        use_stage2 = true;
+        // 每2秒输出一次警告（避免日志刷屏）
+        static rclcpp::Time last_drift_warn_time = this->now();
+        auto now = this->now();
+        if ((now - last_drift_warn_time).seconds() >= 2.0) {
+          LOG_WARN("阶段2位置漂移: %.4fm > %.4fm（阈值）| 继续朝向对准（allow_stage2_exit=false）",
+                   distance, stage2_exit_distance);
+          last_drift_warn_time = now;
+        }
       }
     } else if (distance <= params_.arrival_tolerance) {
       // 首次满足到点精度，进入阶段2
@@ -412,12 +441,33 @@ bool TransitionController::computeVelocityCommands(
         double backward_desired_heading = normalizeAngle(approach_heading + M_PI);
         double backward_heading_error = normalizeAngle(backward_desired_heading - curr_theta);
 
-        // 如果偏差过大，先原地旋转对准“后退期望朝向”，避免横向倒车导致绕圈/离目标更远
+        // 如果偏差过大，先原地旋转对准"后退期望朝向"，避免横向倒车导致绕圈/离目标更远
+        // 但在近目标时允许蠕动，避免打转
         if (std::abs(backward_heading_error) > M_PI / 2.0) {
-          v = 0.0;
           omega = params_.rotation_enabled ?
               computeRotationVelocity(backward_heading_error) :
               computeAngularVelocity(backward_heading_error);
+          // 扩大蠕动区域：当距离 < 10cm 时允许后退蠕动
+          // 使用固定阈值 0.1m，确保即使 arrival_tolerance 很小（0.5cm）也能生效
+          const double creep_distance_threshold = 0.1;  // 10cm 固定阈值
+          if (distance <= creep_distance_threshold) {
+            const double dx_world = goal_x_ - curr_x;
+            const double dy_world = goal_y_ - curr_y;
+            const double cos_theta = std::cos(curr_theta);
+            const double sin_theta = std::sin(curr_theta);
+            const double dx_local = dx_world * cos_theta + dy_world * sin_theta;
+
+            if (std::abs(dx_local) < 0.002) {
+              v = 0.0;
+            } else {
+              // 后退模式：蠕动速度只能为负（避免在"后退"模式下前进）
+              // 使用 distance 作为参考，确保总是朝向目标
+              double creep_speed = params_.creep_velocity;
+              v = std::clamp(-distance * 5.0, -creep_speed, 0.0);  // 速度 <= 0
+            }
+          } else {
+            v = 0.0;
+          }
         } else {
           v = -computeLinearVelocity(distance, backward_heading_error);
           omega = computeAngularVelocity(backward_heading_error);
@@ -430,12 +480,15 @@ bool TransitionController::computeVelocityCommands(
 
         // 如果航向误差过大（>90°），先原地旋转对准"前进期望朝向"
         // 但在近目标时（cm级）纯旋转会导致距离来回漂移，容易卡在严格阈值附近；
-        // 因此允许做很小的前后蠕动来继续压缩距离。
+        // 因此允许做较大的前后蠕动来继续压缩距离，避免陷入打转。
         if (std::abs(approach_error) > M_PI / 2.0) {
           omega = params_.rotation_enabled ?
               computeRotationVelocity(approach_error) :
               computeAngularVelocity(approach_error);
-          if (distance <= stage2_exit_distance) {
+          // 扩大蠕动区域：当距离 < 10cm 时允许蠕动（避免在目标附近打转）
+          // 使用固定阈值 0.1m，确保即使 arrival_tolerance 很小（0.5cm）也能生效
+          const double creep_distance_threshold = 0.1;  // 10cm 固定阈值
+          if (distance <= creep_distance_threshold) {
             const double dx_world = goal_x_ - curr_x;
             const double dy_world = goal_y_ - curr_y;
             const double cos_theta = std::cos(curr_theta);
@@ -445,7 +498,10 @@ bool TransitionController::computeVelocityCommands(
             if (std::abs(dx_local) < 0.002) {
               v = 0.0;
             } else {
-              v = std::clamp(dx_local, -params_.creep_velocity, params_.creep_velocity);
+              // 前进模式：蠕动速度只能为正（避免在"前进"模式下后退）
+              // 使用 distance 作为参考，确保总是朝向目标
+              double creep_speed = params_.creep_velocity;
+              v = std::clamp(distance * 5.0, 0.0, creep_speed);  // 速度 >= 0
             }
           } else {
             v = 0.0;
@@ -453,6 +509,19 @@ bool TransitionController::computeVelocityCommands(
         } else {
           v = computeLinearVelocity(distance, approach_error);
           omega = computeAngularVelocity(approach_error);
+        }
+      }
+
+      // ============================================================================
+      // 阶段1重入速度限制（从阶段2退回时，使用更小的速度）
+      // ============================================================================
+      if (stage1_reentry_mode_) {
+        v = std::clamp(v, -params_.stage1_reentry_max_velocity, params_.stage1_reentry_max_velocity);
+        omega = std::clamp(omega, -params_.stage1_reentry_max_angular_vel, params_.stage1_reentry_max_angular_vel);
+
+        // 当距离再次小于阈值时，准备进入阶段2，清除重入模式
+        if (distance <= params_.arrival_tolerance) {
+          stage1_reentry_mode_ = false;
         }
       }
 
@@ -465,6 +534,7 @@ bool TransitionController::computeVelocityCommands(
       if (!stage2_position_relaxed_) {
         stage2_entry_distance_ = distance;
         stage2_position_relaxed_ = true;
+        stage1_reentry_mode_ = false;  // 清除重入模式标志
         LOG_INFO("✓ 进入阶段2（朝向对齐），基准距离: %.4fm | 策略：允许微小蠕动保持位置 | 回退阈值: %.1fcm",
                  stage2_entry_distance_, stage2_exit_distance * 100.0);
       }
@@ -737,6 +807,7 @@ void TransitionController::reset()
   last_stage2_yaw_error_ = 0.0;
   stage2_entry_distance_ = 0.0;
   stage2_position_relaxed_ = false;
+  stage1_reentry_mode_ = false;
 
   // 重置后退安全检测
   prev_distance_ = 0.0;

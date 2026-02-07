@@ -146,6 +146,11 @@ private:
     // 姿态伺服
     double pose_servo_distance;    // 姿态伺服切换距离 [m]
 
+    // 阶段1重入控制（从阶段2退回阶段1时的速度限制）
+    bool allow_stage2_exit;                 // 是否允许从阶段2退回阶段1
+    double stage1_reentry_max_velocity;     // 重入时最大线速度 [m/s]
+    double stage1_reentry_max_angular_vel;  // 重入时最大角速度 [rad/s]
+
     // 阶段2航向对准（原地旋转，对齐终点朝向）
     // 计算方式与 LineFollowController::calculateRotationVelocity 一致（sigmoid + 近零平滑 + min/max 限幅）
     bool rotation_enabled;             // 是否启用 rotation 方式（false 则使用 k_angular 比例控制）
@@ -209,6 +214,7 @@ private:
   double last_stage2_yaw_error_;      // 阶段2航向误差（用于过零判定）
   double stage2_entry_distance_;      // 进入阶段2时的距离（用于放宽位置容差）
   bool stage2_position_relaxed_;      // 是否已进入阶段2并放宽位置容差
+  bool stage1_reentry_mode_;          // 是否处于阶段1重入模式（从阶段2退回，需要限制速度）
 
   // ================================
   // 私有方法
