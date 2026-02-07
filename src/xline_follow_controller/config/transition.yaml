@@ -28,8 +28,8 @@ transition:
   # ============================================================================
   # 到达判定
   # ============================================================================
-  arrival_tolerance: 0.03        # 位置到达容差 [m]
-  arrival_angle_tolerance: 0.1   # 角度到达容差 [rad]（5.7° = 0.1 rad）
+  arrival_tolerance: 0.01        # 位置到达容差 [m]
+  arrival_angle_tolerance: 0.2   # 角度到达容差 [rad]（5.7° = 0.1 rad）
   arrival_confirm_count: 3       # 连续确认次数（防抖动）
 
   # 精度说明：
@@ -49,7 +49,7 @@ transition:
   # 减速控制
   # ============================================================================
   slow_down_distance: 0.4         # 减速区距离 [m]（增大让速度更平滑）
-  creep_velocity: 0.03           # 蠕动速度 [m/s]
+  creep_velocity: 0.01           # 蠕动速度 [m/s]
 
   # 说明：
   # - 距离 > slow_down_distance: 正常速度
@@ -91,7 +91,7 @@ transition:
     factor: 1.2                  # sigmoid 因子（越大越“硬”，误差稍大就接近 max_w）
     angle_threshold: 0.6         # 近零平滑阈值 [rad]
     smooth_factor: 0.6           # 近零平滑系数（越大越快衰减）
-    stop_tolerance: 0.1          # 认为“已对准”的角度阈值 [rad]（会被限制到 <= arrival_angle_tolerance）
+    stop_tolerance: 0.2          # 认为“已对准”的角度阈值 [rad]（会被限制到 <= arrival_angle_tolerance）
     use_crossing_stop: true      # 允许“过零即认为对准”（减少来回抖动）
     crossing_window: 0.35        # 过零判定窗口 [rad]（仅在误差均 < 该值时允许过零判定）
 
