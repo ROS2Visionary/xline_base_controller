@@ -137,6 +137,7 @@ private:
 
     // 减速控制
     double slow_down_distance;     // 减速区距离 [m]
+    double creep_distance;         // 进入蠕动段距离 [m]
     double creep_velocity;         // 蠕动速度 [m/s]
 
     // 大转角处理

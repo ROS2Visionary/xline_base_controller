@@ -91,6 +91,8 @@ void TransitionController::updateParameters()
 
     // 减速控制
     params_.slow_down_distance = parser.getParameter<double>("transition.slow_down_distance");
+    params_.creep_distance = parser.hasParameter("transition.creep_distance") ?
+        parser.getParameter<double>("transition.creep_distance") : 0.1;
     params_.creep_velocity = parser.getParameter<double>("transition.creep_velocity");
 
     // 大转角处理
@@ -136,6 +138,8 @@ void TransitionController::updateParameters()
     params_.max_angular_vel = std::max(0.0, params_.max_angular_vel);
     params_.linear_accel_limit = std::max(0.0, params_.linear_accel_limit);
     params_.linear_decel_limit = std::max(0.0, params_.linear_decel_limit);
+    params_.slow_down_distance = std::max(0.0, params_.slow_down_distance);
+    params_.creep_distance = std::clamp(params_.creep_distance, 0.0, params_.slow_down_distance);
 
     params_.rotation_max_w = std::clamp(params_.rotation_max_w, 0.0, params_.max_angular_vel);
     params_.rotation_min_w = std::clamp(params_.rotation_min_w, 0.0, params_.rotation_max_w);
@@ -189,6 +193,7 @@ void TransitionController::updateParameters()
     params_.arrival_angle_tolerance = 0.1;  // 5.7度
     params_.arrival_confirm_count = 3;
     params_.slow_down_distance = 0.5;
+    params_.creep_distance = 0.1;
     params_.creep_velocity = 0.05;
     params_.large_angle_threshold = M_PI / 3.0;  // 60度
     params_.large_angle_vel_ratio = 0.4;
@@ -449,8 +454,7 @@ bool TransitionController::computeVelocityCommands(
               computeAngularVelocity(backward_heading_error);
           // 扩大蠕动区域：当距离 < 10cm 时允许后退蠕动
           // 使用固定阈值 0.1m，确保即使 arrival_tolerance 很小（0.5cm）也能生效
-          const double creep_distance_threshold = 0.1;  // 10cm 固定阈值
-          if (distance <= creep_distance_threshold) {
+          if (distance <= params_.creep_distance) {
             const double dx_world = goal_x_ - curr_x;
             const double dy_world = goal_y_ - curr_y;
             const double cos_theta = std::cos(curr_theta);
@@ -492,8 +496,7 @@ bool TransitionController::computeVelocityCommands(
               computeAngularVelocity(approach_error);
           // 扩大蠕动区域：当距离 < 10cm 时允许蠕动（避免在目标附近打转）
           // 使用固定阈值 0.1m，确保即使 arrival_tolerance 很小（0.5cm）也能生效
-          const double creep_distance_threshold = 0.1;  // 10cm 固定阈值
-          if (distance <= creep_distance_threshold) {
+          if (distance <= params_.creep_distance) {
             const double dx_world = goal_x_ - curr_x;
             const double dy_world = goal_y_ - curr_y;
             const double cos_theta = std::cos(curr_theta);
@@ -917,7 +920,7 @@ double TransitionController::computeLinearVelocity(double distance, double headi
   if (distance > params_.slow_down_distance) {
     // 远距离：最大速度
     v = params_.max_velocity;
-  } else if (distance > 0.1) {
+  } else if (distance > params_.creep_distance) {
     // 中距离：线性减速
     double ratio = distance / params_.slow_down_distance;
     v = params_.max_velocity * ratio;
@@ -947,7 +950,7 @@ double TransitionController::computeLinearVelocity(double distance, double headi
   // 4. 最终限幅（防止缩放后超出范围）
   // 注意：配置中的 min_velocity 仅用于“正常行驶”避免过慢；
   // 近距离（<10cm）精对位阶段必须允许更小速度，否则会被抬到 min_velocity 导致来回穿越目标点。
-  const double min_v = (distance <= 0.1) ? 0.0 : params_.min_velocity;
+  const double min_v = (distance <= params_.creep_distance) ? 0.0 : params_.min_velocity;
   v = std::clamp(v, min_v, params_.max_velocity);
 
   return v;
