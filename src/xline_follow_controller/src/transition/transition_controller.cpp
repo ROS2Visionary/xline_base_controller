@@ -461,9 +461,14 @@ bool TransitionController::computeVelocityCommands(
               v = 0.0;
             } else {
               // 后退模式：蠕动速度只能为负（避免在"后退"模式下前进）
-              // 使用 distance 作为参考，确保总是朝向目标
               double creep_speed = params_.creep_velocity;
-              v = std::clamp(-distance * 5.0, -creep_speed, 0.0);  // 速度 <= 0
+              // 仅在“目标确实在后方（dx_local<0）”时允许后退蠕动；
+              // 避免在大角度旋转时叠加平移导致绕圈（v/ω≈常数，形成极限环）。
+              if (dx_local < 0.0) {
+                v = std::clamp(dx_local, -creep_speed, 0.0);  // 速度 <= 0
+              } else {
+                v = 0.0;
+              }
             }
           } else {
             v = 0.0;
@@ -499,9 +504,14 @@ bool TransitionController::computeVelocityCommands(
               v = 0.0;
             } else {
               // 前进模式：蠕动速度只能为正（避免在"前进"模式下后退）
-              // 使用 distance 作为参考，确保总是朝向目标
               double creep_speed = params_.creep_velocity;
-              v = std::clamp(distance * 5.0, 0.0, creep_speed);  // 速度 >= 0
+              // 仅在“目标确实在前方（dx_local>0）”时允许前进蠕动；
+              // 否则大角度旋转 + 恒定 v 会在目标附近形成绕圈/打转。
+              if (dx_local > 0.0) {
+                v = std::clamp(dx_local, 0.0, creep_speed);  // 速度 >= 0
+              } else {
+                v = 0.0;
+              }
             }
           } else {
             v = 0.0;
@@ -523,6 +533,21 @@ bool TransitionController::computeVelocityCommands(
         if (distance <= params_.arrival_tolerance) {
           stage1_reentry_mode_ = false;
         }
+      }
+
+      // ============================================================================
+      // 阶段1近距离角速度衰减（避免快速旋转导致位置漂移）
+      // ============================================================================
+      // 当距离 < 5cm 时，角速度随距离线性衰减，避免在目标附近旋转过快导致位置不断漂移
+      const double angular_decay_distance = 0.05;  // 5cm
+      if (distance < angular_decay_distance) {
+        // 衰减比例：距离越小，衰减越多
+        // 距离 5cm → 100% 角速度
+        // 距离 2cm → 40% 角速度
+        // 距离 0.5cm → 10% 角速度
+        double decay_ratio = distance / angular_decay_distance;
+        decay_ratio = std::max(decay_ratio, 0.1);  // 最小保留10%，避免完全无法转向
+        omega *= decay_ratio;
       }
 
     } else {
@@ -910,8 +935,20 @@ double TransitionController::computeLinearVelocity(double distance, double headi
     // 大转角状态已包含在统一状态日志的"大角度减速"标记中
   }
 
+  // 3.5 航向误差连续衰减：避免在误差接近 90° 时出现“v 很小但不为 0 + ω 较大”导致的绕圈极限环
+  // 0°: 不衰减；90°: 衰减到 0（与上层“>90°仅旋转”的逻辑一致）
+  const double abs_heading_error = std::abs(heading_error);
+  if (abs_heading_error >= M_PI / 2.0) {
+    v = 0.0;
+  } else {
+    v *= std::max(0.0, std::cos(abs_heading_error));
+  }
+
   // 4. 最终限幅（防止缩放后超出范围）
-  v = std::clamp(v, params_.min_velocity, params_.max_velocity);
+  // 注意：配置中的 min_velocity 仅用于“正常行驶”避免过慢；
+  // 近距离（<10cm）精对位阶段必须允许更小速度，否则会被抬到 min_velocity 导致来回穿越目标点。
+  const double min_v = (distance <= 0.1) ? 0.0 : params_.min_velocity;
+  v = std::clamp(v, min_v, params_.max_velocity);
 
   return v;
 }
@@ -995,11 +1032,10 @@ void TransitionController::smoothVelocity(double& v, double& omega, double dt)
       }
     }
 
-    // 严格遵循线速度上下限（对后退同样按幅值约束）
     const double sign = (v >= 0.0) ? 1.0 : -1.0;
     const double abs_v = std::abs(v);
-    const double bounded_abs_v = std::clamp(abs_v, params_.min_velocity, params_.max_velocity);
-    v = sign * bounded_abs_v;
+    // 仅限幅最大速度；最小速度由上层规划决定（否则低通+限幅会把近目标速度抬升，造成穿越/绕圈）
+    v = sign * std::min(abs_v, params_.max_velocity);
 
     prev_linear_vel_ = v;
   }
