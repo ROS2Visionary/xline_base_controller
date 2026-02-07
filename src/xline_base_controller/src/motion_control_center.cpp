@@ -68,6 +68,7 @@ namespace xline
       rpp_follow_controller_ = std::make_shared<xline::follow_controller::RPPController>();
       lqr_circle_controller = std::make_shared<xline::follow_controller::LQRCircleController>();
       lqr_curve_controller = std::make_shared<xline::follow_controller::LQRCurveController>();
+      transition_controller = std::make_shared<xline::follow_controller::TransitionController>();
       base_follow_controller_ = nullptr;
       inkjet_client_ = std::make_shared<InkjetClient>();
       RCLCPP_INFO(get_logger(), "喷墨控制器已创建（服务客户端已就绪）");
@@ -510,14 +511,15 @@ namespace xline
           {
             text_content = line["content"].asString();
           }
-          RCLCPP_INFO(get_logger(), "[text, id=%u]: 起点(%.2f, %.2f) -> 终点(%.2f, %.2f), 内容=\"%s\"", 
+          RCLCPP_INFO(get_logger(), "[text, id=%u]: 起点(%.2f, %.2f) -> 终点(%.2f, %.2f), 内容=\"%s\", next_path_heading=%.3f",
                       path_id, line_data.start_x, line_data.start_y, line_data.end_x, line_data.end_y,
-                      text_content.c_str());
+                      text_content.c_str(), line_data.next_path_heading);
         }
         else
         {
-          RCLCPP_INFO(get_logger(), "[line, id=%u]: 起点(%.2f, %.2f) -> 终点(%.2f, %.2f)", 
-                      path_id, line_data.start_x, line_data.start_y, line_data.end_x, line_data.end_y);
+          RCLCPP_INFO(get_logger(), "[line, id=%u]: 起点(%.2f, %.2f) -> 终点(%.2f, %.2f), next_path_heading=%.3f",
+                      path_id, line_data.start_x, line_data.start_y, line_data.end_x, line_data.end_y,
+                      line_data.next_path_heading);
         }
         
         geometry_msgs::msg::PoseStamped robot_pose;
@@ -526,18 +528,22 @@ namespace xline
         line_follow_controller_->setTransitionPath(is_transition);
         if(is_start_from_robot){ // 是否使用机器人位置作为路径的起点
           
-          line_follow_controller_->setPlan(robot_pose.pose.position.x, robot_pose.pose.position.y, line_data.end_x, line_data.end_y);
-          line_follow_controller_->setBackFollow(is_backward);
+          // line_follow_controller_->setPlan(robot_pose.pose.position.x, robot_pose.pose.position.y, line_data.end_x, line_data.end_y);
+          // line_follow_controller_->setBackFollow(is_backward);
+          transition_controller->setGoal(line_data.end_x, line_data.end_y,line_data.next_path_heading);
+          base_follow_controller_ = transition_controller;
+          
         }else{
           line_follow_controller_->setPlan(line_data.start_x, line_data.start_y, line_data.end_x, line_data.end_y);
+          base_follow_controller_ = line_follow_controller_;
         }
-        base_follow_controller_ = line_follow_controller_;
+        
       }
       else if (current_layer_type == "circle")
       {
         CircleData circle_data = extractCircleData(line);
-        RCLCPP_INFO(get_logger(), "[circle, id=%u]: 圆心(%.2f, %.2f), 半径%.2f", path_id, circle_data.center_x,
-                    circle_data.center_y, circle_data.radius);
+        RCLCPP_INFO(get_logger(), "[circle, id=%u]: 圆心(%.2f, %.2f), 半径%.2f, next_path_heading=%.3f",
+                    path_id, circle_data.center_x, circle_data.center_y, circle_data.radius, circle_data.next_path_heading);
 
         geometry_msgs::msg::PoseStamped start_pose;
         start_pose.pose.position.x = circle_data.start_x;
@@ -554,8 +560,9 @@ namespace xline
       else if (current_layer_type == "arc")
       {
         ArcData arc_data = extractArcData(line);
-        RCLCPP_INFO(get_logger(), "[arc, id=%u]: 圆心(%.2f, %.2f), 半径%.2f, 角度[%.2f, %.2f] rad", path_id,
-                    arc_data.center_x, arc_data.center_y, arc_data.radius, arc_data.start_angle, arc_data.end_angle);
+        RCLCPP_INFO(get_logger(), "[arc, id=%u]: 圆心(%.2f, %.2f), 半径%.2f, 角度[%.2f, %.2f] rad, next_path_heading=%.3f",
+                    path_id, arc_data.center_x, arc_data.center_y, arc_data.radius, arc_data.start_angle, arc_data.end_angle,
+                    arc_data.next_path_heading);
         geometry_msgs::msg::PoseStamped current_pose;
         getLatestPose(current_pose);
 
@@ -573,9 +580,9 @@ namespace xline
       else if (current_layer_type == "spline")
       {
         SplineData spline_data = extractSplineData(line);
-        RCLCPP_INFO(get_logger(), "[spline, id=%u]: 控制点数=%zu, 起点(%.2f, %.2f) -> 终点(%.2f, %.2f)",
+        RCLCPP_INFO(get_logger(), "[spline, id=%u]: 控制点数=%zu, 起点(%.2f, %.2f) -> 终点(%.2f, %.2f), next_path_heading=%.3f",
                     path_id, spline_data.vertices.size(), spline_data.start_x, spline_data.start_y,
-                    spline_data.end_x, spline_data.end_y);
+                    spline_data.end_x, spline_data.end_y, spline_data.next_path_heading);
 
         // 使用 RPP 控制器的 setPlanForSpline 方法设置 Spline 路径
         // 路径生成由 CurvePathStrategy 内部完成
@@ -588,10 +595,10 @@ namespace xline
       else if (current_layer_type == "ellipse")
       {
         EllipseData ellipse_data = extractEllipseData(line);
-        RCLCPP_INFO(get_logger(), "[ellipse, id=%u]: 中心(%.2f, %.2f), 主轴(%.2f, %.2f), 比例=%.2f, 角度[%.2f, %.2f]度",
+        RCLCPP_INFO(get_logger(), "[ellipse, id=%u]: 中心(%.2f, %.2f), 主轴(%.2f, %.2f), 比例=%.2f, 角度[%.2f, %.2f]度, next_path_heading=%.3f",
                     path_id, ellipse_data.center_x, ellipse_data.center_y,
                     ellipse_data.major_axis_x, ellipse_data.major_axis_y,
-                    ellipse_data.ratio, ellipse_data.start_angle, ellipse_data.end_angle);
+                    ellipse_data.ratio, ellipse_data.start_angle, ellipse_data.end_angle, ellipse_data.next_path_heading);
 
         geometry_msgs::msg::PoseStamped start_pose;
         start_pose.pose.position.x = ellipse_data.start_x;
@@ -962,7 +969,7 @@ namespace xline
 
     /**
      * 提取line数据
-     * line包含: start{x,y}, end{x,y}
+     * line包含: start{x,y}, end{x,y}, next_path_heading（下一条路径的朝向角）
      */
     MotionControlCenter::LineData MotionControlCenter::extractLineData(const Json::Value &line_obj)
     {
@@ -972,14 +979,25 @@ namespace xline
       data.end_x = line_obj["end"]["x"].asDouble() / 1000;
       data.end_y = line_obj["end"]["y"].asDouble() / 1000;
 
-      RCLCPP_DEBUG(get_logger(), "提取Line数据: 起点(%.2f, %.2f) -> 终点(%.2f, %.2f)", data.start_x, data.start_y,
-                   data.end_x, data.end_y);
+      // 读取next_path_heading字段，如果不存在则使用默认值-999.0
+      if (line_obj.isMember("next_path_heading"))
+      {
+        data.next_path_heading = line_obj["next_path_heading"].asDouble();
+      }
+      else
+      {
+        data.next_path_heading = -999.0;
+      }
+
+      RCLCPP_DEBUG(get_logger(), "提取Line数据: 起点(%.2f, %.2f) -> 终点(%.2f, %.2f), next_path_heading=%.3f",
+                   data.start_x, data.start_y, data.end_x, data.end_y, data.next_path_heading);
+
       return data;
     }
 
     /**
      * 提取circle数据
-     * circle包含: start{x,y}作为圆心, radius
+     * circle包含: start{x,y}作为圆心, radius, next_path_heading
      */
     MotionControlCenter::CircleData MotionControlCenter::extractCircleData(const Json::Value &circle_obj)
     {
@@ -990,13 +1008,24 @@ namespace xline
       data.start_x = circle_obj["start"]["x"].asDouble() / 1000;
       data.start_y = circle_obj["start"]["y"].asDouble() / 1000;
 
-      RCLCPP_DEBUG(get_logger(), "提取Circle数据: 圆心(%.2f, %.2f), 半径%.2f", data.center_x, data.center_y, data.radius);
+      // 读取next_path_heading字段，如果不存在则使用默认值-999.0
+      if (circle_obj.isMember("next_path_heading"))
+      {
+        data.next_path_heading = circle_obj["next_path_heading"].asDouble();
+      }
+      else
+      {
+        data.next_path_heading = -999.0;
+      }
+
+      RCLCPP_DEBUG(get_logger(), "提取Circle数据: 圆心(%.2f, %.2f), 半径%.2f, next_path_heading=%.3f",
+                   data.center_x, data.center_y, data.radius, data.next_path_heading);
       return data;
     }
 
     /**
      * 提取arc数据
-     * arc包含: center{x,y}, radius, start_angle, end_angle
+     * arc包含: center{x,y}, radius, start_angle, end_angle, next_path_heading
      * 注意: JSON中角度为度,转换为弧度
      */
     MotionControlCenter::ArcData MotionControlCenter::extractArcData(const Json::Value &arc_obj)
@@ -1012,14 +1041,24 @@ namespace xline
       data.start_angle = arc_obj["start_angle"].asDouble() * M_PI / 180.0;
       data.end_angle = arc_obj["end_angle"].asDouble() * M_PI / 180.0;
 
-      RCLCPP_DEBUG(get_logger(), "提取Arc数据: 圆心(%.2f, %.2f), 半径%.2f, 起始角%.2f rad, 结束角%.2f rad", data.center_x,
-                   data.center_y, data.radius, data.start_angle, data.end_angle);
+      // 读取next_path_heading字段，如果不存在则使用默认值-999.0
+      if (arc_obj.isMember("next_path_heading"))
+      {
+        data.next_path_heading = arc_obj["next_path_heading"].asDouble();
+      }
+      else
+      {
+        data.next_path_heading = -999.0;
+      }
+
+      RCLCPP_DEBUG(get_logger(), "提取Arc数据: 圆心(%.2f, %.2f), 半径%.2f, 起始角%.2f rad, 结束角%.2f rad, next_path_heading=%.3f",
+                   data.center_x, data.center_y, data.radius, data.start_angle, data.end_angle, data.next_path_heading);
       return data;
     }
 
     /**
      * 提取spline数据
-     * spline包含: vertices(控制点数组), degree, start{x,y}, end{x,y}
+     * spline包含: vertices(控制点数组), degree, start{x,y}, end{x,y}, next_path_heading
      */
     MotionControlCenter::SplineData MotionControlCenter::extractSplineData(const Json::Value &spline_obj)
     {
@@ -1046,14 +1085,24 @@ namespace xline
       data.end_x = spline_obj["end"]["x"].asDouble() / 1000.0;
       data.end_y = spline_obj["end"]["y"].asDouble() / 1000.0;
 
-      RCLCPP_DEBUG(get_logger(), "提取Spline数据: 控制点数=%zu, 阶数=%d, 起点(%.2f, %.2f), 终点(%.2f, %.2f)",
-                   data.vertices.size(), data.degree, data.start_x, data.start_y, data.end_x, data.end_y);
+      // 读取next_path_heading字段，如果不存在则使用默认值-999.0
+      if (spline_obj.isMember("next_path_heading"))
+      {
+        data.next_path_heading = spline_obj["next_path_heading"].asDouble();
+      }
+      else
+      {
+        data.next_path_heading = -999.0;
+      }
+
+      RCLCPP_DEBUG(get_logger(), "提取Spline数据: 控制点数=%zu, 阶数=%d, 起点(%.2f, %.2f), 终点(%.2f, %.2f), next_path_heading=%.3f",
+                   data.vertices.size(), data.degree, data.start_x, data.start_y, data.end_x, data.end_y, data.next_path_heading);
       return data;
     }
 
     /**
      * 提取ellipse数据
-     * ellipse包含: center{x,y}, major_axis{x,y}, ratio, rotation, start_angle, end_angle
+     * ellipse包含: center{x,y}, major_axis{x,y}, ratio, rotation, start_angle, end_angle, next_path_heading
      */
     MotionControlCenter::EllipseData MotionControlCenter::extractEllipseData(const Json::Value &ellipse_obj)
     {
@@ -1082,8 +1131,18 @@ namespace xline
       data.end_x = ellipse_obj["end"]["x"].asDouble() / 1000.0;
       data.end_y = ellipse_obj["end"]["y"].asDouble() / 1000.0;
 
-      RCLCPP_DEBUG(get_logger(), "提取Ellipse数据: 中心(%.2f, %.2f), 主轴(%.2f, %.2f), 比例=%.2f, 旋转=%.2f度",
-                   data.center_x, data.center_y, data.major_axis_x, data.major_axis_y, data.ratio, data.rotation);
+      // 读取next_path_heading字段，如果不存在则使用默认值-999.0
+      if (ellipse_obj.isMember("next_path_heading"))
+      {
+        data.next_path_heading = ellipse_obj["next_path_heading"].asDouble();
+      }
+      else
+      {
+        data.next_path_heading = -999.0;
+      }
+
+      RCLCPP_DEBUG(get_logger(), "提取Ellipse数据: 中心(%.2f, %.2f), 主轴(%.2f, %.2f), 比例=%.2f, 旋转=%.2f度, next_path_heading=%.3f",
+                   data.center_x, data.center_y, data.major_axis_x, data.major_axis_y, data.ratio, data.rotation, data.next_path_heading);
       return data;
     }
 
@@ -1192,7 +1251,7 @@ namespace xline
       RCLCPP_INFO(get_logger(), "更新姿态校正时间戳，开始计时 60s 窗口");
 
       // 5. 异步检查服务结果（不阻塞，可选）
-      std::async(std::launch::async, [this, future = std::move(future)]() mutable {
+      auto async_task = std::async(std::launch::async, [this, future = std::move(future)]() mutable {
         try {
           auto status = future.wait_for(std::chrono::seconds(2));
           if (status == std::future_status::ready) {
@@ -1209,6 +1268,7 @@ namespace xline
           RCLCPP_ERROR(get_logger(), "校准服务异常: %s", e.what());
         }
       });
+      (void)async_task;  // 显式忽略返回值，异步任务在后台运行
 
       return true; // 立即返回，不等待校准完成
     }
@@ -1400,8 +1460,8 @@ namespace xline
       std::unique_ptr<void, decltype(cleanup)> guard(reinterpret_cast<void *>(1), cleanup);
 
       // 设置默认校准参数（从配置文件读取或使用默认值）
-      double calibration_velocity = 0.05;  // m/s
-      double calibration_duration = 3.0;   // 秒
+      // double calibration_velocity = 0.05;  // m/s
+      // double calibration_duration = 3.0;   // 秒
 
       // 执行姿态校正
       // bool calibration_success = executeLocalizationCalibration(calibration_velocity, calibration_duration);

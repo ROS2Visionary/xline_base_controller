@@ -21,6 +21,7 @@
 #include <xline_msgs/srv/motor_command.hpp>
 #include <xline_follow_controller/lqr_follow/lqr_circle_controller.hpp>
 #include <xline_follow_controller/lqr_follow/lqr_curve_controller.hpp>
+#include <xline_follow_controller/transition/transition_controller.hpp>
 
 /**
  * MotionControlCenter 运动控制中心
@@ -69,6 +70,7 @@ namespace xline
       std::shared_ptr<xline::follow_controller::RPPController> rpp_follow_controller_;
       std::shared_ptr<xline::follow_controller::LQRCircleController> lqr_circle_controller;
       std::shared_ptr<xline::follow_controller::LQRCurveController> lqr_curve_controller;
+      std::shared_ptr<xline::follow_controller::TransitionController> transition_controller;
       std::shared_ptr<InkjetClient> inkjet_client_;
 
       // 位姿订阅器(从状态估计器获取融合后的位姿)
@@ -184,6 +186,7 @@ namespace xline
         double start_y;
         double end_x;
         double end_y;
+        double next_path_heading;  // 下一条路径的朝向角（默认-999.0）
       };
 
       struct CircleData
@@ -193,6 +196,7 @@ namespace xline
         double radius;
         double start_x;
         double start_y;
+        double next_path_heading;  // 下一条路径的朝向角（默认-999.0）
       };
 
       struct ArcData
@@ -204,6 +208,7 @@ namespace xline
         double end_angle;   // 弧度
         double start_x;
         double start_y;
+        double next_path_heading;  // 下一条路径的朝向角（默认-999.0）
       };
 
       struct SplineData
@@ -214,6 +219,7 @@ namespace xline
         double start_y;
         double end_x;
         double end_y;
+        double next_path_heading;  // 下一条路径的朝向角（默认-999.0）
       };
 
       struct EllipseData
@@ -230,10 +236,12 @@ namespace xline
         double start_y;
         double end_x;
         double end_y;
+        double next_path_heading;  // 下一条路径的朝向角（默认-999.0）
       };
 
       /**
        * 提取line数据
+       * @param line_obj JSON对象
        */
       LineData extractLineData(const Json::Value &line_obj);
 
