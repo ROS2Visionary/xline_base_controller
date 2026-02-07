@@ -39,29 +39,13 @@ TransitionController::TransitionController()
   , prev_distance_(0.0)
   , distance_increasing_count_(0)
   , min_distance_reached_(std::numeric_limits<double>::max())
-  , grid_resolution_(0.0003)  // 0.3mm per pixel (高分辨率)
-  , grid_width_(0.0)
-  , grid_height_(0.0)
-  , grid_origin_x_(0.0)
-  , grid_origin_y_(0.0)
   , last_stage2_yaw_error_(0.0)
+  , stage2_entry_distance_(0.0)
+  , stage2_position_relaxed_(false)
 {
-  // 基于环境变量初始化默认的栅格图路径
-  const char* ws_root = std::getenv("XLINE_WS_ROOT");
-  if (ws_root && *ws_root) {
-    params_.grid_map_path = ws_root;
-  }
-
   updateParameters();
   last_time_ = std::chrono::steady_clock::now();
-  last_grid_update_time_ = this->now();
   last_log_output_time_ = this->now();
-
-  // 创建栅格图保存目录
-  if (params_.enable_grid_map) {
-    std::filesystem::create_directories(params_.grid_map_path);
-    LOG_INFO("栅格图将保存到: %s", params_.grid_map_path.c_str());
-  }
 
   LOG_INFO("TransitionController 初始化完成");
 }
@@ -161,13 +145,6 @@ void TransitionController::updateParameters()
     // 调试
     params_.debug_enabled = parser.getParameter<bool>("transition.debug_enabled");
 
-    // 栅格图可视化
-    params_.enable_grid_map = parser.getParameter<bool>("transition.enable_grid_map");
-    if (parser.hasParameter("transition.grid_map_path")) {
-      params_.grid_map_path = xline::path_utils::resolve_path(
-          parser.getParameter<std::string>("transition.grid_map_path"));
-    }
-
     LOG_INFO("参数加载成功 | 速度限制: v_max=%.2fm/s, ω_max=%.2frad/s | 控制增益: k_lin=%.1f, k_ang=%.1f",
              params_.max_velocity, params_.max_angular_vel, params_.k_linear, params_.k_angular);
     LOG_INFO("  精度: 位置±%.1fcm, 角度±%.1f° | 姿态伺服:%.2fm | 后退模式:%s(阈值%.0f°)",
@@ -209,8 +186,6 @@ void TransitionController::updateParameters()
     params_.backward_angle_threshold = M_PI / 6.0;  // 30度
     params_.velocity_smooth_alpha = 0.7;
     params_.debug_enabled = false;
-    params_.enable_grid_map = false;
-    params_.grid_map_path = "grid_maps";
   }
 }
 
@@ -238,11 +213,8 @@ bool TransitionController::setGoal(double goal_x, double goal_y)
   distance_increasing_count_ = 0;
   min_distance_reached_ = std::numeric_limits<double>::max();
   last_stage2_yaw_error_ = 0.0;
-
-  // 初始化栅格图
-  if (params_.enable_grid_map) {
-    initializeGridMap();
-  }
+  stage2_entry_distance_ = 0.0;
+  stage2_position_relaxed_ = false;
 
   LOG_INFO("设置目标点: (%.3f, %.3f) [只到点模式]", goal_x_, goal_y_);
 
@@ -270,11 +242,8 @@ bool TransitionController::setGoal(double goal_x, double goal_y, double goal_the
   distance_increasing_count_ = 0;
   min_distance_reached_ = std::numeric_limits<double>::max();
   last_stage2_yaw_error_ = 0.0;
-
-  // 初始化栅格图
-  if (params_.enable_grid_map) {
-    initializeGridMap();
-  }
+  stage2_entry_distance_ = 0.0;
+  stage2_position_relaxed_ = false;
 
   LOG_INFO("设置目标姿态: (%.3f, %.3f, %.2f°) [姿态伺服模式]",
            goal_x_, goal_y_, goal_theta_ * 180.0 / M_PI);
@@ -449,8 +418,17 @@ bool TransitionController::computeVelocityCommands(
       // ------------------------------------------------------------
       // 阶段2：朝向控制 - 原地旋转对准目标朝向
       // ------------------------------------------------------------
+
+      // 记录进入阶段2时的距离（仅记录一次）
+      if (!stage2_position_relaxed_) {
+        stage2_entry_distance_ = distance;
+        stage2_position_relaxed_ = true;
+        LOG_INFO("✓ 进入阶段2（朝向对齐），基准距离: %.4fm | 策略：完全忽略位置，只检查角度 | 警告阈值: %.1fcm",
+                 stage2_entry_distance_, params_.arrival_tolerance * 3.0 * 100.0);
+      }
+
       v = 0.0;  // 停止移动
-      // 与 LineFollowController 的“对齐阶段”一致：误差小于阈值时直接置零（避免最小角速度导致抖动计数失败）
+      // 与 LineFollowController 的"对齐阶段"一致：误差小于阈值时直接置零（避免最小角速度导致抖动计数失败）
       bool has_crossed = false;
       if (params_.rotation_use_crossing_stop) {
         bool crossed_sign = (last_stage2_yaw_error_ > 0.0 && final_heading_error < 0.0) ||
@@ -472,11 +450,36 @@ bool TransitionController::computeVelocityCommands(
       last_stage2_yaw_error_ = final_heading_error;
     }
 
-    // 到达判定：阶段1只检查位置，阶段2同时检查位置和朝向
-    double arrival_tolerance_used = params_.arrival_tolerance;
+    // 到达判定：阶段1同时检查位置和朝向，阶段2只检查朝向（完全忽略位置）
+    // 原因：原地旋转时位置会有微小漂移，阶段1已经保证位置精度，阶段2只需对齐朝向
+    bool position_ok = false;
+    bool heading_ok = false;
 
-    if (distance < arrival_tolerance_used &&
-        std::abs(final_heading_error) < params_.arrival_angle_tolerance) {
+    if (stage2_position_relaxed_) {
+      // 阶段2：只检查朝向，完全忽略位置误差
+      heading_ok = std::abs(final_heading_error) < params_.arrival_angle_tolerance;
+      position_ok = true;  // 阶段2不检查位置
+
+      // 安全监控：如果位置漂移超过3倍容差（3cm），给出警告
+      const double warning_tolerance = params_.arrival_tolerance * 3.0;
+      if (distance > warning_tolerance) {
+        // 使用静态变量避免频繁输出警告（每5秒最多输出一次）
+        static auto last_warning_time = std::chrono::steady_clock::now();
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - last_warning_time).count();
+        if (elapsed >= 5) {
+          LOG_WARN("⚠ 阶段2位置漂移超过警告阈值: 当前距离=%.1fmm > 阈值=%.1fmm（原地旋转导致）",
+                   distance * 1000.0, warning_tolerance * 1000.0);
+          last_warning_time = now;
+        }
+      }
+    } else {
+      // 阶段1：同时检查位置和朝向
+      position_ok = distance < params_.arrival_tolerance;
+      heading_ok = std::abs(final_heading_error) < params_.arrival_angle_tolerance;
+    }
+
+    if (position_ok && heading_ok) {
       arrival_count_++;
       if (arrival_count_ >= params_.arrival_confirm_count) {
         reached = true;
@@ -493,9 +496,19 @@ bool TransitionController::computeVelocityCommands(
     cmd_vel.twist.angular.z = 0.0;
 
     if (goal_theta_set_) {
-      LOG_INFO("✓ 到达目标姿态！最终距离: %.4fm, 朝向误差: %.2f° [确认次数: %d/%d]",
-               distance, normalizeAngle(goal_theta_ - curr_theta) * 180.0 / M_PI,
-               arrival_count_, params_.arrival_confirm_count);
+      if (stage2_position_relaxed_) {
+        // 阶段2完成：显示位置漂移情况
+        double position_drift = distance - stage2_entry_distance_;
+        LOG_INFO("✓ 到达目标姿态！朝向误差: %.2f° | 最终距离: %.1fmm（入口: %.1fmm，漂移: %+.1fmm）[确认: %d/%d]",
+                 normalizeAngle(goal_theta_ - curr_theta) * 180.0 / M_PI,
+                 distance * 1000.0, stage2_entry_distance_ * 1000.0, position_drift * 1000.0,
+                 arrival_count_, params_.arrival_confirm_count);
+      } else {
+        // 阶段1完成（罕见情况：位置和朝向同时满足，未进入阶段2）
+        LOG_INFO("✓ 到达目标姿态！最终距离: %.4fm, 朝向误差: %.2f° [确认次数: %d/%d]",
+                 distance, normalizeAngle(goal_theta_ - curr_theta) * 180.0 / M_PI,
+                 arrival_count_, params_.arrival_confirm_count);
+      }
     } else {
       LOG_INFO("✓ 到达目标点！最终距离: %.4fm [确认次数: %d/%d]",
                distance, arrival_count_, params_.arrival_confirm_count);
@@ -605,9 +618,6 @@ bool TransitionController::computeVelocityCommands(
     }
   }
 
-  // 11. 更新栅格图可视化
-  updateGridMapIfNeeded(pose);
-
   return true;
 }
 
@@ -643,6 +653,8 @@ void TransitionController::reset()
   backward_decided_ = false;
   backward_switched_to_forward_ = false;
   last_stage2_yaw_error_ = 0.0;
+  stage2_entry_distance_ = 0.0;
+  stage2_position_relaxed_ = false;
 
   // 重置后退安全检测
   prev_distance_ = 0.0;
@@ -838,236 +850,6 @@ void TransitionController::smoothVelocity(double& v, double& omega, double dt)
     omega = std::clamp(omega, -params_.max_angular_vel, params_.max_angular_vel);
     prev_angular_vel_ = omega;
   }
-}
-
-// ============================================================================
-// 栅格图可视化实现
-// ============================================================================
-
-void TransitionController::initializeGridMap()
-{
-  if (!goal_set_) {
-    LOG_WARN("无法初始化栅格图：未设置目标");
-    return;
-  }
-
-  // 计算栅格图边界（包括当前位置和目标位置的范围）
-  // 假设起点为 (0, 0)，实际可以从 TF 获取
-  double min_x = std::min(0.0, goal_x_);
-  double max_x = std::max(0.0, goal_x_);
-  double min_y = std::min(0.0, goal_y_);
-  double max_y = std::max(0.0, goal_y_);
-
-  // 动态边距：根据地图范围自适应
-  double range_x = max_x - min_x;
-  double range_y = max_y - min_y;
-  double max_range = std::max(range_x, range_y);
-
-  // 边距为地图范围的10%，但限制在50mm~200mm之间
-  double margin = std::clamp(max_range * 0.1, 0.05, 0.2);
-
-  grid_width_ = (max_x - min_x) + 2 * margin;
-  grid_height_ = (max_y - min_y) + 2 * margin;
-  grid_origin_x_ = min_x - margin;
-  grid_origin_y_ = min_y - margin;
-
-  // 智能分辨率调整：根据地图大小自动调整，防止图像过大
-  double base_resolution = 0.0003;  // 基础分辨率 0.3mm/px
-  double map_diagonal = std::hypot(grid_width_, grid_height_);
-
-  // 根据地图对角线长度调整分辨率
-  if (map_diagonal > 5.0) {
-    grid_resolution_ = 0.002;  // 超大地图: 2.0mm/px
-  } else if (map_diagonal > 3.0) {
-    grid_resolution_ = 0.001;  // 大地图: 1.0mm/px
-  } else if (map_diagonal > 1.5) {
-    grid_resolution_ = 0.0005;  // 中地图: 0.5mm/px
-  } else {
-    grid_resolution_ = base_resolution;  // 小地图: 0.3mm/px (高精度)
-  }
-
-  // 创建栅格图
-  int width_pixels = static_cast<int>(grid_width_ / grid_resolution_);
-  int height_pixels = static_cast<int>(grid_height_ / grid_resolution_);
-
-  // 安全限制：最大图像尺寸10000x10000像素（约286MB）
-  const int MAX_PIXELS = 10000;
-  if (width_pixels > MAX_PIXELS || height_pixels > MAX_PIXELS) {
-    double scale = std::max(
-      static_cast<double>(width_pixels) / MAX_PIXELS,
-      static_cast<double>(height_pixels) / MAX_PIXELS
-    );
-    grid_resolution_ *= scale;
-    width_pixels = static_cast<int>(grid_width_ / grid_resolution_);
-    height_pixels = static_cast<int>(grid_height_ / grid_resolution_);
-    LOG_WARN("栅格图尺寸过大，已自动降低分辨率至 %.2fmm/px", grid_resolution_ * 1000.0);
-  }
-  grid_map_ = cv::Mat(height_pixels, width_pixels, CV_8UC3, cv::Scalar(255, 255, 255));
-
-  // 绘制栅格线和目标点
-  drawGridLines();
-  drawGoalOnGrid();
-
-  // 清空轨迹
-  trajectory_.clear();
-
-  last_grid_update_time_ = this->now();
-  saveGridMap();
-
-  // 计算栅格线间隔（与drawGridLines保持一致）
-  double grid_interval = (map_diagonal > 5.0) ? 0.1 :
-                         (map_diagonal > 3.0) ? 0.05 :
-                         (map_diagonal > 1.5) ? 0.02 : 0.01;
-
-  LOG_INFO("初始化栅格图 大小: %.2f x %.2f m, 尺寸: %d x %d 像素, "
-           "分辨率: %.2fmm/px, 栅格间隔: %.0fmm, 边距: %.0fmm, 内存: %.1fMB",
-           grid_width_, grid_height_, width_pixels, height_pixels,
-           grid_resolution_ * 1000.0, grid_interval * 1000.0, margin * 1000.0,
-           width_pixels * height_pixels * 3.0 / (1024.0 * 1024.0));
-}
-
-cv::Point TransitionController::worldToGrid(double x, double y)
-{
-  int grid_x = static_cast<int>((x - grid_origin_x_) / grid_resolution_);
-  int grid_y = grid_map_.rows - static_cast<int>((y - grid_origin_y_) / grid_resolution_) - 1;
-  return cv::Point(grid_x, grid_y);
-}
-
-void TransitionController::drawGoalOnGrid()
-{
-  if (grid_map_.empty()) {
-    return;
-  }
-
-  cv::Point goal_pt = worldToGrid(goal_x_, goal_y_);
-  if (isPointInGrid(goal_pt)) {
-    // 绘制目标点（蓝色圆，适应高分辨率）
-    cv::circle(grid_map_, goal_pt, 8, cv::Scalar(255, 0, 0), -1);  // Blue goal
-
-    // 如果设置了目标朝向，绘制朝向箭头
-    if (goal_theta_set_) {
-      double arrow_length = 0.02;  // 20mm (缩小箭头)
-      double end_x = goal_x_ + arrow_length * std::cos(goal_theta_);
-      double end_y = goal_y_ + arrow_length * std::sin(goal_theta_);
-      cv::Point arrow_end = worldToGrid(end_x, end_y);
-      if (isPointInGrid(arrow_end)) {
-        cv::arrowedLine(grid_map_, goal_pt, arrow_end, cv::Scalar(255, 0, 0), 1, cv::LINE_AA, 0, 0.3);
-      }
-    }
-  }
-}
-
-void TransitionController::drawRobotOnGrid(const geometry_msgs::msg::PoseStamped& pose)
-{
-  if (grid_map_.empty()) {
-    return;
-  }
-
-  cv::Point robot_pt = worldToGrid(pose.pose.position.x, pose.pose.position.y);
-  if (!isPointInGrid(robot_pt)) {
-    return;
-  }
-
-  // ============================================================================
-  // 关键修复：只绘制新增的轨迹段，不重复绘制已有轨迹
-  // ============================================================================
-
-  // 1. 绘制新增的轨迹线段（从上一个点到当前点）
-  if (!trajectory_.empty()) {
-    cv::Point last_pt = trajectory_.back();
-    if (isPointInGrid(last_pt)) {
-      // 只绘制新增的线段（绿色轨迹线，适应高分辨率）
-      cv::line(grid_map_, last_pt, robot_pt, cv::Scalar(0, 255, 0), 3, cv::LINE_AA);
-    }
-  }
-
-  // 2. 记录当前位置到轨迹
-  trajectory_.push_back(robot_pt);
-
-  // 3. 绘制机器人当前位置（橙色圆 + 箭头，适应高分辨率）
-  //    注意：这会累积在图上，显示机器人的历史位置
-  //    如果只想显示最新位置，需要每次重绘整个栅格图（性能较差）
-  cv::circle(grid_map_, robot_pt, 5, cv::Scalar(0, 165, 255), -1);  // Orange robot
-
-  // 4. 绘制机器人朝向箭头
-  double theta = tf2::getYaw(pose.pose.orientation);
-  double arrow_length = 0.01;  // 10mm (缩小箭头)
-  double end_x = pose.pose.position.x + arrow_length * std::cos(theta);
-  double end_y = pose.pose.position.y + arrow_length * std::sin(theta);
-  cv::Point arrow_end = worldToGrid(end_x, end_y);
-  if (isPointInGrid(arrow_end)) {
-    cv::arrowedLine(grid_map_, robot_pt, arrow_end, cv::Scalar(0, 100, 255), 1, cv::LINE_AA, 0, 0.2);
-  }
-}
-
-void TransitionController::drawGridLines()
-{
-  if (grid_map_.empty()) {
-    return;
-  }
-
-  cv::Scalar grid_color(220, 220, 220);
-
-  // 根据地图大小智能选择栅格线间隔
-  double map_diagonal = std::hypot(grid_width_, grid_height_);
-  double grid_interval;
-
-  if (map_diagonal > 5.0) {
-    grid_interval = 0.1;  // 超大地图: 100mm间隔
-  } else if (map_diagonal > 3.0) {
-    grid_interval = 0.05;  // 大地图: 50mm间隔
-  } else if (map_diagonal > 1.5) {
-    grid_interval = 0.02;  // 中地图: 20mm间隔
-  } else {
-    grid_interval = 0.01;  // 小地图: 10mm间隔
-  }
-
-  // 绘制垂直栅格线
-  for (double x = grid_origin_x_; x < grid_origin_x_ + grid_width_; x += grid_interval) {
-    cv::Point pt1 = worldToGrid(x, grid_origin_y_);
-    cv::Point pt2 = worldToGrid(x, grid_origin_y_ + grid_height_);
-    if (isPointInGrid(pt1) && isPointInGrid(pt2)) {
-      cv::line(grid_map_, pt1, pt2, grid_color, 1);
-    }
-  }
-
-  // 绘制水平栅格线
-  for (double y = grid_origin_y_; y < grid_origin_y_ + grid_height_; y += grid_interval) {
-    cv::Point pt1 = worldToGrid(grid_origin_x_, y);
-    cv::Point pt2 = worldToGrid(grid_origin_x_ + grid_width_, y);
-    if (isPointInGrid(pt1) && isPointInGrid(pt2)) {
-      cv::line(grid_map_, pt1, pt2, grid_color, 1);
-    }
-  }
-}
-
-void TransitionController::saveGridMap()
-{
-  if (grid_map_.empty() || params_.grid_map_path.empty()) {
-    return;
-  }
-
-  std::string filename = params_.grid_map_path + "/transition_path_tracking.png";
-  cv::imwrite(filename, grid_map_);
-}
-
-void TransitionController::updateGridMapIfNeeded(const geometry_msgs::msg::PoseStamped& current_pose)
-{
-  if (!params_.enable_grid_map) {
-    return;
-  }
-
-  auto current_time = this->now();
-  if ((current_time - last_grid_update_time_).seconds() > 1.0) {  // 每1s保存一次
-    drawRobotOnGrid(current_pose);
-    saveGridMap();
-    last_grid_update_time_ = current_time;
-  }
-}
-
-bool TransitionController::isPointInGrid(const cv::Point& pt)
-{
-  return pt.x >= 0 && pt.x < grid_map_.cols && pt.y >= 0 && pt.y < grid_map_.rows;
 }
 
 }  // namespace follow_controller

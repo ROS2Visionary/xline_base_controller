@@ -15,8 +15,6 @@
 #include <chrono>
 #include <cmath>
 #include <algorithm>
-#include <filesystem>
-#include <opencv2/opencv.hpp>
 
 namespace xline
 {
@@ -169,10 +167,6 @@ private:
 
     // 调试
     bool debug_enabled;            // 是否启用调试输出
-
-    // 栅格图可视化
-    bool enable_grid_map;          // 是否启用栅格图
-    std::string grid_map_path;     // 栅格图保存路径
   };
 
   // ================================
@@ -210,16 +204,10 @@ private:
   std::chrono::steady_clock::time_point last_time_;
   rclcpp::Time last_log_output_time_; // 上次日志输出时间
 
-  // 栅格图可视化
-  cv::Mat grid_map_;               // 栅格图
-  double grid_resolution_;         // 栅格分辨率 [m/pixel]
-  double grid_width_;              // 栅格宽度 [m]
-  double grid_height_;             // 栅格高度 [m]
-  double grid_origin_x_;           // 栅格原点X坐标 [m]
-  double grid_origin_y_;           // 栅格原点Y坐标 [m]
-  rclcpp::Time last_grid_update_time_; // 上次栅格更新时间
-  std::vector<cv::Point> trajectory_; // 机器人轨迹
+  // 阶段2控制状态
   double last_stage2_yaw_error_;      // 阶段2航向误差（用于过零判定）
+  double stage2_entry_distance_;      // 进入阶段2时的距离（用于放宽位置容差）
+  bool stage2_position_relaxed_;      // 是否已进入阶段2并放宽位置容差
 
   // ================================
   // 私有方法
@@ -273,50 +261,6 @@ private:
    * @return true表示应该后退
    */
   bool shouldUseBackward(double curr_x, double curr_y, double curr_theta);
-
-  // ================================
-  // 栅格图可视化方法
-  // ================================
-
-  /**
-   * @brief 初始化栅格图
-   */
-  void initializeGridMap();
-
-  /**
-   * @brief 世界坐标转栅格坐标
-   */
-  cv::Point worldToGrid(double x, double y);
-
-  /**
-   * @brief 绘制目标点
-   */
-  void drawGoalOnGrid();
-
-  /**
-   * @brief 绘制机器人位置
-   */
-  void drawRobotOnGrid(const geometry_msgs::msg::PoseStamped& pose);
-
-  /**
-   * @brief 绘制栅格线
-   */
-  void drawGridLines();
-
-  /**
-   * @brief 保存栅格图
-   */
-  void saveGridMap();
-
-  /**
-   * @brief 更新栅格图（如果需要）
-   */
-  void updateGridMapIfNeeded(const geometry_msgs::msg::PoseStamped& current_pose);
-
-  /**
-   * @brief 检查点是否在栅格内
-   */
-  bool isPointInGrid(const cv::Point& pt);
 };
 
 }  // namespace follow_controller
