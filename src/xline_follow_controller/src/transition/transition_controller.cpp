@@ -24,21 +24,21 @@ namespace follow_controller
 
 TransitionController::TransitionController()
   : BaseFollowController("transition_controller")
-  , goal_set_(false)
-  , goal_reached_(false)
-  , arrival_count_(0)
-  , prev_linear_vel_(0.0)
-  , prev_angular_vel_(0.0)
   , goal_x_(0.0)
   , goal_y_(0.0)
   , goal_theta_(0.0)
+  , goal_set_(false)
   , goal_theta_set_(false)
+  , goal_reached_(false)
+  , arrival_count_(0)
   , use_backward_(false)
   , backward_decided_(false)
   , backward_switched_to_forward_(false)
   , prev_distance_(0.0)
   , distance_increasing_count_(0)
   , min_distance_reached_(std::numeric_limits<double>::max())
+  , prev_linear_vel_(0.0)
+  , prev_angular_vel_(0.0)
   , last_stage2_yaw_error_(0.0)
   , stage2_entry_distance_(0.0)
   , stage2_position_relaxed_(false)
@@ -106,6 +106,8 @@ void TransitionController::updateParameters()
         parser.getParameter<double>("transition.rotation.max_w") : params_.max_angular_vel;
     params_.rotation_min_w = parser.hasParameter("transition.rotation.min_w") ?
         parser.getParameter<double>("transition.rotation.min_w") : std::min(0.1, params_.rotation_max_w);
+    params_.rotation_absolute_min_w = parser.hasParameter("transition.rotation.absolute_min_w") ?
+        parser.getParameter<double>("transition.rotation.absolute_min_w") : 0.03;
     params_.rotation_factor = parser.hasParameter("transition.rotation.factor") ?
         parser.getParameter<double>("transition.rotation.factor") : 1.2;
     params_.rotation_angle_threshold = parser.hasParameter("transition.rotation.angle_threshold") ?
@@ -128,6 +130,7 @@ void TransitionController::updateParameters()
 
     params_.rotation_max_w = std::clamp(params_.rotation_max_w, 0.0, params_.max_angular_vel);
     params_.rotation_min_w = std::clamp(params_.rotation_min_w, 0.0, params_.rotation_max_w);
+    params_.rotation_absolute_min_w = std::clamp(params_.rotation_absolute_min_w, 0.0, params_.rotation_min_w);
     params_.rotation_factor = std::max(0.0, params_.rotation_factor);
     params_.rotation_angle_threshold = std::max(0.0, params_.rotation_angle_threshold);
     params_.rotation_smooth_factor = std::max(0.0, params_.rotation_smooth_factor);
@@ -345,35 +348,58 @@ bool TransitionController::computeVelocityCommands(
     double final_heading_error = normalizeAngle(goal_theta_ - curr_theta);
 
     // ============================================================================
-    // 判断控制阶段
+    // 判断控制阶段（阶段2粘滞：避免原地旋转引起的距离微漂移导致频繁跳回阶段1）
     // ============================================================================
-    if (distance > params_.arrival_tolerance) {
+    const double stage2_exit_distance = params_.arrival_tolerance * 5.0;  // 5cm退出阈值（足够大的滞后）
+    bool use_stage2 = false;
+
+    if (stage2_position_relaxed_) {
+      // 已经进入过阶段2：只要位置漂移不超过阈值，就保持阶段2
+      if (distance <= stage2_exit_distance) {
+        use_stage2 = true;
+      } else {
+        // 漂移过大：回到阶段1重新收敛位置
+        LOG_INFO("⚠ 退出阶段2，位置漂移过大: %.4fm > %.4fm（阈值）| 重新进入阶段1收敛位置",
+                 distance, stage2_exit_distance);
+        stage2_position_relaxed_ = false;
+        stage2_entry_distance_ = 0.0;
+        last_stage2_yaw_error_ = 0.0;
+        arrival_count_ = 0;
+      }
+    } else if (distance <= params_.arrival_tolerance) {
+      // 首次满足到点精度，进入阶段2
+      use_stage2 = true;
+    }
+
+    if (!use_stage2) {
       // ------------------------------------------------------------
       // 阶段1：位置控制 - 朝向目标位置移动
       // ------------------------------------------------------------
       last_stage2_yaw_error_ = 0.0;
 
-      // 判断是否使用后退模式（可选优化，仅在特定条件下）
+      // 判断是否使用后退模式（使用配置的阈值）
       bool should_use_backward = false;
       if (params_.enable_backward && !backward_decided_) {
-        // 计算目标在机器人坐标系中的位置
-        double dx_world = goal_x_ - curr_x;
-        double dy_world = goal_y_ - curr_y;
-        double cos_theta = std::cos(curr_theta);
-        double sin_theta = std::sin(curr_theta);
-        double dx_local = dx_world * cos_theta + dy_world * sin_theta;
-        double dy_local = -dx_world * sin_theta + dy_world * cos_theta;
-
-        // 严格条件：目标在正后方且朝向已对准
-        bool target_straight_behind = (dx_local < -0.1) &&                                       // 明确在后方
-                                       (std::abs(dy_local) < std::abs(dx_local) * 0.5);  // 接近正后方
-        bool heading_well_aligned = std::abs(final_heading_error) < M_PI / 6.0;  // 朝向对准<30°
-
-        should_use_backward = target_straight_behind && heading_well_aligned;
+        should_use_backward = shouldUseBackward(curr_x, curr_y, curr_theta);
 
         if (should_use_backward) {
-          LOG_INFO("✓ 使用后退模式 - 目标在正后方(dx=%.2f,dy=%.2f)，朝向对准(%.1f°)",
-                   dx_local, dy_local, final_heading_error * 180.0 / M_PI);
+          // 计算目标在机器人坐标系中的位置（用于日志输出）
+          double dx_world = goal_x_ - curr_x;
+          double dy_world = goal_y_ - curr_y;
+          double cos_theta = std::cos(curr_theta);
+          double sin_theta = std::sin(curr_theta);
+          double dx_local = dx_world * cos_theta + dy_world * sin_theta;
+          double dy_local = -dx_world * sin_theta + dy_world * cos_theta;
+
+          // 计算背向目标位置的方向误差（与判断逻辑一致）
+          double approach_heading = std::atan2(dy_world, dx_world);
+          double backward_desired_heading = normalizeAngle(approach_heading + M_PI);
+          double backward_heading_error = std::abs(normalizeAngle(backward_desired_heading - curr_theta));
+
+          LOG_INFO("✓ 使用后退模式 - 目标在后方(dx=%.2fm,dy=%.2fm)，背向方向对准(%.1f°<%.1f°)",
+                   dx_local, dy_local,
+                   backward_heading_error * 180.0 / M_PI,
+                   params_.backward_angle_threshold * 180.0 / M_PI);
         }
         backward_decided_ = true;
       }
@@ -402,15 +428,31 @@ bool TransitionController::computeVelocityCommands(
         double approach_heading = computeTargetHeading(curr_x, curr_y);
         double approach_error = normalizeAngle(approach_heading - curr_theta);
 
-        v = computeLinearVelocity(distance, approach_error);
-        omega = computeAngularVelocity(approach_error);
-
-        // 如果航向误差过大（>90°），停止前进，只旋转
+        // 如果航向误差过大（>90°），先原地旋转对准"前进期望朝向"
+        // 但在近目标时（cm级）纯旋转会导致距离来回漂移，容易卡在严格阈值附近；
+        // 因此允许做很小的前后蠕动来继续压缩距离。
         if (std::abs(approach_error) > M_PI / 2.0) {
-          v = 0.0;
           omega = params_.rotation_enabled ?
               computeRotationVelocity(approach_error) :
               computeAngularVelocity(approach_error);
+          if (distance <= stage2_exit_distance) {
+            const double dx_world = goal_x_ - curr_x;
+            const double dy_world = goal_y_ - curr_y;
+            const double cos_theta = std::cos(curr_theta);
+            const double sin_theta = std::sin(curr_theta);
+            const double dx_local = dx_world * cos_theta + dy_world * sin_theta;
+
+            if (std::abs(dx_local) < 0.002) {
+              v = 0.0;
+            } else {
+              v = std::clamp(dx_local, -params_.creep_velocity, params_.creep_velocity);
+            }
+          } else {
+            v = 0.0;
+          }
+        } else {
+          v = computeLinearVelocity(distance, approach_error);
+          omega = computeAngularVelocity(approach_error);
         }
       }
 
@@ -423,11 +465,24 @@ bool TransitionController::computeVelocityCommands(
       if (!stage2_position_relaxed_) {
         stage2_entry_distance_ = distance;
         stage2_position_relaxed_ = true;
-        LOG_INFO("✓ 进入阶段2（朝向对齐），基准距离: %.4fm | 策略：完全忽略位置，只检查角度 | 警告阈值: %.1fcm",
-                 stage2_entry_distance_, params_.arrival_tolerance * 3.0 * 100.0);
+        LOG_INFO("✓ 进入阶段2（朝向对齐），基准距离: %.4fm | 策略：允许微小蠕动保持位置 | 回退阈值: %.1fcm",
+                 stage2_entry_distance_, stage2_exit_distance * 100.0);
       }
 
-      v = 0.0;  // 停止移动
+      v = 0.0;  // 默认停止移动
+
+      // 若原地旋转导致距离略微漂移出阈值，允许小幅蠕动把位置拉回（避免永远达不到 1cm）
+      if (distance > params_.arrival_tolerance) {
+        const double dx_world = goal_x_ - curr_x;
+        const double dy_world = goal_y_ - curr_y;
+        const double cos_theta = std::cos(curr_theta);
+        const double sin_theta = std::sin(curr_theta);
+        const double dx_local = dx_world * cos_theta + dy_world * sin_theta;
+
+        if (std::abs(dx_local) >= 0.002) {
+          v = std::clamp(dx_local, -params_.creep_velocity, params_.creep_velocity);
+        }
+      }
       // 与 LineFollowController 的"对齐阶段"一致：误差小于阈值时直接置零（避免最小角速度导致抖动计数失败）
       bool has_crossed = false;
       if (params_.rotation_use_crossing_stop) {
@@ -450,33 +505,32 @@ bool TransitionController::computeVelocityCommands(
       last_stage2_yaw_error_ = final_heading_error;
     }
 
-    // 到达判定：阶段1同时检查位置和朝向，阶段2只检查朝向（完全忽略位置）
-    // 原因：原地旋转时位置会有微小漂移，阶段1已经保证位置精度，阶段2只需对齐朝向
+    // 到达判定：阶段1只检查位置，阶段2只检查朝向（分离精度控制）
+    // - 阶段1：确保位置精度达标（不关心朝向）
+    // - 阶段2：确保朝向精度达标（位置已在阶段1保证）
     bool position_ok = false;
     bool heading_ok = false;
 
     if (stage2_position_relaxed_) {
-      // 阶段2：只检查朝向，完全忽略位置误差
+      // 阶段2：只检查朝向，位置由阶段1保证
+      position_ok = true;  // 不检查位置
       heading_ok = std::abs(final_heading_error) < params_.arrival_angle_tolerance;
-      position_ok = true;  // 阶段2不检查位置
 
-      // 安全监控：如果位置漂移超过3倍容差（3cm），给出警告
-      const double warning_tolerance = params_.arrival_tolerance * 3.0;
-      if (distance > warning_tolerance) {
-        // 使用静态变量避免频繁输出警告（每5秒最多输出一次）
+      // 安全监控：若漂移过大，给出警告（会在上面的 use_stage2 判定中回退阶段1）
+      if (distance > stage2_exit_distance) {
         static auto last_warning_time = std::chrono::steady_clock::now();
         auto now = std::chrono::steady_clock::now();
         auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - last_warning_time).count();
         if (elapsed >= 5) {
-          LOG_WARN("⚠ 阶段2位置漂移超过警告阈值: 当前距离=%.1fmm > 阈值=%.1fmm（原地旋转导致）",
-                   distance * 1000.0, warning_tolerance * 1000.0);
+          LOG_WARN("⚠ 阶段2位置漂移过大: 当前=%.1fmm > 阈值=%.1fmm，将回退阶段1",
+                   distance * 1000.0, stage2_exit_distance * 1000.0);
           last_warning_time = now;
         }
       }
     } else {
-      // 阶段1：同时检查位置和朝向
+      // 阶段1：只检查位置，不关心朝向（朝向由阶段2保证）
       position_ok = distance < params_.arrival_tolerance;
-      heading_ok = std::abs(final_heading_error) < params_.arrival_angle_tolerance;
+      heading_ok = true;  // 不检查朝向
     }
 
     if (position_ok && heading_ok) {
@@ -496,15 +550,14 @@ bool TransitionController::computeVelocityCommands(
     cmd_vel.twist.angular.z = 0.0;
 
     if (goal_theta_set_) {
+      // 显示阶段2入口距离（若有）
       if (stage2_position_relaxed_) {
-        // 阶段2完成：显示位置漂移情况
         double position_drift = distance - stage2_entry_distance_;
-        LOG_INFO("✓ 到达目标姿态！朝向误差: %.2f° | 最终距离: %.1fmm（入口: %.1fmm，漂移: %+.1fmm）[确认: %d/%d]",
-                 normalizeAngle(goal_theta_ - curr_theta) * 180.0 / M_PI,
+        LOG_INFO("✓ 到达目标姿态！最终距离: %.1fmm（入口: %.1fmm，漂移: %+.1fmm）, 朝向误差: %.2f° [确认: %d/%d]",
                  distance * 1000.0, stage2_entry_distance_ * 1000.0, position_drift * 1000.0,
+                 normalizeAngle(goal_theta_ - curr_theta) * 180.0 / M_PI,
                  arrival_count_, params_.arrival_confirm_count);
       } else {
-        // 阶段1完成（罕见情况：位置和朝向同时满足，未进入阶段2）
         LOG_INFO("✓ 到达目标姿态！最终距离: %.4fm, 朝向误差: %.2f° [确认次数: %d/%d]",
                  distance, normalizeAngle(goal_theta_ - curr_theta) * 180.0 / M_PI,
                  arrival_count_, params_.arrival_confirm_count);
@@ -525,10 +578,10 @@ bool TransitionController::computeVelocityCommands(
   cmd_vel.twist.linear.x = v;
   cmd_vel.twist.angular.z = omega;
 
-  // 10. 调试输出（每1秒输出一次统一状态日志）
+  // 10. 调试输出（每0.5秒输出一次统一状态日志）
   if (params_.debug_enabled) {
     auto current_time = this->now();
-    if ((current_time - last_log_output_time_).seconds() >= 1.0) {
+    if ((current_time - last_log_output_time_).seconds() >= 0.5) {
       // 构建统一的状态日志
       std::string mode_str;
       std::string phase_str;
@@ -540,8 +593,12 @@ bool TransitionController::computeVelocityCommands(
         // 姿态伺服模式 - 分段控制
         final_heading_error = normalizeAngle(goal_theta_ - curr_theta);
 
-        // 判断阶段
-        if (distance > params_.arrival_tolerance) {
+        // 判断阶段（与实际控制逻辑一致，考虑阶段2粘滞）
+        const double stage2_exit_distance = params_.arrival_tolerance * 5.0;
+        bool in_stage2 = stage2_position_relaxed_ && (distance <= stage2_exit_distance);
+        bool in_stage1 = !in_stage2;
+
+        if (in_stage1) {
           // 阶段1：位置控制
           phase_str = "位置控制";
           double approach_heading = computeTargetHeading(curr_x, curr_y);
@@ -606,11 +663,36 @@ bool TransitionController::computeVelocityCommands(
       int progress_pct = static_cast<int>(progress_dist * progress_angle * 100.0);
 
       // 输出优化的统一状态日志
-      LOG_INFO("[%s·%s] 位置:(%.3f,%.3f,%.0f°) | 误差: %.3fm/%.1f° | 速度: %.3f,%.3f | 进度:%d%% | 计数:%d/%d",
+      std::string stage_indicator;
+      std::string extra_info;
+
+      if (goal_theta_set_) {
+        // 重新判断阶段（与上面逻辑一致）
+        const double stage2_exit_distance_log = params_.arrival_tolerance * 5.0;
+        bool in_stage2_log = stage2_position_relaxed_ && (distance <= stage2_exit_distance_log);
+
+        if (!in_stage2_log) {
+          stage_indicator = "[S1]";
+          // 阶段1：显示距离和航向误差
+          extra_info = "";
+        } else {
+          stage_indicator = "[S2]";
+          // 阶段2：显示进入时基准距离和当前漂移量
+          double drift = distance - stage2_entry_distance_;
+          extra_info = " | 漂移:" + std::to_string(drift * 1000.0).substr(0, 5) + "mm";
+        }
+      } else {
+        stage_indicator = "[到点]";
+        extra_info = "";
+      }
+
+      LOG_INFO("%s[%s·%s] 位置:(%.3f,%.3f,%.0f°) | 误差: 距%.1fcm/角%.1f° | 速度: v=%.3f/w=%.3f%s | 进度:%d%% | 到达计数:%d/%d",
+               stage_indicator.c_str(),
                mode_str.c_str(), status_str.c_str(),
                curr_x, curr_y, curr_theta * 57.3,
-               distance, heading_error * 57.3,
+               distance * 100.0, heading_error * 57.3,
                v, omega,
+               extra_info.c_str(),
                progress_pct,
                arrival_count_, params_.arrival_confirm_count);
 
@@ -681,18 +763,22 @@ bool TransitionController::shouldUseBackward(double curr_x, double curr_y, doubl
   double cos_theta = std::cos(curr_theta);
   double sin_theta = std::sin(curr_theta);
   double dx_local = dx_world * cos_theta + dy_world * sin_theta;
-  double dy_local = -dx_world * sin_theta + dy_world * cos_theta;
 
   // 判断1：目标点在机器人后方（x_local < 0）
   bool target_behind = dx_local < 0;
 
-  // 判断2：目标朝向与当前朝向接近
-  double heading_error = std::abs(normalizeAngle(goal_theta_ - curr_theta));
-  bool heading_aligned = heading_error < params_.backward_angle_threshold;
+  // 判断2：背向目标位置的方向与当前朝向接近（这样后退时不需要大幅度旋转）
+  // 计算指向目标的方向
+  double approach_heading = std::atan2(dy_world, dx_world);
+  // 计算背向目标的方向
+  double backward_desired_heading = normalizeAngle(approach_heading + M_PI);
+  // 计算当前朝向与背向目标方向的误差
+  double backward_heading_error = std::abs(normalizeAngle(backward_desired_heading - curr_theta));
+  bool backward_direction_aligned = backward_heading_error < params_.backward_angle_threshold;
 
   // 两个条件都满足才使用后退
   // 后退模式的选择会在第一次判断后在主日志中显示（"姿态伺服-后退xxx"）
-  return target_behind && heading_aligned;
+  return target_behind && backward_direction_aligned;
 }
 
 
@@ -786,7 +872,16 @@ double TransitionController::computeRotationVelocity(double angle_diff)
   }
 
   double rot_vel = params_.rotation_max_w * factor;
-  rot_vel = std::clamp(rot_vel, params_.rotation_min_w, params_.rotation_max_w);
+  // 动态最小角速度：当误差很小时，固定 min_w 会导致"抖动/震动"（过冲→反向→过冲…）
+  // 这里把 min_w 随误差线性缩小，既保留大误差时的克服静摩擦能力，又降低小误差时的过冲风险。
+  double min_w = params_.rotation_min_w;
+  if (params_.rotation_angle_threshold > 1e-6) {
+    const double scale = std::clamp(abs_diff / params_.rotation_angle_threshold, 0.0, 1.0);
+    min_w *= scale;
+  }
+  // 确保不低于绝对最小角速度（保证机器人始终能动）
+  min_w = std::max(min_w, params_.rotation_absolute_min_w);
+  rot_vel = std::clamp(rot_vel, min_w, params_.rotation_max_w);
 
   if (angle_diff > 0.0) {
     return rot_vel;

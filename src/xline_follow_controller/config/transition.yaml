@@ -28,7 +28,7 @@ transition:
   # ============================================================================
   # 到达判定
   # ============================================================================
-  arrival_tolerance: 0.01        # 位置到达容差 [m]
+  arrival_tolerance: 0.005        # 位置到达容差 [m]
   arrival_angle_tolerance: 0.01   # 角度到达容差 [rad]（5.7° = 0.1 rad）
   arrival_confirm_count: 3       # 连续确认次数（防抖动）
 
@@ -87,12 +87,16 @@ transition:
   rotation:
     enabled: true                # true: 使用 sigmoid+平滑 的 rotation 方式；false: 使用 k_angular 比例控制
     max_w: 0.5                   # 最大角速度 [rad/s]（通常可与 max_angular_vel 保持一致）
-    min_w: 0.08                  # 最小角速度 [rad/s]（克服静摩擦，过大可能导致过冲）
-    factor: 1.2                  # sigmoid 因子（越大越“硬”，误差稍大就接近 max_w）
+    min_w: 0.1                  # 最小角速度 [rad/s]（克服静摩擦，过大可能导致过冲）
+    absolute_min_w: 0.08         # 绝对最小角速度 [rad/s]（不会被动态缩减，保证机器人始终能动）
+                                 # 说明：当角度误差很小时，min_w 会被动态缩减以避免过冲抖动
+                                 #      但缩减后不会低于 absolute_min_w，确保机器人不会因速度太低而卡住
+                                 #      建议值：0.02-0.05 rad/s（根据机器人静摩擦调整）
+    factor: 1.2                  # sigmoid 因子（越大越"硬"，误差稍大就接近 max_w）
     angle_threshold: 0.6         # 近零平滑阈值 [rad]
     smooth_factor: 0.6           # 近零平滑系数（越大越快衰减）
-    stop_tolerance: 0.2          # 认为“已对准”的角度阈值 [rad]（会被限制到 <= arrival_angle_tolerance）
-    use_crossing_stop: true      # 允许“过零即认为对准”（减少来回抖动）
+    stop_tolerance: 0.01         # 认为"已对准"的角度阈值 [rad]（会被限制到 <= arrival_angle_tolerance）
+    use_crossing_stop: true      # 允许"过零即认为对准"（减少来回抖动）
     crossing_window: 0.35        # 过零判定窗口 [rad]（仅在误差均 < 该值时允许过零判定）
 
   # ============================================================================

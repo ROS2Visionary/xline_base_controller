@@ -150,12 +150,13 @@ private:
     // 计算方式与 LineFollowController::calculateRotationVelocity 一致（sigmoid + 近零平滑 + min/max 限幅）
     bool rotation_enabled;             // 是否启用 rotation 方式（false 则使用 k_angular 比例控制）
     double rotation_max_w;             // 最大角速度 [rad/s]
-    double rotation_min_w;             // 最小角速度 [rad/s]
+    double rotation_min_w;             // 最小角速度 [rad/s]（会被动态缩减）
+    double rotation_absolute_min_w;    // 绝对最小角速度 [rad/s]（不会被动态缩减，保证机器人始终能动）
     double rotation_factor;            // sigmoid 因子
     double rotation_angle_threshold;   // 近零平滑阈值 [rad]
     double rotation_smooth_factor;     // 近零平滑系数
-    double rotation_stop_tolerance;    // 认为“已对准”的角度阈值 [rad]（建议与 arrival_angle_tolerance 一致）
-    bool rotation_use_crossing_stop;   // 是否允许“过零即认为对准”（防止来回抖动）
+    double rotation_stop_tolerance;    // 认为"已对准"的角度阈值 [rad]（建议与 arrival_angle_tolerance 一致）
+    bool rotation_use_crossing_stop;   // 是否允许"过零即认为对准"（防止来回抖动）
     double rotation_crossing_window;   // 过零判定窗口 [rad]（仅在误差均小于该值时允许过零判定）
 
     // 后退模式
