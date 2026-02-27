@@ -94,6 +94,8 @@ void TransitionController::updateParameters()
     params_.creep_distance = parser.hasParameter("transition.creep_distance") ?
         parser.getParameter<double>("transition.creep_distance") : 0.1;
     params_.creep_velocity = parser.getParameter<double>("transition.creep_velocity");
+    params_.hard_creep_min_enabled = parser.hasParameter("transition.hard_creep_min.enabled") ?
+        parser.getParameter<bool>("transition.hard_creep_min.enabled") : false;
 
     // 大转角处理
     params_.large_angle_threshold = parser.getParameter<double>("transition.large_angle_threshold");
@@ -195,6 +197,7 @@ void TransitionController::updateParameters()
     params_.slow_down_distance = 0.5;
     params_.creep_distance = 0.1;
     params_.creep_velocity = 0.05;
+    params_.hard_creep_min_enabled = false;
     params_.large_angle_threshold = M_PI / 3.0;  // 60度
     params_.large_angle_vel_ratio = 0.4;
     params_.pose_servo_distance = 0.5;
@@ -300,7 +303,7 @@ bool TransitionController::computeVelocityCommands(
   double dt = std::chrono::duration_cast<std::chrono::duration<double>>(now_tp - last_time_).count();
   last_time_ = now_tp;
   if (dt <= 0.0 || std::isnan(dt) || std::isinf(dt) || dt > 1.0) {
-    dt = 0.025;
+    dt = 1 / 18;
   }
 
   // 1. 检查是否设置了目标
@@ -372,7 +375,7 @@ bool TransitionController::computeVelocityCommands(
     // ============================================================================
     // 判断控制阶段（阶段2粘滞：避免原地旋转引起的距离微漂移导致频繁跳回阶段1）
     // ============================================================================
-    const double stage2_exit_distance = params_.arrival_tolerance * 5.0;  // 5cm退出阈值（足够大的滞后）
+    const double stage2_exit_distance = params_.arrival_tolerance * 5.0;  // 5倍退出阈值（足够大的滞后）
     bool use_stage2 = false;
 
     if (stage2_position_relaxed_) {
@@ -672,6 +675,9 @@ bool TransitionController::computeVelocityCommands(
   // 8. 速度平滑
   smoothVelocity(v, omega, dt);
 
+  // 8.1 近目标蠕动速度硬下限（优先级高于平滑/角度衰减）
+  enforceHardCreepMin(v, distance, curr_x, curr_y, curr_theta);
+
   // 9. 输出
   cmd_vel.twist.linear.x = v;
   cmd_vel.twist.angular.z = omega;
@@ -966,6 +972,46 @@ double TransitionController::computeAngularVelocity(double heading_error)
   omega = std::min(omega, params_.max_angular_vel);
 
   return omega;
+}
+
+void TransitionController::enforceHardCreepMin(
+    double& v, double distance, double curr_x, double curr_y, double curr_theta)
+{
+  if (!params_.hard_creep_min_enabled) {
+    return;
+  }
+  if (!(params_.creep_velocity > 0.0)) {
+    return;
+  }
+  // 仅在蠕动段内生效；且避免在到达容差内仍强推，导致来回穿越阈值
+  if (distance > params_.creep_distance || distance <= params_.arrival_tolerance) {
+    return;
+  }
+
+  if (std::abs(v) >= params_.creep_velocity) {
+    return;
+  }
+
+  const double dx_world = goal_x_ - curr_x;
+  const double dy_world = goal_y_ - curr_y;
+  const double cos_theta = std::cos(curr_theta);
+  const double sin_theta = std::sin(curr_theta);
+  const double dx_local = dx_world * cos_theta + dy_world * sin_theta;
+
+  double desired_sign = 1.0;
+  if (std::abs(dx_local) > 1e-12) {
+    desired_sign = (dx_local >= 0.0) ? 1.0 : -1.0;
+  } else if (std::abs(v) > 1e-12) {
+    desired_sign = (v >= 0.0) ? 1.0 : -1.0;
+  } else if (std::abs(prev_linear_vel_) > 1e-12) {
+    desired_sign = (prev_linear_vel_ >= 0.0) ? 1.0 : -1.0;
+  }
+
+  v = desired_sign * params_.creep_velocity;
+  v = std::clamp(v, -params_.max_velocity, params_.max_velocity);
+
+  // 与 smoothVelocity 的内部状态保持一致（避免下一周期又被认为“冷启动”或被 slew-rate 压低）
+  prev_linear_vel_ = v;
 }
 
 double TransitionController::computeRotationVelocity(double angle_diff)

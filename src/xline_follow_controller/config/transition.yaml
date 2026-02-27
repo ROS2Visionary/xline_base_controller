@@ -52,6 +52,11 @@ transition:
   creep_distance: 0.05            # 进入蠕动段距离 [m]（默认10cm，建议 0.05-0.15）
   creep_velocity: 0.015           # 蠕动速度 [m/s]
 
+  # 蠕动速度硬下限：在蠕动段内强制 |v| >= creep_velocity（避免被角度衰减/平滑压到 0）
+  # 注意：当距离 <= arrival_tolerance 时不会强推，避免在到达阈值内来回穿越
+  hard_creep_min:
+    enabled: true
+
   # 说明：
   # - 距离 > slow_down_distance: 正常速度
   # - 距离 < slow_down_distance: 渐进减速

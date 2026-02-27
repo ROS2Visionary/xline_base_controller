@@ -687,6 +687,13 @@ namespace xline
     bool MotionControlCenter::compute_velocity(const std::shared_ptr<GoalHandleExecutePlan> goal_handle,
                                                ExecutePlan::Result::SharedPtr result)
     {
+
+      // 跳过执行，立即返回成功
+      // std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+      // result->success = true;
+      // result->error_message.clear();
+      // return true;
+
       // 参考 xline_controller.cpp::ControllerServer::computeControl 实现
       // 这里执行周期性控制：读取当前位姿 -> 计算速度 -> 发布速度 -> 判断是否到达
 

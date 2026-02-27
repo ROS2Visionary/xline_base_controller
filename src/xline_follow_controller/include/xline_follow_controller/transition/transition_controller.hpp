@@ -140,6 +140,9 @@ private:
     double creep_distance;         // 进入蠕动段距离 [m]
     double creep_velocity;         // 蠕动速度 [m/s]
 
+    // 蠕动速度硬下限（近目标阶段强制 |v|>=creep_velocity）
+    bool hard_creep_min_enabled;   // 是否启用
+
     // 大转角处理
     double large_angle_threshold;  // 大转角阈值 [rad]
     double large_angle_vel_ratio;  // 大转角速度比例
@@ -245,6 +248,11 @@ private:
    * @brief 计算线速度
    */
   double computeLinearVelocity(double distance, double heading_error);
+
+  /**
+   * @brief 近目标蠕动速度硬下限（避免 v 被角度衰减/平滑压到 0）
+   */
+  void enforceHardCreepMin(double& v, double distance, double curr_x, double curr_y, double curr_theta);
 
   /**
    * @brief 计算角速度
