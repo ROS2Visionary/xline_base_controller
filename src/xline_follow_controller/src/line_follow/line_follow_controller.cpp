@@ -58,6 +58,8 @@ LineFollowController::LineFollowController()
   , lqr_angular_smoother_(2.0, 0.7)
   , prev_lqr_smoothed_omega_(0.0)
   , integral_lqr_e_y_(0.0)
+  , prev_ey_rate_(0.0)
+  , prev_ey_lowpass_(0.0)
 {
   updateParameters();
   initializeFilters();
@@ -300,6 +302,35 @@ void LineFollowController::updateParameters()
     }
 
 
+    // ================================
+    // 10. e_y 输入滤波参数（可选）
+    // ================================
+    if (parser.hasParameter("ey_filter.rate_limit.enabled"))
+    {
+      params_.ey_filter.rate_limit.enabled =
+          parser.getParameter<bool>("ey_filter.rate_limit.enabled");
+    }
+    if (parser.hasParameter("ey_filter.rate_limit.noise_floor"))
+    {
+      params_.ey_filter.rate_limit.noise_floor =
+          parser.getParameter<double>("ey_filter.rate_limit.noise_floor");
+    }
+    if (parser.hasParameter("ey_filter.rate_limit.rate_factor"))
+    {
+      params_.ey_filter.rate_limit.rate_factor =
+          parser.getParameter<double>("ey_filter.rate_limit.rate_factor");
+    }
+    if (parser.hasParameter("ey_filter.lowpass.enabled"))
+    {
+      params_.ey_filter.lowpass.enabled =
+          parser.getParameter<bool>("ey_filter.lowpass.enabled");
+    }
+    if (parser.hasParameter("ey_filter.lowpass.alpha"))
+    {
+      params_.ey_filter.lowpass.alpha =
+          parser.getParameter<double>("ey_filter.lowpass.alpha");
+    }
+
     // 同步到运行时变量
     syncRuntimeParams();
   }
@@ -389,6 +420,8 @@ void LineFollowController::resetControllerState()
   lqr_angular_smoother_.reset();
   prev_lqr_smoothed_omega_ = 0.0;
   integral_lqr_e_y_ = 0.0;
+  prev_ey_rate_ = 0.0;
+  prev_ey_lowpass_ = 0.0;
 
   if (heading_pid_controller_)
   {
@@ -1706,10 +1739,33 @@ double LineFollowController::computeAngularVelocityLQR(double robot_x, double ro
   double e_theta = 0.0;
   computeLQRErrors(robot_x, robot_y, effective_robot_yaw, ref_point, e_y, e_theta);
 
-  // 7. 根据当前速度更新 LQR 增益
+  // 7. e_y 输入滤波（速率限制 + 一阶低通）
+  //    速率限制：将 Hampel 回退阶跃从 step 转为 ramp，防止平滑器状态被污染
+  //    一阶低通：衰减通过速率限制的常规高频噪声
+  if (params_.ey_filter.rate_limit.enabled)
+  {
+    const double max_ey_change = std::max(
+        params_.ey_filter.rate_limit.noise_floor,
+        motion_speed * dt * params_.ey_filter.rate_limit.rate_factor);
+    const double ey_delta = e_y - prev_ey_rate_;
+    if (std::abs(ey_delta) > max_ey_change)
+    {
+      e_y = prev_ey_rate_ + std::copysign(max_ey_change, ey_delta);
+    }
+  }
+  prev_ey_rate_ = e_y;
+
+  if (params_.ey_filter.lowpass.enabled)
+  {
+    const double alpha = std::clamp(params_.ey_filter.lowpass.alpha, 0.0, 1.0);
+    e_y = alpha * e_y + (1.0 - alpha) * prev_ey_lowpass_;
+  }
+  prev_ey_lowpass_ = e_y;
+
+  // 8. 根据当前速度更新 LQR 增益
   computeLQRGains(motion_speed);
 
-  // 8. LQR 控制律
+  // 9. LQR 控制律
   // ω = ω_ff + ω_fb
   // ω_ff = v * κ (前馈项，对于直线路径 κ=0，故前馈为0)
   // ω_fb = -K1 * e_y - K2 * e_theta (反馈项，在前进等效系中计算)

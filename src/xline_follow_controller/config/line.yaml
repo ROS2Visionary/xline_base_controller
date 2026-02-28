@@ -101,6 +101,19 @@ rotation:
   smooth_factor: 0.6                 # 平滑因子
 
 
+# e_y 输入滤波
+# 速率限制：将 Hampel 回退阶跃转为斜坡，防止 LQR 平滑器状态被突变污染
+# 一阶低通：衰减速率限制后的常规高频残余噪声
+ey_filter:
+  rate_limit:
+    enabled: true
+    noise_floor: 0.002         # 帧间变化最小阈值 [m]，对应 SG 后残余噪声顶部
+    rate_factor: 0.5           # 运动学分量系数：max_change = max(noise_floor, v*dt*factor)
+  lowpass:
+    enabled: true
+    alpha: 0.87                # 低通系数 (0,1]，越接近 1 延迟越小
+
+
 # LQR 角速度控制参数
 lqr_angular_control:
   # 是否启用 LQR 方式计算角速度（false 则使用 PID）
@@ -120,7 +133,7 @@ lqr_angular_control:
   K2_direct: 4.0    # 航向误差增益（直接指定时使用）
 
   # 积分项参数（LQI，可选）
-  enable_integral: true
+  enable_integral: false
   Ki: 0.5
   integral_max: 0.1
   integral_decay: 0.99

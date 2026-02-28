@@ -161,6 +161,8 @@ private:
   SecondOrderSmoother lqr_angular_smoother_;  ///< LQR 输出二阶平滑器（独立于 PID）
   double prev_lqr_smoothed_omega_;    ///< LQR 输出低通记忆项（独立于 PID）
   double integral_lqr_e_y_;           ///< LQR 横向误差积分状态（可选）
+  double prev_ey_rate_;               ///< 速率限制器记忆项（上帧限制后的 e_y）
+  double prev_ey_lowpass_;            ///< 一阶低通记忆项
 
   std::shared_ptr<PIDController> heading_pid_controller_;  ///< 航向 PID 控制器
 

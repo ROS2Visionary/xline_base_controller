@@ -160,6 +160,26 @@ struct LineLQRParams
   double K1_min = 13;
 };
 
+// e_y 输入滤波参数 (ey_filter.*)
+struct LineEyRateLimitParams
+{
+  bool enabled = true;               ///< 是否启用速率限制
+  double noise_floor = 0.002;        ///< 噪声底噪阈值 [m]，帧间变化下限
+  double rate_factor = 0.5;          ///< 运动学分量系数：max_change = max(noise_floor, v*dt*factor)
+};
+
+struct LineEyLowpassParams
+{
+  bool enabled = true;               ///< 是否启用一阶低通
+  double alpha = 0.87;               ///< 低通系数 ∈ (0,1]，越接近 1 越接近原始值
+};
+
+struct LineEyFilterParams
+{
+  LineEyRateLimitParams rate_limit;  ///< e_y 速率限制（防止突变污染平滑器状态）
+  LineEyLowpassParams lowpass;       ///< e_y 一阶低通（衰减常规高频噪声）
+};
+
 // 顶层参数结构体
 struct LineParams
 {
@@ -172,6 +192,7 @@ struct LineParams
   LinePhaseParams phase;                 ///< 阶段控制参数
   LineGuidanceParams guidance;           ///< 制导参数（回线/进线）
   LineLQRParams lqr;                     ///< LQR 角速度控制参数
+  LineEyFilterParams ey_filter;          ///< e_y 输入滤波参数
 };
 
 // 运行时参数（从PhaseConfig展开）
