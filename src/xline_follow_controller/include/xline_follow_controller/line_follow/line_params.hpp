@@ -151,6 +151,10 @@ struct LineLQRParams
   bool use_direct_gains = false;         ///< 是否直接指定增益
   double K1_direct = 20.0;               ///< 横向误差增益（直接指定）
   double K2_direct = 15.0;               ///< 航向误差增益（直接指定）
+  bool enable_integral = false;          ///< 是否启用横向误差积分项（LQI）
+  double Ki = 0.5;                       ///< 积分增益
+  double integral_max = 0.1;             ///< 积分项输出上限（rad/s）
+  double integral_decay = 0.99;          ///< 积分衰减系数 [0,1]
   LineLQROutputFilterParams output_filter;  ///< LQR 输出滤波（单独一组，避免与 PID 干扰）
   double K1_max = 50;
   double K1_min = 13;

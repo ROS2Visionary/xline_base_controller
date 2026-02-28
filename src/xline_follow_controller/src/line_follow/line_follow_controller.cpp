@@ -57,6 +57,7 @@ LineFollowController::LineFollowController()
   , last_omega_(0.0)
   , lqr_angular_smoother_(2.0, 0.7)
   , prev_lqr_smoothed_omega_(0.0)
+  , integral_lqr_e_y_(0.0)
 {
   updateParameters();
   initializeFilters();
@@ -250,6 +251,22 @@ void LineFollowController::updateParameters()
     {
       params_.lqr.K2_direct = parser.getParameter<double>("lqr_angular_control.K2_direct");
     }
+    if (parser.hasParameter("lqr_angular_control.enable_integral"))
+    {
+      params_.lqr.enable_integral = parser.getParameter<bool>("lqr_angular_control.enable_integral");
+    }
+    if (parser.hasParameter("lqr_angular_control.Ki"))
+    {
+      params_.lqr.Ki = parser.getParameter<double>("lqr_angular_control.Ki");
+    }
+    if (parser.hasParameter("lqr_angular_control.integral_max"))
+    {
+      params_.lqr.integral_max = parser.getParameter<double>("lqr_angular_control.integral_max");
+    }
+    if (parser.hasParameter("lqr_angular_control.integral_decay"))
+    {
+      params_.lqr.integral_decay = parser.getParameter<double>("lqr_angular_control.integral_decay");
+    }
     if (parser.hasParameter("lqr_angular_control.output_filter.enabled"))
     {
       params_.lqr.output_filter.enabled = parser.getParameter<bool>("lqr_angular_control.output_filter.enabled");
@@ -371,6 +388,7 @@ void LineFollowController::resetControllerState()
   last_omega_ = 0.0;
   lqr_angular_smoother_.reset();
   prev_lqr_smoothed_omega_ = 0.0;
+  integral_lqr_e_y_ = 0.0;
 
   if (heading_pid_controller_)
   {
@@ -1697,7 +1715,27 @@ double LineFollowController::computeAngularVelocityLQR(double robot_x, double ro
   // ω_fb = -K1 * e_y - K2 * e_theta (反馈项，在前进等效系中计算)
   const double omega_ff = motion_speed * ref_point.curvature;  // 直线路径时为 0
   const double omega_fb = -K1_ * e_y - K2_ * e_theta;
-  double omega = omega_ff + omega_fb;
+  double omega_i = 0.0;
+  if (params_.lqr.enable_integral)
+  {
+    const double decay = std::clamp(params_.lqr.integral_decay, 0.0, 1.0);
+    const double integral_dt = std::max(1e-4, dt);
+    integral_lqr_e_y_ = decay * integral_lqr_e_y_ + e_y * integral_dt;
+
+    if (std::abs(params_.lqr.Ki) > 1e-9)
+    {
+      const double integral_limit = params_.lqr.integral_max / std::abs(params_.lqr.Ki);
+      integral_lqr_e_y_ = std::clamp(integral_lqr_e_y_, -integral_limit, integral_limit);
+      omega_i = -params_.lqr.Ki * integral_lqr_e_y_;
+    }
+  }
+  else
+  {
+    // 关闭积分项时清状态，避免下次开启时带入历史偏置
+    integral_lqr_e_y_ = 0.0;
+  }
+
+  double omega = omega_ff + omega_fb + omega_i;
 
   // 9. LQR 输出滤波（独立于 PID，避免相互干扰）
   double omega_before_limits = omega;
