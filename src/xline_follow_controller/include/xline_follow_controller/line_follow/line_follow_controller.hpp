@@ -194,6 +194,31 @@ private:
 
   std::vector<std::vector<double>> original_path_;   ///< 原始路径点
   std::vector<std::vector<double>> filtered_path_;   ///< 滤波后路径点
+  std::vector<double> tracking_error_abs_m_;         ///< 跟随阶段横向误差绝对值序列 [m]
+  bool tracking_metrics_exported_;                   ///< 单次任务指标是否已导出
+  double tracking_elapsed_time_s_;                   ///< 跟随阶段累计时间 [s]
+  double next_tracking_sample_time_s_;               ///< 下一次采样时刻 [s]
+  double tracking_sample_interval_s_;                ///< 采样时间间隔 [s]
+  std::vector<std::string> tracking_sample_rows_;    ///< 采样CSV行（不含表头）
+  std::string validation_batch_id_;                  ///< 当前6路径验证批次ID
+  bool validation_batch_initialized_;                ///< 是否已初始化批次
+  int validation_plan_count_in_batch_;               ///< 当前批次已接收路径数
+  int active_validation_slot_;                       ///< 当前路径槽位 [1,6]
+
+  // LQR调试快照（用于按固定间隔落盘）
+  bool lqr_debug_valid_;
+  double lqr_dbg_e_y_raw_;
+  double lqr_dbg_e_y_rate_limited_;
+  double lqr_dbg_e_y_filtered_;
+  double lqr_dbg_e_theta_;
+  double lqr_dbg_omega_ff_;
+  double lqr_dbg_omega_fb_;
+  double lqr_dbg_omega_i_;
+  double lqr_dbg_k2_effective_;
+  double lqr_dbg_omega_before_limits_;
+  size_t lqr_dbg_nearest_idx_;
+  size_t lqr_dbg_lookahead_idx_;
+
   std::mutex file_mutex_;             ///< 文件操作互斥锁
 
   // 调试数据导出路径（解析后的完整路径）
@@ -277,6 +302,19 @@ private:
   double distanceToSegment(double x, double y, double x1, double y1, double x2, double y2);
   void exportDebugData(const std::string& file_path, 
                        const std::vector<std::vector<double>>& data);
+  void recordTrackingError(double abs_error_m);
+  void recordTrackingSample(double dt,
+                            double robot_x,
+                            double robot_y,
+                            double cross_track_error,
+                            double linear_speed,
+                            double angular_output,
+                            double path_yaw,
+                            double final_target_yaw);
+  double computePercentile(const std::vector<double>& values, double percentile) const;
+  void exportTrackingMetrics(const std::string& timestamp);
+  std::string getTrackingRecordDir() const;
+  void prepareValidationSlot();
 
   // ================================
   // 便捷访问器（简化代码中对params_的访问）

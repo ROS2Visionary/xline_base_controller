@@ -155,6 +155,11 @@ struct LineLQRParams
   double Ki = 0.5;                       ///< 积分增益
   double integral_max = 0.1;             ///< 积分项输出上限（rad/s）
   double integral_decay = 0.99;          ///< 积分衰减系数 [0,1]
+  // 横向误差较大时，动态衰减航向项增益，避免 -K1*e_y 与 -K2*e_theta 互相抵消
+  bool k2_gate_enabled = true;
+  double k2_gate_start = 0.004;          ///< |e_y| <= start 时不衰减 [m]
+  double k2_gate_end = 0.012;            ///< |e_y| >= end 时衰减到 min_scale [m]
+  double k2_gate_min_scale = 0.35;       ///< K2 最小缩放比例 [0,1]
   LineLQROutputFilterParams output_filter;  ///< LQR 输出滤波（单独一组，避免与 PID 干扰）
   double K1_max = 50;
   double K1_min = 13;

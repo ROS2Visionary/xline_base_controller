@@ -39,8 +39,8 @@ distance:
   alignment: 0.08                    # 对齐距离阈值 [m]
   deceleration: 0.25                  # 减速距离 [m]
   acceleration: 0.15                 # 加速阶段距离 [m]
-  lookahead: 0.22                    # 前瞻基础距离 [m]
-  lookahead_time: 0.08               # 前瞻时间系数 [s], 总前瞻 = lookahead + lookahead_time * speed
+  lookahead: 0.18                    # 前瞻基础距离 [m]
+  lookahead_time: 0.03               # 前瞻时间系数 [s], 总前瞻 = lookahead + lookahead_time * speed
   waypoint_tolerance: 0.008          # 路径点容差 [m]
 
 
@@ -49,7 +49,7 @@ filter:
   # 位置滤波
   pos_hampel_window: 5               # Hampel窗口大小
   pos_hampel_k: 3.0                  # Hampel异常值阈值
-  pos_savgol_window: 7               # Savitzky-Golay窗口大小
+  pos_savgol_window: 5               # Savitzky-Golay窗口大小
   pos_savgol_order: 3                # Savitzky-Golay多项式阶数
   # 角速度滤波
   angular_hampel_window: 5           # Hampel窗口大小
@@ -82,8 +82,8 @@ phase:
     line_alignment_stable_count: 10   # 起步：连续满足次数（抗抖）
 
   following:                         # 跟随阶段
-    max_angular_vel: 0.020           # 最大角速
-    max_angular_accel: 1.2          # 最大角加速度 [rad/s²]
+    max_angular_vel: 0.028           # 最大角速
+    max_angular_accel: 1.6          # 最大角加速度 [rad/s²]
     current_heading_weight: 0.0      # 当前航向权重
     target_heading_weight: 1.0       # 目标航向权重
     filter_alpha: 0.95               # 低通滤波系数
@@ -108,10 +108,10 @@ ey_filter:
   rate_limit:
     enabled: true
     noise_floor: 0.002         # 帧间变化最小阈值 [m]，对应 SG 后残余噪声顶部
-    rate_factor: 0.30          # 运动学分量系数：max_change = max(noise_floor, v*dt*factor)
+    rate_factor: 0.22          # 运动学分量系数：max_change = max(noise_floor, v*dt*factor)
   lowpass:
     enabled: true
-    alpha: 0.87                # 低通系数 (0,1]，越接近 1 延迟越小
+    alpha: 0.90                # 低通系数 (0,1]，越接近 1 延迟越小
 
 
 # LQR 角速度控制参数
@@ -129,11 +129,18 @@ lqr_angular_control:
 
   # 是否直接指定增益（false 则从 q1, q2, r 计算）
   use_direct_gains: true
-  K1_direct: 2.0     # 横向误差增益（直接指定时使用）
-  K2_direct: 1.0     # 航向误差增益（直接指定时使用）
+  K1_direct: 4.8     # 横向误差增益（直接指定时使用）
+  K2_direct: 0.95     # 航向误差增益（直接指定时使用）
+
+  # 大横向误差时动态衰减 K2，降低 -K1*e_y 与 -K2*e_theta 互相抵消
+  k2_gate:
+    enabled: true
+    ey_start: 0.0035
+    ey_end: 0.0100
+    min_scale: 0.35
 
   # 积分项参数（LQI，可选）
-  enable_integral: true
+  enable_integral: false
   Ki: 0.35
   integral_max: 0.008
   integral_decay: 0.990
@@ -143,7 +150,7 @@ lqr_angular_control:
   output_filter:
     enabled: true
     use_smoother: true
-    smoother_freq: 12.0
-    smoother_damping: 1.0
+    smoother_freq: 14.0
+    smoother_damping: 0.9
     use_lowpass: false
     lowpass_alpha: 0.95

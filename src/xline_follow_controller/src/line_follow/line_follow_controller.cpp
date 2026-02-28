@@ -15,9 +15,11 @@
 #include <cctype>
 #include <cmath>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <fstream>
 #include <filesystem>
+#include <numeric>
 #include <thread>
 #include <functional>
 
@@ -60,6 +62,25 @@ LineFollowController::LineFollowController()
   , integral_lqr_e_y_(0.0)
   , prev_ey_rate_(0.0)
   , prev_ey_lowpass_(0.0)
+  , tracking_metrics_exported_(false)
+  , tracking_elapsed_time_s_(0.0)
+  , next_tracking_sample_time_s_(0.0)
+  , tracking_sample_interval_s_(0.05)
+  , validation_batch_initialized_(false)
+  , validation_plan_count_in_batch_(0)
+  , active_validation_slot_(0)
+  , lqr_debug_valid_(false)
+  , lqr_dbg_e_y_raw_(0.0)
+  , lqr_dbg_e_y_rate_limited_(0.0)
+  , lqr_dbg_e_y_filtered_(0.0)
+  , lqr_dbg_e_theta_(0.0)
+  , lqr_dbg_omega_ff_(0.0)
+  , lqr_dbg_omega_fb_(0.0)
+  , lqr_dbg_omega_i_(0.0)
+  , lqr_dbg_k2_effective_(0.0)
+  , lqr_dbg_omega_before_limits_(0.0)
+  , lqr_dbg_nearest_idx_(0)
+  , lqr_dbg_lookahead_idx_(0)
 {
   updateParameters();
   initializeFilters();
@@ -269,6 +290,22 @@ void LineFollowController::updateParameters()
     {
       params_.lqr.integral_decay = parser.getParameter<double>("lqr_angular_control.integral_decay");
     }
+    if (parser.hasParameter("lqr_angular_control.k2_gate.enabled"))
+    {
+      params_.lqr.k2_gate_enabled = parser.getParameter<bool>("lqr_angular_control.k2_gate.enabled");
+    }
+    if (parser.hasParameter("lqr_angular_control.k2_gate.ey_start"))
+    {
+      params_.lqr.k2_gate_start = parser.getParameter<double>("lqr_angular_control.k2_gate.ey_start");
+    }
+    if (parser.hasParameter("lqr_angular_control.k2_gate.ey_end"))
+    {
+      params_.lqr.k2_gate_end = parser.getParameter<double>("lqr_angular_control.k2_gate.ey_end");
+    }
+    if (parser.hasParameter("lqr_angular_control.k2_gate.min_scale"))
+    {
+      params_.lqr.k2_gate_min_scale = parser.getParameter<double>("lqr_angular_control.k2_gate.min_scale");
+    }
     if (parser.hasParameter("lqr_angular_control.output_filter.enabled"))
     {
       params_.lqr.output_filter.enabled = parser.getParameter<bool>("lqr_angular_control.output_filter.enabled");
@@ -423,6 +460,23 @@ void LineFollowController::resetControllerState()
   integral_lqr_e_y_ = 0.0;
   prev_ey_rate_ = 0.0;
   prev_ey_lowpass_ = 0.0;
+  tracking_error_abs_m_.clear();
+  tracking_metrics_exported_ = false;
+  tracking_elapsed_time_s_ = 0.0;
+  next_tracking_sample_time_s_ = 0.0;
+  tracking_sample_rows_.clear();
+  lqr_debug_valid_ = false;
+  lqr_dbg_e_y_raw_ = 0.0;
+  lqr_dbg_e_y_rate_limited_ = 0.0;
+  lqr_dbg_e_y_filtered_ = 0.0;
+  lqr_dbg_e_theta_ = 0.0;
+  lqr_dbg_omega_ff_ = 0.0;
+  lqr_dbg_omega_fb_ = 0.0;
+  lqr_dbg_omega_i_ = 0.0;
+  lqr_dbg_k2_effective_ = 0.0;
+  lqr_dbg_omega_before_limits_ = 0.0;
+  lqr_dbg_nearest_idx_ = 0;
+  lqr_dbg_lookahead_idx_ = 0;
 
   if (heading_pid_controller_)
   {
@@ -561,6 +615,7 @@ bool LineFollowController::setPlan(const nav_msgs::msg::Path& orig_global_plan)
   path_length_ = std::sqrt(dx * dx + dy * dy);
 
   updateParameters();
+  prepareValidationSlot();
 
   double original_alignment_dist = runtime_alignment_dist_;
   double original_decel_dist = runtime_decel_dist_;
@@ -1291,6 +1346,7 @@ void LineFollowController::handlePathFollowing(double robot_x, double robot_y,
   const double rx = robot_x - seg_p1.x;
   const double ry = robot_y - seg_p1.y;
   const double cross_track_error = rx * seg_nx + ry * seg_ny;
+  recordTrackingError(std::abs(cross_track_error));
 
   const double theta_max = std::max(0.0, params_.guidance.theta_max);
   const std::string& guidance_mode = params_.guidance.mode;
@@ -1372,6 +1428,9 @@ void LineFollowController::handlePathFollowing(double robot_x, double robot_y,
   }
 
   current_angular_speed_ = angular_output;
+
+  recordTrackingSample(dt, robot_x, robot_y, cross_track_error, linear_speed, angular_output,
+                       path_yaw, final_target_yaw);
 
 
   cmd_vel.twist.linear.x = linear_speed;
@@ -1522,6 +1581,7 @@ bool LineFollowController::computeVelocityCommands(const geometry_msgs::msg::Pos
       {
         exportDebugData(resolved_debug_filtered_dir_ + "/_" + timestamp + "_line.csv", filtered_path_);
       }
+      exportTrackingMetrics(timestamp);
       break;
     }
 
@@ -1649,6 +1709,339 @@ void LineFollowController::exportDebugData(const std::string& file_path,
   file.close();
 }
 
+void LineFollowController::recordTrackingError(double abs_error_m)
+{
+  if (std::isfinite(abs_error_m))
+  {
+    tracking_error_abs_m_.push_back(abs_error_m);
+  }
+}
+
+void LineFollowController::recordTrackingSample(double dt,
+                                                double robot_x,
+                                                double robot_y,
+                                                double cross_track_error,
+                                                double linear_speed,
+                                                double angular_output,
+                                                double path_yaw,
+                                                double final_target_yaw)
+{
+  if (!std::isfinite(dt) || dt <= 0.0)
+  {
+    return;
+  }
+
+  tracking_elapsed_time_s_ += dt;
+  if (tracking_elapsed_time_s_ + 1e-9 < next_tracking_sample_time_s_)
+  {
+    return;
+  }
+
+  const double yaw_error = angles::shortest_angular_distance(robot_yaw_, final_target_yaw);
+  const double mode_flag = params_.lqr.enabled ? 1.0 : 0.0;
+  const double nan_v = std::numeric_limits<double>::quiet_NaN();
+  const double k2_logged =
+      (params_.lqr.enabled && lqr_debug_valid_) ? lqr_dbg_k2_effective_ : K2_;
+
+  std::ostringstream row;
+  row << std::fixed << std::setprecision(6)
+      << tracking_elapsed_time_s_ << ","
+      << robot_x << ","
+      << robot_y << ","
+      << (cross_track_error * 1000.0) << ","
+      << linear_speed << ","
+      << angular_output << ","
+      << path_yaw << ","
+      << final_target_yaw << ","
+      << yaw_error << ","
+      << mode_flag << ","
+      << K1_ << ","
+      << k2_logged << ",";
+
+  if (params_.lqr.enabled && lqr_debug_valid_)
+  {
+    row << (lqr_dbg_e_y_raw_ * 1000.0) << ","
+        << (lqr_dbg_e_y_rate_limited_ * 1000.0) << ","
+        << (lqr_dbg_e_y_filtered_ * 1000.0) << ","
+        << lqr_dbg_e_theta_ << ","
+        << lqr_dbg_omega_ff_ << ","
+        << lqr_dbg_omega_fb_ << ","
+        << lqr_dbg_omega_i_ << ","
+        << lqr_dbg_omega_before_limits_ << ","
+        << lqr_dbg_nearest_idx_ << ","
+        << lqr_dbg_lookahead_idx_;
+  }
+  else
+  {
+    row << nan_v << ","
+        << nan_v << ","
+        << nan_v << ","
+        << nan_v << ","
+        << nan_v << ","
+        << nan_v << ","
+        << nan_v << ","
+        << nan_v << ","
+        << 0 << ","
+        << 0;
+  }
+
+  tracking_sample_rows_.push_back(row.str());
+  next_tracking_sample_time_s_ += tracking_sample_interval_s_;
+}
+
+double LineFollowController::computePercentile(const std::vector<double>& values, double percentile) const
+{
+  if (values.empty())
+  {
+    return 0.0;
+  }
+
+  const double p = std::clamp(percentile, 0.0, 100.0);
+  std::vector<double> sorted_values(values.begin(), values.end());
+  std::sort(sorted_values.begin(), sorted_values.end());
+
+  if (sorted_values.size() == 1)
+  {
+    return sorted_values.front();
+  }
+
+  const double rank = (p / 100.0) * static_cast<double>(sorted_values.size() - 1);
+  const size_t lo = static_cast<size_t>(std::floor(rank));
+  const size_t hi = static_cast<size_t>(std::ceil(rank));
+  const double t = rank - static_cast<double>(lo);
+  return sorted_values[lo] + (sorted_values[hi] - sorted_values[lo]) * t;
+}
+
+std::string LineFollowController::getTrackingRecordDir() const
+{
+  const char* ws_root = std::getenv("XLINE_WS_ROOT");
+  if (ws_root && *ws_root)
+  {
+    return std::string(ws_root);
+  }
+
+  try
+  {
+    auto probe = std::filesystem::current_path();
+    for (int depth = 0; depth < 10; ++depth)
+    {
+      if (std::filesystem::exists(probe / "line_sg.png"))
+      {
+        return probe.string();
+      }
+      if (!probe.has_parent_path())
+      {
+        break;
+      }
+      probe = probe.parent_path();
+    }
+  }
+  catch (const std::exception&)
+  {
+  }
+
+  if (!resolved_debug_filtered_dir_.empty())
+  {
+    return std::filesystem::path(resolved_debug_filtered_dir_).parent_path().string();
+  }
+  if (!resolved_debug_raw_dir_.empty())
+  {
+    return std::filesystem::path(resolved_debug_raw_dir_).parent_path().string();
+  }
+
+  return ".";
+}
+
+void LineFollowController::prepareValidationSlot()
+{
+  constexpr int kBatchSize = 6;
+
+  if (!validation_batch_initialized_ || validation_plan_count_in_batch_ >= kBatchSize)
+  {
+    validation_batch_initialized_ = true;
+    validation_plan_count_in_batch_ = 0;
+
+    const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::system_clock::now().time_since_epoch())
+                            .count();
+    validation_batch_id_ = std::to_string(now_ms);
+
+    const std::string latest_dir = getTrackingRecordDir() + "/line_tracking_latest";
+    std::lock_guard<std::mutex> lock(file_mutex_);
+    std::error_code ec;
+    if (std::filesystem::exists(latest_dir))
+    {
+      std::filesystem::remove_all(latest_dir, ec);
+    }
+    std::filesystem::create_directories(latest_dir, ec);
+    LOG_INFO("初始化6路径验证批次: %s", validation_batch_id_.c_str());
+  }
+
+  active_validation_slot_ = validation_plan_count_in_batch_ + 1;
+  validation_plan_count_in_batch_ += 1;
+  LOG_INFO("设置验证路径槽位: %d/6", active_validation_slot_);
+}
+
+void LineFollowController::exportTrackingMetrics(const std::string& timestamp)
+{
+  if (tracking_metrics_exported_)
+  {
+    return;
+  }
+  tracking_metrics_exported_ = true;
+
+  if (tracking_error_abs_m_.empty())
+  {
+    LOG_WARN("本次路径未记录到有效横向误差样本，跳过指标导出");
+    return;
+  }
+
+  const double p50_mm = computePercentile(tracking_error_abs_m_, 50.0) * 1000.0;
+  const double p90_mm = computePercentile(tracking_error_abs_m_, 90.0) * 1000.0;
+  const double p95_mm = computePercentile(tracking_error_abs_m_, 95.0) * 1000.0;
+  const double max_mm = computePercentile(tracking_error_abs_m_, 100.0) * 1000.0;
+  const double mean_mm =
+      (std::accumulate(tracking_error_abs_m_.begin(), tracking_error_abs_m_.end(), 0.0) /
+       static_cast<double>(tracking_error_abs_m_.size())) * 1000.0;
+
+  LOG_INFO("Line误差统计: N=%zu, P50=%.3fmm, P90=%.3fmm, P95=%.3fmm, MAX=%.3fmm, MEAN=%.3fmm",
+           tracking_error_abs_m_.size(), p50_mm, p90_mm, p95_mm, max_mm, mean_mm);
+
+  const std::string base_dir = getTrackingRecordDir();
+  const std::string latest_dir = base_dir + "/line_tracking_latest";
+
+  std::lock_guard<std::mutex> lock(file_mutex_);
+
+  try
+  {
+    std::filesystem::create_directories(latest_dir);
+  }
+  catch (const std::exception& e)
+  {
+    LOG_ERROR("无法创建指标导出目录 %s: %s", base_dir.c_str(), e.what());
+    return;
+  }
+
+  const int slot = std::clamp(active_validation_slot_, 1, 6);
+  std::ostringstream slot_ss;
+  slot_ss << std::setw(2) << std::setfill('0') << slot;
+  const std::string path_tag = "path_" + slot_ss.str();
+  const std::string summary_file = latest_dir + "/" + path_tag + "_metrics.csv";
+  const std::string samples_file = latest_dir + "/" + path_tag + "_samples.csv";
+  const std::string batch_file = latest_dir + "/batch_metrics.csv";
+
+  // 每条路径单独文件：保存前先删除旧文件，避免路径间数据混淆
+  if (std::filesystem::exists(summary_file))
+  {
+    std::error_code ec;
+    std::filesystem::remove(summary_file, ec);
+  }
+  if (std::filesystem::exists(samples_file))
+  {
+    std::error_code ec;
+    std::filesystem::remove(samples_file, ec);
+  }
+
+  std::ofstream summary(summary_file, std::ios::out);
+  if (!summary.is_open())
+  {
+    LOG_ERROR("无法写入指标文件: %s", summary_file.c_str());
+    return;
+  }
+  summary << "batch_id,path_slot,timestamp,samples,path_length_m,p50_mm,p90_mm,p95_mm,max_mm,mean_mm,"
+             "target_p90_mm,pass_p90_lt_5mm,lookahead_m,lookahead_time_s,pos_sg_window,"
+             "k1_direct,k2_direct,follow_max_w,follow_max_accel,ey_alpha,ey_rate_factor,"
+             "integral_enabled,walk_max,work_max\n";
+  summary << std::fixed << std::setprecision(6)
+          << validation_batch_id_ << ","
+          << slot << ","
+          << timestamp << ","
+          << tracking_error_abs_m_.size() << ","
+          << path_length_ << ","
+          << p50_mm << ","
+          << p90_mm << ","
+          << p95_mm << ","
+          << max_mm << ","
+          << mean_mm << ","
+          << 5.0 << ","
+          << (p90_mm < 5.0 ? 1 : 0) << ","
+          << params_.distance.lookahead << ","
+          << params_.distance.lookahead_time << ","
+          << params_.filter.pos_savgol_window << ","
+          << params_.lqr.K1_direct << ","
+          << params_.lqr.K2_direct << ","
+          << params_.phase.following.max_angular_vel << ","
+          << params_.phase.following.max_angular_accel << ","
+          << params_.ey_filter.lowpass.alpha << ","
+          << params_.ey_filter.rate_limit.rate_factor << ","
+          << (params_.lqr.enable_integral ? 1 : 0) << ","
+          << params_.velocity.walk_max << ","
+          << params_.velocity.work_max
+          << "\n";
+  summary.close();
+
+  std::ofstream samples(samples_file, std::ios::out);
+  if (!samples.is_open())
+  {
+    LOG_ERROR("无法写入采样文件: %s", samples_file.c_str());
+    return;
+  }
+  samples << "t_s,x,y,cross_track_mm,linear_speed_mps,angular_cmd_rps,path_yaw,target_yaw,"
+             "yaw_error_rad,lqr_mode,k1,k2,e_y_raw_mm,e_y_rate_limited_mm,e_y_filtered_mm,"
+             "e_theta_rad,omega_ff,omega_fb,omega_i,omega_before_limits,nearest_idx,lookahead_idx\n";
+  for (const auto& row : tracking_sample_rows_)
+  {
+    samples << row << "\n";
+  }
+  samples.close();
+
+  const bool need_batch_header = !std::filesystem::exists(batch_file) ||
+                                 (std::filesystem::file_size(batch_file) == 0);
+  std::ofstream batch(batch_file, std::ios::app);
+  if (!batch.is_open())
+  {
+    LOG_ERROR("无法写入批次汇总文件: %s", batch_file.c_str());
+    return;
+  }
+  if (need_batch_header)
+  {
+    batch << "batch_id,path_slot,timestamp,samples,path_length_m,p50_mm,p90_mm,p95_mm,max_mm,mean_mm,"
+             "target_p90_mm,pass_p90_lt_5mm,lookahead_m,lookahead_time_s,pos_sg_window,"
+             "k1_direct,k2_direct,follow_max_w,follow_max_accel,ey_alpha,ey_rate_factor,"
+             "integral_enabled,walk_max,work_max\n";
+  }
+  batch << std::fixed << std::setprecision(6)
+        << validation_batch_id_ << ","
+        << slot << ","
+        << timestamp << ","
+        << tracking_error_abs_m_.size() << ","
+        << path_length_ << ","
+        << p50_mm << ","
+        << p90_mm << ","
+        << p95_mm << ","
+        << max_mm << ","
+        << mean_mm << ","
+        << 5.0 << ","
+        << (p90_mm < 5.0 ? 1 : 0) << ","
+        << params_.distance.lookahead << ","
+        << params_.distance.lookahead_time << ","
+        << params_.filter.pos_savgol_window << ","
+        << params_.lqr.K1_direct << ","
+        << params_.lqr.K2_direct << ","
+        << params_.phase.following.max_angular_vel << ","
+        << params_.phase.following.max_angular_accel << ","
+        << params_.ey_filter.lowpass.alpha << ","
+        << params_.ey_filter.rate_limit.rate_factor << ","
+        << (params_.lqr.enable_integral ? 1 : 0) << ","
+        << params_.velocity.walk_max << ","
+        << params_.velocity.work_max
+        << "\n";
+  batch.close();
+
+  LOG_INFO("已写入跟踪记录: %s, %s, %s",
+           summary_file.c_str(), samples_file.c_str(), batch_file.c_str());
+}
+
 // ============================================================================
 // LQR 控制方法
 // ============================================================================
@@ -1740,6 +2133,7 @@ double LineFollowController::computeAngularVelocityLQR(double robot_x, double ro
   double e_y = 0.0;
   double e_theta = 0.0;
   computeLQRErrors(robot_x, robot_y, effective_robot_yaw, ref_point, e_y, e_theta);
+  const double e_y_raw = e_y;
 
   // 7. e_y 输入滤波（速率限制 + 一阶低通）
   //    速率限制：将 Hampel 回退阶跃从 step 转为 ramp，防止平滑器状态被污染
@@ -1756,6 +2150,7 @@ double LineFollowController::computeAngularVelocityLQR(double robot_x, double ro
     }
   }
   prev_ey_rate_ = e_y;
+  const double e_y_rate_limited = e_y;
 
   if (params_.ey_filter.lowpass.enabled)
   {
@@ -1763,6 +2158,7 @@ double LineFollowController::computeAngularVelocityLQR(double robot_x, double ro
     e_y = alpha * e_y + (1.0 - alpha) * prev_ey_lowpass_;
   }
   prev_ey_lowpass_ = e_y;
+  const double e_y_filtered = e_y;
 
   // 8. 根据当前速度更新 LQR 增益
   computeLQRGains(motion_speed);
@@ -1772,7 +2168,28 @@ double LineFollowController::computeAngularVelocityLQR(double robot_x, double ro
   // ω_ff = v * κ (前馈项，对于直线路径 κ=0，故前馈为0)
   // ω_fb = -K1 * e_y - K2 * e_theta (反馈项，在前进等效系中计算)
   const double omega_ff = motion_speed * ref_point.curvature;  // 直线路径时为 0
-  const double omega_fb = -K1_ * e_y - K2_ * e_theta;
+  double k2_effective = K2_;
+  if (params_.lqr.k2_gate_enabled)
+  {
+    const double ey_abs = std::abs(e_y);
+    const double ey_start = std::max(0.0, params_.lqr.k2_gate_start);
+    const double ey_end = std::max(ey_start + 1e-6, params_.lqr.k2_gate_end);
+    const double min_scale = std::clamp(params_.lqr.k2_gate_min_scale, 0.0, 1.0);
+
+    double scale = 1.0;
+    if (ey_abs >= ey_end)
+    {
+      scale = min_scale;
+    }
+    else if (ey_abs > ey_start)
+    {
+      const double ratio = (ey_abs - ey_start) / (ey_end - ey_start);
+      scale = 1.0 - ratio * (1.0 - min_scale);
+    }
+    k2_effective *= scale;
+  }
+
+  const double omega_fb = -K1_ * e_y - k2_effective * e_theta;
   double omega_i = 0.0;
   if (params_.lqr.enable_integral)
   {
@@ -1795,6 +2212,18 @@ double LineFollowController::computeAngularVelocityLQR(double robot_x, double ro
 
   double omega = omega_ff + omega_fb + omega_i;
 
+  lqr_debug_valid_ = true;
+  lqr_dbg_e_y_raw_ = e_y_raw;
+  lqr_dbg_e_y_rate_limited_ = e_y_rate_limited;
+  lqr_dbg_e_y_filtered_ = e_y_filtered;
+  lqr_dbg_e_theta_ = e_theta;
+  lqr_dbg_omega_ff_ = omega_ff;
+  lqr_dbg_omega_fb_ = omega_fb;
+  lqr_dbg_omega_i_ = omega_i;
+  lqr_dbg_k2_effective_ = k2_effective;
+  lqr_dbg_nearest_idx_ = nearest_idx;
+  lqr_dbg_lookahead_idx_ = lookahead_idx;
+
   // 9. LQR 输出滤波（独立于 PID，避免相互干扰）
   double omega_before_limits = omega;
   if (params_.lqr.output_filter.enabled)
@@ -1812,14 +2241,19 @@ double LineFollowController::computeAngularVelocityLQR(double robot_x, double ro
 
     omega_before_limits = omega;
   }
+  lqr_dbg_omega_before_limits_ = omega_before_limits;
 
   // 10. 应用角速度和角加速度限制（与 PID 相同的物理限制）
   omega = applyAngularLimits(omega, dt);
 
   if (params_.lqr.output_filter.enabled)
   {
-    // 若限幅/限加速度显著改变输出，则将滤波器状态对齐到实际输出，避免积累偏差
-    if (std::abs(omega - omega_before_limits) > 1e-9)
+    // 仅在“明显限幅”时重置平滑器，避免细小限幅反复触发 reset 造成输出锯齿。
+    const bool is_alignment_phase = !start_line_aligned_;
+    const double phase_max_omega = is_alignment_phase ?
+        alignment_params_.max_angular_vel : following_params_.max_angular_vel;
+    const double reset_threshold = std::max(1e-4, 0.2 * phase_max_omega);
+    if (std::abs(omega - omega_before_limits) > reset_threshold)
     {
       lqr_angular_smoother_.reset();
     }
