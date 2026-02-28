@@ -135,9 +135,15 @@ lqr_angular_control:
   # 大横向误差时动态衰减 K2，降低 -K1*e_y 与 -K2*e_theta 互相抵消
   k2_gate:
     enabled: true
-    ey_start: 0.0035
-    ey_end: 0.0100
-    min_scale: 0.35
+    ey_start: 0.0030
+    ey_end: 0.0090
+    min_scale: 0.28
+
+  # 仅在“横向项与航向项会互相抵消”时额外衰减 K2（精准抑制抵消）
+  k2_anti_cancel:
+    enabled: true
+    scale: 0.60
+    ey_threshold: 0.0030
 
   # 积分项参数（LQI，可选）
   enable_integral: false

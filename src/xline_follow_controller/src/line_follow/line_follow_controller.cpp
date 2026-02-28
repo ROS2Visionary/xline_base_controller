@@ -306,6 +306,19 @@ void LineFollowController::updateParameters()
     {
       params_.lqr.k2_gate_min_scale = parser.getParameter<double>("lqr_angular_control.k2_gate.min_scale");
     }
+    if (parser.hasParameter("lqr_angular_control.k2_anti_cancel.enabled"))
+    {
+      params_.lqr.k2_anti_cancel_enabled = parser.getParameter<bool>("lqr_angular_control.k2_anti_cancel.enabled");
+    }
+    if (parser.hasParameter("lqr_angular_control.k2_anti_cancel.scale"))
+    {
+      params_.lqr.k2_anti_cancel_scale = parser.getParameter<double>("lqr_angular_control.k2_anti_cancel.scale");
+    }
+    if (parser.hasParameter("lqr_angular_control.k2_anti_cancel.ey_threshold"))
+    {
+      params_.lqr.k2_anti_cancel_ey_threshold =
+          parser.getParameter<double>("lqr_angular_control.k2_anti_cancel.ey_threshold");
+    }
     if (parser.hasParameter("lqr_angular_control.output_filter.enabled"))
     {
       params_.lqr.output_filter.enabled = parser.getParameter<bool>("lqr_angular_control.output_filter.enabled");
@@ -2187,6 +2200,17 @@ double LineFollowController::computeAngularVelocityLQR(double robot_x, double ro
       scale = 1.0 - ratio * (1.0 - min_scale);
     }
     k2_effective *= scale;
+  }
+  if (params_.lqr.k2_anti_cancel_enabled)
+  {
+    const double ey_abs = std::abs(e_y);
+    const double ey_thr = std::max(0.0, params_.lqr.k2_anti_cancel_ey_threshold);
+    const double anti_scale = std::clamp(params_.lqr.k2_anti_cancel_scale, 0.0, 1.0);
+    // e_y 与 e_theta 异号时，-K1*e_y 与 -K2*e_theta 方向相反，容易互相抵消。
+    if (ey_abs >= ey_thr && (e_y * e_theta) < 0.0)
+    {
+      k2_effective *= anti_scale;
+    }
   }
 
   const double omega_fb = -K1_ * e_y - k2_effective * e_theta;

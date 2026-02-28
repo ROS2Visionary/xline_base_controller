@@ -160,6 +160,10 @@ struct LineLQRParams
   double k2_gate_start = 0.004;          ///< |e_y| <= start 时不衰减 [m]
   double k2_gate_end = 0.012;            ///< |e_y| >= end 时衰减到 min_scale [m]
   double k2_gate_min_scale = 0.35;       ///< K2 最小缩放比例 [0,1]
+  // 当 e_y 与 e_theta 导致反馈项相互抵消时，进一步衰减 K2（仅在较大横向误差下触发）
+  bool k2_anti_cancel_enabled = true;
+  double k2_anti_cancel_scale = 0.60;    ///< 额外缩放比例 [0,1]
+  double k2_anti_cancel_ey_threshold = 0.003; ///< |e_y| 触发阈值 [m]
   LineLQROutputFilterParams output_filter;  ///< LQR 输出滤波（单独一组，避免与 PID 干扰）
   double K1_max = 50;
   double K1_min = 13;

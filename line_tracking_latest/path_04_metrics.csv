@@ -1,0 +1,2 @@
+batch_id,path_slot,timestamp,samples,path_length_m,p50_mm,p90_mm,p95_mm,max_mm,mean_mm,target_p90_mm,pass_p90_lt_5mm,lookahead_m,lookahead_time_s,pos_sg_window,k1_direct,k2_direct,follow_max_w,follow_max_accel,ey_alpha,ey_rate_factor,integral_enabled,walk_max,work_max
+1772302648399,4,10102,353,1.848000,2.444354,4.293149,6.230461,10.801991,2.769341,5.000000,1,0.180000,0.030000,5,4.800000,0.950000,0.028000,1.600000,0.900000,0.220000,0,0.250000,0.250000
