@@ -23,8 +23,8 @@ velocity:
   # 速度限制
   accel_min: 0.05                    # 加速时最小线速度 [m/s]
   decel_min: 0.05                    # 减速时最小线速度 [m/s]
-  walk_max: 0.2                     # 步行模式最大速度 [m/s]
-  work_max: 0.2                     # 工作模式最大速度 [m/s]
+  walk_max: 0.25                     # 步行模式最大速度 [m/s]
+  work_max: 0.25                     # 工作模式最大速度 [m/s]
   alignment: 0.05                    # 对齐阶段速度 [m/s]
   # 调速参数
   acce_factor: 0.002                # 加速因子
@@ -39,8 +39,8 @@ distance:
   alignment: 0.08                    # 对齐距离阈值 [m]
   deceleration: 0.25                  # 减速距离 [m]
   acceleration: 0.15                 # 加速阶段距离 [m]
-  lookahead: 0.25                    # 前瞻基础距离 [m]
-  lookahead_time: 0.0                # 前瞻时间系数 [s], 总前瞻 = lookahead + lookahead_time * speed
+  lookahead: 0.22                    # 前瞻基础距离 [m]
+  lookahead_time: 0.08               # 前瞻时间系数 [s], 总前瞻 = lookahead + lookahead_time * speed
   waypoint_tolerance: 0.008          # 路径点容差 [m]
 
 
@@ -82,8 +82,8 @@ phase:
     line_alignment_stable_count: 10   # 起步：连续满足次数（抗抖）
 
   following:                         # 跟随阶段
-    max_angular_vel: 0.008           # 最大角速
-    max_angular_accel: 1.5          # 最大角加速度 [rad/s²]
+    max_angular_vel: 0.020           # 最大角速
+    max_angular_accel: 1.2          # 最大角加速度 [rad/s²]
     current_heading_weight: 0.0      # 当前航向权重
     target_heading_weight: 1.0       # 目标航向权重
     filter_alpha: 0.95               # 低通滤波系数
@@ -108,7 +108,7 @@ ey_filter:
   rate_limit:
     enabled: true
     noise_floor: 0.002         # 帧间变化最小阈值 [m]，对应 SG 后残余噪声顶部
-    rate_factor: 0.5           # 运动学分量系数：max_change = max(noise_floor, v*dt*factor)
+    rate_factor: 0.30          # 运动学分量系数：max_change = max(noise_floor, v*dt*factor)
   lowpass:
     enabled: true
     alpha: 0.87                # 低通系数 (0,1]，越接近 1 延迟越小
@@ -128,22 +128,22 @@ lqr_angular_control:
   K1_min: 10.0
 
   # 是否直接指定增益（false 则从 q1, q2, r 计算）
-  use_direct_gains: false
-  K1_direct: 13.0    # 横向误差增益（直接指定时使用）
-  K2_direct: 4.0    # 航向误差增益（直接指定时使用）
+  use_direct_gains: true
+  K1_direct: 2.0     # 横向误差增益（直接指定时使用）
+  K2_direct: 1.0     # 航向误差增益（直接指定时使用）
 
   # 积分项参数（LQI，可选）
-  enable_integral: false
-  Ki: 0.5
-  integral_max: 0.1
-  integral_decay: 0.99
+  enable_integral: true
+  Ki: 0.35
+  integral_max: 0.008
+  integral_decay: 0.990
 
   # LQR 输出滤波（单独一组，避免与 PID 的滤波状态相互干扰）
   # - 一般建议先只开 smoother，lowpass 视噪声情况再开
   output_filter:
     enabled: true
     use_smoother: true
-    smoother_freq: 15.0
-    smoother_damping: 0.9
+    smoother_freq: 12.0
+    smoother_damping: 1.0
     use_lowpass: false
     lowpass_alpha: 0.95

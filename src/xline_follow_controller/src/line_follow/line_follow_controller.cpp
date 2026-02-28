@@ -412,7 +412,8 @@ void LineFollowController::resetControllerState()
   prev_smoothed_angular_velocity_ = 0.0;
   angular_vel_history_.clear();
 
-  current_min_K1_ = params_.lqr.K1_max;
+  // K1 运行时平滑状态（0 表示尚未初始化，将在 computeLQRGains 中首帧对齐目标值）
+  current_min_K1_ = 0.0;
 
   // 重置 LQR 状态
   last_nearest_idx_ = 0;
@@ -1677,14 +1678,15 @@ void LineFollowController::computeLQRGains(double v)
   K2_ = std::sqrt(2.0 * std::sqrt(q1 * q2) / r + q2 / r);
 
 
-  // 限制K1_
-  K1_ = std::clamp(K1_,params_.lqr.K1_min,params_.lqr.K1_max);
-  if (K1_ < current_min_K1_)
+  // 限制并平滑 K1（避免“只降不升”导致后段纠偏不足）
+  const double k1_target = std::clamp(K1_, params_.lqr.K1_min, params_.lqr.K1_max);
+  if (current_min_K1_ <= 0.0 || !std::isfinite(current_min_K1_))
   {
-    current_min_K1_ = K1_;
-  }else{
-    K1_ = current_min_K1_;
+    current_min_K1_ = k1_target;
   }
+  const double k1_blend = 0.35;  // 越大越快跟随目标增益
+  current_min_K1_ = k1_blend * k1_target + (1.0 - k1_blend) * current_min_K1_;
+  K1_ = current_min_K1_;
 }
 
 void LineFollowController::computeLQRErrors(double current_x, double current_y, double current_theta,
