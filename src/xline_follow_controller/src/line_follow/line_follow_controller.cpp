@@ -125,6 +125,20 @@ void LineFollowController::updateParameters()
     resolved_debug_raw_dir_ = xline::path_utils::resolve_path(params_.debug.raw_path);
     resolved_debug_filtered_dir_ = xline::path_utils::resolve_path(params_.debug.filtered_path);
 
+    // 优化元信息 (optimization.*)
+    if (parser.hasParameter("optimization.id"))
+    {
+      params_.optimization.id = parser.getParameter<std::string>("optimization.id");
+    }
+    if (parser.hasParameter("optimization.parent_batch_id"))
+    {
+      params_.optimization.parent_batch_id = parser.getParameter<std::string>("optimization.parent_batch_id");
+    }
+    if (parser.hasParameter("optimization.change_note"))
+    {
+      params_.optimization.change_note = parser.getParameter<std::string>("optimization.change_note");
+    }
+
     // ================================
     // 2. 航向 PID 参数
     // ================================
@@ -1752,6 +1766,9 @@ void LineFollowController::recordTrackingSample(double dt,
 
   const double yaw_error = angles::shortest_angular_distance(robot_yaw_, final_target_yaw);
   const double mode_flag = params_.lqr.enabled ? 1.0 : 0.0;
+  const double start_aligned_flag = start_line_aligned_ ? 1.0 : 0.0;
+  const double phase_max_w = start_line_aligned_ ?
+      following_params_.max_angular_vel : alignment_params_.max_angular_vel;
   const double nan_v = std::numeric_limits<double>::quiet_NaN();
   const double k2_logged =
       (params_.lqr.enabled && lqr_debug_valid_) ? lqr_dbg_k2_effective_ : K2_;
@@ -1768,6 +1785,8 @@ void LineFollowController::recordTrackingSample(double dt,
       << final_target_yaw << ","
       << yaw_error << ","
       << mode_flag << ","
+      << start_aligned_flag << ","
+      << phase_max_w << ","
       << K1_ << ","
       << k2_logged << ",";
 
@@ -1823,6 +1842,99 @@ double LineFollowController::computePercentile(const std::vector<double>& values
   const size_t hi = static_cast<size_t>(std::ceil(rank));
   const double t = rank - static_cast<double>(lo);
   return sorted_values[lo] + (sorted_values[hi] - sorted_values[lo]) * t;
+}
+
+double LineFollowController::computeShareBelowThreshold(const std::vector<double>& values, double threshold_m) const
+{
+  if (values.empty())
+  {
+    return 0.0;
+  }
+
+  const double thr = std::max(0.0, threshold_m);
+  size_t hit = 0;
+  for (const double v : values)
+  {
+    if (std::isfinite(v) && std::abs(v) < thr)
+    {
+      ++hit;
+    }
+  }
+
+  return static_cast<double>(hit) / static_cast<double>(values.size());
+}
+
+size_t LineFollowController::computeLongestConsecutiveBreach(const std::vector<double>& values,
+                                                             double threshold_m) const
+{
+  if (values.empty())
+  {
+    return 0;
+  }
+
+  const double thr = std::max(0.0, threshold_m);
+  size_t best = 0;
+  size_t run = 0;
+  for (const double v : values)
+  {
+    if (std::isfinite(v) && std::abs(v) > thr)
+    {
+      ++run;
+      best = std::max(best, run);
+    }
+    else
+    {
+      run = 0;
+    }
+  }
+  return best;
+}
+
+double LineFollowController::computeStableShareBelowThreshold(const std::vector<double>& values,
+                                                              double threshold_m,
+                                                              int min_consecutive_breach) const
+{
+  if (values.empty())
+  {
+    return 0.0;
+  }
+
+  const double thr = std::max(0.0, threshold_m);
+  const int min_run = std::max(1, min_consecutive_breach);
+  size_t stable_breach = 0;
+  size_t i = 0;
+
+  while (i < values.size())
+  {
+    const bool is_breach = std::isfinite(values[i]) && std::abs(values[i]) > thr;
+    if (!is_breach)
+    {
+      ++i;
+      continue;
+    }
+
+    size_t j = i;
+    while (j < values.size())
+    {
+      const bool b = std::isfinite(values[j]) && std::abs(values[j]) > thr;
+      if (!b)
+      {
+        break;
+      }
+      ++j;
+    }
+
+    if (static_cast<int>(j - i) >= min_run)
+    {
+      stable_breach += (j - i);
+    }
+
+    i = j;
+  }
+
+  const double stable_good =
+      1.0 - static_cast<double>(stable_breach) / static_cast<double>(values.size());
+  return std::clamp(stable_good, 0.0, 1.0);
 }
 
 std::string LineFollowController::getTrackingRecordDir() const
@@ -1916,9 +2028,25 @@ void LineFollowController::exportTrackingMetrics(const std::string& timestamp)
   const double mean_mm =
       (std::accumulate(tracking_error_abs_m_.begin(), tracking_error_abs_m_.end(), 0.0) /
        static_cast<double>(tracking_error_abs_m_.size())) * 1000.0;
+  const double ratio_lt_3mm = computeShareBelowThreshold(tracking_error_abs_m_, 0.003);
+  const double ratio_lt_5mm = computeShareBelowThreshold(tracking_error_abs_m_, 0.005);
+  constexpr int kStableBreachRun = 3;  // 抗突变：忽略短于3采样点的瞬时越界
+  const double stable_ratio_lt_3mm =
+      computeStableShareBelowThreshold(tracking_error_abs_m_, 0.003, kStableBreachRun);
+  const double stable_ratio_lt_5mm =
+      computeStableShareBelowThreshold(tracking_error_abs_m_, 0.005, kStableBreachRun);
+  const size_t longest_breach_3_samples =
+      computeLongestConsecutiveBreach(tracking_error_abs_m_, 0.003);
+  const size_t longest_breach_5_samples =
+      computeLongestConsecutiveBreach(tracking_error_abs_m_, 0.005);
 
   LOG_INFO("Line误差统计: N=%zu, P50=%.3fmm, P90=%.3fmm, P95=%.3fmm, MAX=%.3fmm, MEAN=%.3fmm",
            tracking_error_abs_m_.size(), p50_mm, p90_mm, p95_mm, max_mm, mean_mm);
+  LOG_INFO("Line覆盖统计: <3mm=%.1f%%, <5mm=%.1f%%, 稳态<3mm=%.1f%%, 稳态<5mm=%.1f%%, "
+           "最长>3mm=%zu, 最长>5mm=%zu",
+           ratio_lt_3mm * 100.0, ratio_lt_5mm * 100.0,
+           stable_ratio_lt_3mm * 100.0, stable_ratio_lt_5mm * 100.0,
+           longest_breach_3_samples, longest_breach_5_samples);
 
   const std::string base_dir = getTrackingRecordDir();
   const std::string latest_dir = base_dir + "/line_tracking_latest";
@@ -1942,6 +2070,19 @@ void LineFollowController::exportTrackingMetrics(const std::string& timestamp)
   const std::string summary_file = latest_dir + "/" + path_tag + "_metrics.csv";
   const std::string samples_file = latest_dir + "/" + path_tag + "_samples.csv";
   const std::string batch_file = latest_dir + "/batch_metrics.csv";
+  auto sanitize_csv_text = [](std::string text) {
+    for (char& c : text)
+    {
+      if (c == ',' || c == '\n' || c == '\r')
+      {
+        c = ';';
+      }
+    }
+    return text;
+  };
+  const std::string opt_id = sanitize_csv_text(params_.optimization.id);
+  const std::string opt_parent_batch = sanitize_csv_text(params_.optimization.parent_batch_id);
+  const std::string opt_change = sanitize_csv_text(params_.optimization.change_note);
 
   // 每条路径单独文件：保存前先删除旧文件，避免路径间数据混淆
   if (std::filesystem::exists(summary_file))
@@ -1962,9 +2103,13 @@ void LineFollowController::exportTrackingMetrics(const std::string& timestamp)
     return;
   }
   summary << "batch_id,path_slot,timestamp,samples,path_length_m,p50_mm,p90_mm,p95_mm,max_mm,mean_mm,"
+             "ratio_lt_3mm,ratio_lt_5mm,stable_ratio_lt_3mm,stable_ratio_lt_5mm,"
+             "longest_breach_3_samples,longest_breach_5_samples,"
              "target_p90_mm,pass_p90_lt_5mm,lookahead_m,lookahead_time_s,pos_sg_window,"
              "k1_direct,k2_direct,follow_max_w,follow_max_accel,ey_alpha,ey_rate_factor,"
-             "integral_enabled,walk_max,work_max\n";
+             "integral_enabled,walk_max,work_max,k2_gate_enabled,k2_gate_start,k2_gate_end,"
+             "k2_gate_min_scale,k2_anti_cancel_enabled,k2_anti_cancel_scale,"
+             "k2_anti_cancel_ey_threshold,optimization_id,parent_batch_id,change_note\n";
   summary << std::fixed << std::setprecision(6)
           << validation_batch_id_ << ","
           << slot << ","
@@ -1976,6 +2121,12 @@ void LineFollowController::exportTrackingMetrics(const std::string& timestamp)
           << p95_mm << ","
           << max_mm << ","
           << mean_mm << ","
+          << ratio_lt_3mm << ","
+          << ratio_lt_5mm << ","
+          << stable_ratio_lt_3mm << ","
+          << stable_ratio_lt_5mm << ","
+          << longest_breach_3_samples << ","
+          << longest_breach_5_samples << ","
           << 5.0 << ","
           << (p90_mm < 5.0 ? 1 : 0) << ","
           << params_.distance.lookahead << ","
@@ -1989,7 +2140,17 @@ void LineFollowController::exportTrackingMetrics(const std::string& timestamp)
           << params_.ey_filter.rate_limit.rate_factor << ","
           << (params_.lqr.enable_integral ? 1 : 0) << ","
           << params_.velocity.walk_max << ","
-          << params_.velocity.work_max
+          << params_.velocity.work_max << ","
+          << (params_.lqr.k2_gate_enabled ? 1 : 0) << ","
+          << params_.lqr.k2_gate_start << ","
+          << params_.lqr.k2_gate_end << ","
+          << params_.lqr.k2_gate_min_scale << ","
+          << (params_.lqr.k2_anti_cancel_enabled ? 1 : 0) << ","
+          << params_.lqr.k2_anti_cancel_scale << ","
+          << params_.lqr.k2_anti_cancel_ey_threshold << ","
+          << "\"" << opt_id << "\","
+          << "\"" << opt_parent_batch << "\","
+          << "\"" << opt_change << "\""
           << "\n";
   summary.close();
 
@@ -2000,7 +2161,7 @@ void LineFollowController::exportTrackingMetrics(const std::string& timestamp)
     return;
   }
   samples << "t_s,x,y,cross_track_mm,linear_speed_mps,angular_cmd_rps,path_yaw,target_yaw,"
-             "yaw_error_rad,lqr_mode,k1,k2,e_y_raw_mm,e_y_rate_limited_mm,e_y_filtered_mm,"
+             "yaw_error_rad,lqr_mode,start_aligned,phase_max_w,k1,k2,e_y_raw_mm,e_y_rate_limited_mm,e_y_filtered_mm,"
              "e_theta_rad,omega_ff,omega_fb,omega_i,omega_before_limits,nearest_idx,lookahead_idx\n";
   for (const auto& row : tracking_sample_rows_)
   {
@@ -2019,9 +2180,13 @@ void LineFollowController::exportTrackingMetrics(const std::string& timestamp)
   if (need_batch_header)
   {
     batch << "batch_id,path_slot,timestamp,samples,path_length_m,p50_mm,p90_mm,p95_mm,max_mm,mean_mm,"
+             "ratio_lt_3mm,ratio_lt_5mm,stable_ratio_lt_3mm,stable_ratio_lt_5mm,"
+             "longest_breach_3_samples,longest_breach_5_samples,"
              "target_p90_mm,pass_p90_lt_5mm,lookahead_m,lookahead_time_s,pos_sg_window,"
              "k1_direct,k2_direct,follow_max_w,follow_max_accel,ey_alpha,ey_rate_factor,"
-             "integral_enabled,walk_max,work_max\n";
+             "integral_enabled,walk_max,work_max,k2_gate_enabled,k2_gate_start,k2_gate_end,"
+             "k2_gate_min_scale,k2_anti_cancel_enabled,k2_anti_cancel_scale,"
+             "k2_anti_cancel_ey_threshold,optimization_id,parent_batch_id,change_note\n";
   }
   batch << std::fixed << std::setprecision(6)
         << validation_batch_id_ << ","
@@ -2034,6 +2199,12 @@ void LineFollowController::exportTrackingMetrics(const std::string& timestamp)
         << p95_mm << ","
         << max_mm << ","
         << mean_mm << ","
+        << ratio_lt_3mm << ","
+        << ratio_lt_5mm << ","
+        << stable_ratio_lt_3mm << ","
+        << stable_ratio_lt_5mm << ","
+        << longest_breach_3_samples << ","
+        << longest_breach_5_samples << ","
         << 5.0 << ","
         << (p90_mm < 5.0 ? 1 : 0) << ","
         << params_.distance.lookahead << ","
@@ -2047,7 +2218,17 @@ void LineFollowController::exportTrackingMetrics(const std::string& timestamp)
         << params_.ey_filter.rate_limit.rate_factor << ","
         << (params_.lqr.enable_integral ? 1 : 0) << ","
         << params_.velocity.walk_max << ","
-        << params_.velocity.work_max
+        << params_.velocity.work_max << ","
+        << (params_.lqr.k2_gate_enabled ? 1 : 0) << ","
+        << params_.lqr.k2_gate_start << ","
+        << params_.lqr.k2_gate_end << ","
+        << params_.lqr.k2_gate_min_scale << ","
+        << (params_.lqr.k2_anti_cancel_enabled ? 1 : 0) << ","
+        << params_.lqr.k2_anti_cancel_scale << ","
+        << params_.lqr.k2_anti_cancel_ey_threshold << ","
+        << "\"" << opt_id << "\","
+        << "\"" << opt_parent_batch << "\","
+        << "\"" << opt_change << "\""
         << "\n";
   batch.close();
 

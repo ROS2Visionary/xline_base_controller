@@ -15,6 +15,14 @@ struct LineDebugParams
   std::string filtered_path;         ///< 滤波后路径导出目录
 };
 
+// 优化元信息 (optimization.*)
+struct LineOptimizationParams
+{
+  std::string id = "baseline";       ///< 本轮优化标识
+  std::string parent_batch_id;       ///< 基于哪个 batch_id 做的优化
+  std::string change_note;           ///< 本轮变更摘要（建议用分号分隔）
+};
+
 
 // PID参数 (heading_pid.*)
 struct LinePIDGains
@@ -193,6 +201,7 @@ struct LineEyFilterParams
 struct LineParams
 {
   LineDebugParams debug;                 ///< 调试参数
+  LineOptimizationParams optimization;   ///< 优化元信息
   LineHeadingPIDParams heading_pid;      ///< 航向PID参数
   LineVelocityParams velocity;           ///< 速度参数
   LineDistanceParams distance;           ///< 距离参数

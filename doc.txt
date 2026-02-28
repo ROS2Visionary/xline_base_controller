@@ -75,3 +75,5 @@ localization:
     reflector_to_base_x:  0.0895
     reflector_to_base_y: 0.0
     reflector_to_base_z: 0.0
+
+优化目标按顺序先提升 <3mm 覆盖，再提升 <5mm 覆盖，并且要对突变点做抗误判处理。我先用当前批次重算“稳态覆盖率”指标（去突变）并定位各路径失稳段，然后据此做一轮更精细的参数回调和记录。

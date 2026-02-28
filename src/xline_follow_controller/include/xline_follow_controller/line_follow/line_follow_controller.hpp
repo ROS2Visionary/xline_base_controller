@@ -312,6 +312,11 @@ private:
                             double path_yaw,
                             double final_target_yaw);
   double computePercentile(const std::vector<double>& values, double percentile) const;
+  double computeShareBelowThreshold(const std::vector<double>& values, double threshold_m) const;
+  double computeStableShareBelowThreshold(const std::vector<double>& values,
+                                          double threshold_m,
+                                          int min_consecutive_breach) const;
+  size_t computeLongestConsecutiveBreach(const std::vector<double>& values, double threshold_m) const;
   void exportTrackingMetrics(const std::string& timestamp);
   std::string getTrackingRecordDir() const;
   void prepareValidationSlot();
