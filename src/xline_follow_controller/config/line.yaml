@@ -7,9 +7,9 @@ debug:
 
 # 优化元信息（会写入 line_tracking_latest 的 metrics/batch，便于闭环分析）
 optimization:
-  id: "opt_20260228_b5_ratio_first_v1"
-  parent_batch_id: "1772305246100"
-  change_note: "recover_lookahead;raise_k1;rebalance_k2;anti_spike_filter_tune;ratio_first_metrics"
+  id: "opt_20260303_b10_tail_sat_rebalance_v1"
+  parent_batch_id: "1772557974510"
+  change_note: "rollback_over_aggressive_gains;raise_follow_w_limit;restore_ey_response"
 
 
 # 航向PID控制
@@ -45,8 +45,8 @@ distance:
   alignment: 0.08                    # 对齐距离阈值 [m]
   deceleration: 0.25                  # 减速距离 [m]
   acceleration: 0.15                 # 加速阶段距离 [m]
-  lookahead: 0.17                    # 前瞻基础距离 [m]
-  lookahead_time: 0.02               # 前瞻时间系数 [s], 总前瞻 = lookahead + lookahead_time * speed
+  lookahead: 0.158                   # 前瞻基础距离 [m]
+  lookahead_time: 0.014              # 前瞻时间系数 [s], 总前瞻 = lookahead + lookahead_time * speed
   waypoint_tolerance: 0.008          # 路径点容差 [m]
 
 
@@ -75,8 +75,8 @@ guidance:
 # 阶段控制参数
 phase:
   alignment:                         # 对齐阶段
-    max_angular_vel: 0.042           # 最大角速度 [rad/s]
-    max_angular_accel: 3.0          # 最大角加速度 [rad/s²]
+    max_angular_vel: 0.048           # 最大角速度 [rad/s]
+    max_angular_accel: 3.4          # 最大角加速度 [rad/s²]
     current_heading_weight: 0.0      # 当前航向权重
     target_heading_weight: 1.0       # 目标航向权重
     filter_alpha: 1.0               # 低通滤波系数
@@ -88,8 +88,8 @@ phase:
     line_alignment_stable_count: 5   # 起步：连续满足次数（抗抖）
 
   following:                         # 跟随阶段
-    max_angular_vel: 0.042           # 最大角速
-    max_angular_accel: 2.6          # 最大角加速度 [rad/s²]
+    max_angular_vel: 0.050           # 最大角速
+    max_angular_accel: 3.4          # 最大角加速度 [rad/s²]
     current_heading_weight: 0.0      # 当前航向权重
     target_heading_weight: 1.0       # 目标航向权重
     filter_alpha: 0.95               # 低通滤波系数
@@ -117,7 +117,7 @@ ey_filter:
     rate_factor: 0.18          # 运动学分量系数：max_change = max(noise_floor, v*dt*factor)
   lowpass:
     enabled: true
-    alpha: 0.88                # 低通系数 (0,1]，越接近 1 延迟越小
+    alpha: 0.89                # 低通系数 (0,1]，越接近 1 延迟越小
 
 
 # LQR 角速度控制参数
@@ -135,21 +135,21 @@ lqr_angular_control:
 
   # 是否直接指定增益（false 则从 q1, q2, r 计算）
   use_direct_gains: true
-  K1_direct: 5.1     # 横向误差增益（直接指定时使用）
-  K2_direct: 1.00     # 航向误差增益（直接指定时使用）
+  K1_direct: 5.6     # 横向误差增益（直接指定时使用）
+  K2_direct: 0.86     # 航向误差增益（直接指定时使用）
 
   # 大横向误差时动态衰减 K2，降低 -K1*e_y 与 -K2*e_theta 互相抵消
   k2_gate:
     enabled: true
-    ey_start: 0.0042
-    ey_end: 0.0130
-    min_scale: 0.45
+    ey_start: 0.0035
+    ey_end: 0.0108
+    min_scale: 0.30
 
   # 仅在“横向项与航向项会互相抵消”时额外衰减 K2（精准抑制抵消）
   k2_anti_cancel:
     enabled: true
-    scale: 0.58
-    ey_threshold: 0.0028
+    scale: 0.28
+    ey_threshold: 0.0020
 
   # 积分项参数（LQI，可选）
   enable_integral: false

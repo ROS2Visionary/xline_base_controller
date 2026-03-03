@@ -78,6 +78,7 @@ LineFollowController::LineFollowController()
   , lqr_dbg_omega_fb_(0.0)
   , lqr_dbg_omega_i_(0.0)
   , lqr_dbg_k2_effective_(0.0)
+  , lqr_dbg_cancel_ratio_(0.0)
   , lqr_dbg_omega_before_limits_(0.0)
   , lqr_dbg_nearest_idx_(0)
   , lqr_dbg_lookahead_idx_(0)
@@ -501,6 +502,7 @@ void LineFollowController::resetControllerState()
   lqr_dbg_omega_fb_ = 0.0;
   lqr_dbg_omega_i_ = 0.0;
   lqr_dbg_k2_effective_ = 0.0;
+  lqr_dbg_cancel_ratio_ = 0.0;
   lqr_dbg_omega_before_limits_ = 0.0;
   lqr_dbg_nearest_idx_ = 0;
   lqr_dbg_lookahead_idx_ = 0;
@@ -1772,6 +1774,8 @@ void LineFollowController::recordTrackingSample(double dt,
   const double nan_v = std::numeric_limits<double>::quiet_NaN();
   const double k2_logged =
       (params_.lqr.enabled && lqr_debug_valid_) ? lqr_dbg_k2_effective_ : K2_;
+  const double cancel_ratio_logged =
+      (params_.lqr.enabled && lqr_debug_valid_) ? lqr_dbg_cancel_ratio_ : nan_v;
 
   std::ostringstream row;
   row << std::fixed << std::setprecision(6)
@@ -1788,7 +1792,8 @@ void LineFollowController::recordTrackingSample(double dt,
       << start_aligned_flag << ","
       << phase_max_w << ","
       << K1_ << ","
-      << k2_logged << ",";
+      << k2_logged << ","
+      << cancel_ratio_logged << ",";
 
   if (params_.lqr.enabled && lqr_debug_valid_)
   {
@@ -1806,6 +1811,7 @@ void LineFollowController::recordTrackingSample(double dt,
   else
   {
     row << nan_v << ","
+        << nan_v << ","
         << nan_v << ","
         << nan_v << ","
         << nan_v << ","
@@ -2039,6 +2045,36 @@ void LineFollowController::exportTrackingMetrics(const std::string& timestamp)
       computeLongestConsecutiveBreach(tracking_error_abs_m_, 0.003);
   const size_t longest_breach_5_samples =
       computeLongestConsecutiveBreach(tracking_error_abs_m_, 0.005);
+  const size_t n_samples = tracking_error_abs_m_.size();
+  const size_t seg1_end = n_samples / 3;
+  const size_t seg2_end = (2 * n_samples) / 3;
+  auto slice_values = [&](size_t begin, size_t end) {
+    if (begin >= end || begin >= n_samples)
+    {
+      return std::vector<double>{};
+    }
+    end = std::min(end, n_samples);
+    return std::vector<double>(tracking_error_abs_m_.begin() + static_cast<std::ptrdiff_t>(begin),
+                               tracking_error_abs_m_.begin() + static_cast<std::ptrdiff_t>(end));
+  };
+  const auto seg1_vals = slice_values(0, seg1_end);
+  const auto seg3_vals = slice_values(seg2_end, n_samples);
+  const double seg1_ratio_lt_3mm = computeShareBelowThreshold(seg1_vals, 0.003);
+  const double seg1_ratio_lt_5mm = computeShareBelowThreshold(seg1_vals, 0.005);
+  const double seg3_ratio_lt_3mm = computeShareBelowThreshold(seg3_vals, 0.003);
+  const double seg3_ratio_lt_5mm = computeShareBelowThreshold(seg3_vals, 0.005);
+  const double seg3_stable_ratio_lt_5mm =
+      computeStableShareBelowThreshold(seg3_vals, 0.005, kStableBreachRun);
+  const auto mean_of = [](const std::vector<double>& values) {
+    if (values.empty())
+    {
+      return 0.0;
+    }
+    return std::accumulate(values.begin(), values.end(), 0.0) / static_cast<double>(values.size());
+  };
+  const double seg1_mean_mm = mean_of(seg1_vals) * 1000.0;
+  const double seg3_mean_mm = mean_of(seg3_vals) * 1000.0;
+  const double drift_tail_minus_head_mm = seg3_mean_mm - seg1_mean_mm;
 
   LOG_INFO("Line误差统计: N=%zu, P50=%.3fmm, P90=%.3fmm, P95=%.3fmm, MAX=%.3fmm, MEAN=%.3fmm",
            tracking_error_abs_m_.size(), p50_mm, p90_mm, p95_mm, max_mm, mean_mm);
@@ -2047,6 +2083,11 @@ void LineFollowController::exportTrackingMetrics(const std::string& timestamp)
            ratio_lt_3mm * 100.0, ratio_lt_5mm * 100.0,
            stable_ratio_lt_3mm * 100.0, stable_ratio_lt_5mm * 100.0,
            longest_breach_3_samples, longest_breach_5_samples);
+  LOG_INFO("Line分段统计: seg1<3=%.1f%%, seg1<5=%.1f%%, seg3<3=%.1f%%, seg3<5=%.1f%%, "
+           "seg3稳态<5=%.1f%%, tail-head=%.3fmm",
+           seg1_ratio_lt_3mm * 100.0, seg1_ratio_lt_5mm * 100.0,
+           seg3_ratio_lt_3mm * 100.0, seg3_ratio_lt_5mm * 100.0,
+           seg3_stable_ratio_lt_5mm * 100.0, drift_tail_minus_head_mm);
 
   const std::string base_dir = getTrackingRecordDir();
   const std::string latest_dir = base_dir + "/line_tracking_latest";
@@ -2105,6 +2146,8 @@ void LineFollowController::exportTrackingMetrics(const std::string& timestamp)
   summary << "batch_id,path_slot,timestamp,samples,path_length_m,p50_mm,p90_mm,p95_mm,max_mm,mean_mm,"
              "ratio_lt_3mm,ratio_lt_5mm,stable_ratio_lt_3mm,stable_ratio_lt_5mm,"
              "longest_breach_3_samples,longest_breach_5_samples,"
+             "seg1_ratio_lt_3mm,seg1_ratio_lt_5mm,seg3_ratio_lt_3mm,seg3_ratio_lt_5mm,"
+             "seg3_stable_ratio_lt_5mm,drift_tail_minus_head_mm,"
              "target_p90_mm,pass_p90_lt_5mm,lookahead_m,lookahead_time_s,pos_sg_window,"
              "k1_direct,k2_direct,follow_max_w,follow_max_accel,ey_alpha,ey_rate_factor,"
              "integral_enabled,walk_max,work_max,k2_gate_enabled,k2_gate_start,k2_gate_end,"
@@ -2127,6 +2170,12 @@ void LineFollowController::exportTrackingMetrics(const std::string& timestamp)
           << stable_ratio_lt_5mm << ","
           << longest_breach_3_samples << ","
           << longest_breach_5_samples << ","
+          << seg1_ratio_lt_3mm << ","
+          << seg1_ratio_lt_5mm << ","
+          << seg3_ratio_lt_3mm << ","
+          << seg3_ratio_lt_5mm << ","
+          << seg3_stable_ratio_lt_5mm << ","
+          << drift_tail_minus_head_mm << ","
           << 5.0 << ","
           << (p90_mm < 5.0 ? 1 : 0) << ","
           << params_.distance.lookahead << ","
@@ -2161,7 +2210,7 @@ void LineFollowController::exportTrackingMetrics(const std::string& timestamp)
     return;
   }
   samples << "t_s,x,y,cross_track_mm,linear_speed_mps,angular_cmd_rps,path_yaw,target_yaw,"
-             "yaw_error_rad,lqr_mode,start_aligned,phase_max_w,k1,k2,e_y_raw_mm,e_y_rate_limited_mm,e_y_filtered_mm,"
+             "yaw_error_rad,lqr_mode,start_aligned,phase_max_w,k1,k2,cancel_ratio,e_y_raw_mm,e_y_rate_limited_mm,e_y_filtered_mm,"
              "e_theta_rad,omega_ff,omega_fb,omega_i,omega_before_limits,nearest_idx,lookahead_idx\n";
   for (const auto& row : tracking_sample_rows_)
   {
@@ -2182,6 +2231,8 @@ void LineFollowController::exportTrackingMetrics(const std::string& timestamp)
     batch << "batch_id,path_slot,timestamp,samples,path_length_m,p50_mm,p90_mm,p95_mm,max_mm,mean_mm,"
              "ratio_lt_3mm,ratio_lt_5mm,stable_ratio_lt_3mm,stable_ratio_lt_5mm,"
              "longest_breach_3_samples,longest_breach_5_samples,"
+             "seg1_ratio_lt_3mm,seg1_ratio_lt_5mm,seg3_ratio_lt_3mm,seg3_ratio_lt_5mm,"
+             "seg3_stable_ratio_lt_5mm,drift_tail_minus_head_mm,"
              "target_p90_mm,pass_p90_lt_5mm,lookahead_m,lookahead_time_s,pos_sg_window,"
              "k1_direct,k2_direct,follow_max_w,follow_max_accel,ey_alpha,ey_rate_factor,"
              "integral_enabled,walk_max,work_max,k2_gate_enabled,k2_gate_start,k2_gate_end,"
@@ -2205,6 +2256,12 @@ void LineFollowController::exportTrackingMetrics(const std::string& timestamp)
         << stable_ratio_lt_5mm << ","
         << longest_breach_3_samples << ","
         << longest_breach_5_samples << ","
+        << seg1_ratio_lt_3mm << ","
+        << seg1_ratio_lt_5mm << ","
+        << seg3_ratio_lt_3mm << ","
+        << seg3_ratio_lt_5mm << ","
+        << seg3_stable_ratio_lt_5mm << ","
+        << drift_tail_minus_head_mm << ","
         << 5.0 << ","
         << (p90_mm < 5.0 ? 1 : 0) << ","
         << params_.distance.lookahead << ","
@@ -2388,13 +2445,35 @@ double LineFollowController::computeAngularVelocityLQR(double robot_x, double ro
     const double ey_thr = std::max(0.0, params_.lqr.k2_anti_cancel_ey_threshold);
     const double anti_scale = std::clamp(params_.lqr.k2_anti_cancel_scale, 0.0, 1.0);
     // e_y 与 e_theta 异号时，-K1*e_y 与 -K2*e_theta 方向相反，容易互相抵消。
+    // 只在“抵消比例较高”时才逐步增强抑制，避免对正常工况过度干预。
     if (ey_abs >= ey_thr && (e_y * e_theta) < 0.0)
     {
-      k2_effective *= anti_scale;
+      const double term_y = std::abs(K1_ * e_y);
+      const double term_theta = std::abs(k2_effective * e_theta);
+      const double term_max = std::max(term_y, term_theta);
+      if (term_max > 1e-9)
+      {
+        const double cancel_ratio = std::min(term_y, term_theta) / term_max;
+        constexpr double kCancelStart = 0.35;
+        if (cancel_ratio > kCancelStart)
+        {
+          const double beta = std::clamp((cancel_ratio - kCancelStart) / (1.0 - kCancelStart), 0.0, 1.0);
+          const double dynamic_scale = 1.0 - beta * (1.0 - anti_scale);
+          k2_effective *= dynamic_scale;
+        }
+      }
     }
   }
 
   const double omega_fb = -K1_ * e_y - k2_effective * e_theta;
+  double cancel_ratio_logged = 0.0;
+  const double term_y_logged = std::abs(K1_ * e_y);
+  const double term_theta_logged = std::abs(k2_effective * e_theta);
+  const double term_max_logged = std::max(term_y_logged, term_theta_logged);
+  if ((e_y * e_theta) < 0.0 && term_max_logged > 1e-9)
+  {
+    cancel_ratio_logged = std::min(term_y_logged, term_theta_logged) / term_max_logged;
+  }
   double omega_i = 0.0;
   if (params_.lqr.enable_integral)
   {
@@ -2426,6 +2505,7 @@ double LineFollowController::computeAngularVelocityLQR(double robot_x, double ro
   lqr_dbg_omega_fb_ = omega_fb;
   lqr_dbg_omega_i_ = omega_i;
   lqr_dbg_k2_effective_ = k2_effective;
+  lqr_dbg_cancel_ratio_ = cancel_ratio_logged;
   lqr_dbg_nearest_idx_ = nearest_idx;
   lqr_dbg_lookahead_idx_ = lookahead_idx;
 

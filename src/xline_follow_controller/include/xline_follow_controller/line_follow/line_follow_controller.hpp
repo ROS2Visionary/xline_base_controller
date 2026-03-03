@@ -215,6 +215,7 @@ private:
   double lqr_dbg_omega_fb_;
   double lqr_dbg_omega_i_;
   double lqr_dbg_k2_effective_;
+  double lqr_dbg_cancel_ratio_;
   double lqr_dbg_omega_before_limits_;
   size_t lqr_dbg_nearest_idx_;
   size_t lqr_dbg_lookahead_idx_;

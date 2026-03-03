@@ -293,8 +293,8 @@ namespace xline
         geometry_msgs::msg::Twist stop;
         cmd_vel_publisher_->publish(stop);
 
-        // 清理暂停标志
-        is_paused_.store(false);
+        // 提前释放执行锁，让客户端收到结果后可立即发送新任务（消除竞态拒绝）
+        guard.reset();
 
         result->success = false;
         result->error_message = "客户端取消执行";
@@ -319,8 +319,9 @@ namespace xline
       {
         geometry_msgs::msg::Twist stop;
         cmd_vel_publisher_->publish(stop);
-        
-        is_paused_.store(false);
+
+        // 提前释放执行锁
+        guard.reset();
 
         result->success = false;
         result->error_message = "任务在路径配置前被取消";
@@ -406,7 +407,8 @@ namespace xline
             geometry_msgs::msg::Twist stop;
             cmd_vel_publisher_->publish(stop);
 
-            is_paused_.store(false);
+            // 提前释放执行锁
+            guard.reset();
 
             result->success = false;
             result->error_message = "任务在姿态校正前被取消";
@@ -622,6 +624,7 @@ namespace xline
       {
         result->success = true;
         result->error_message.clear();
+        guard.reset();  // 提前释放执行锁，让客户端能立即发送下一任务
         goal_handle->succeed(result);
         RCLCPP_INFO(get_logger(), "[text, id=%u]: 文本路径不执行路径跟随，直接返回成功", path_id);
         return;
@@ -644,8 +647,13 @@ namespace xline
         geometry_msgs::msg::Twist stop;
         cmd_vel_publisher_->publish(stop);
 
+        if (base_follow_controller_)
+        {
+          base_follow_controller_->cancel();  // 重置控制器内部状态
+        }
 
-        is_paused_.store(false);
+        // 提前释放执行锁
+        guard.reset();
 
         result->success = false;
         result->error_message = "任务在控制器初始化后被取消";
@@ -656,6 +664,8 @@ namespace xline
 
       compute_velocity(goal_handle, result);
 
+      // 提前释放执行锁：确保客户端收到结果的同时就可以发送新任务，消除竞态拒绝窗口
+      guard.reset();
 
       // 根据结果和取消状态决定如何结束Action
       if (goal_handle->is_canceling())
@@ -738,7 +748,20 @@ namespace xline
             RCLCPP_INFO(get_logger(), "取消时停止打印机: %s", current_ink_printer_.c_str());
           }
 
-          // 清理暂停标志
+          // 取消时步进电机复位：路径未正常完成，需反转回原位
+          if (use_stepper_for_current_path_ && current_stepper_motor_id_ > 0)
+          {
+            RCLCPP_INFO(get_logger(), "取消时步进电机反转: motor_id=%d, command=reverse",
+                        current_stepper_motor_id_);
+            controlStepperMotor(current_stepper_motor_id_, "reverse");
+          }
+
+          // 重置控制器内部状态，避免下一任务使用残留状态
+          if (base_follow_controller_)
+          {
+            base_follow_controller_->cancel();
+          }
+
           is_paused_.store(false);
 
           if (result)
@@ -850,6 +873,20 @@ namespace xline
                 {
                   inkjet_client_->stop_print(current_ink_printer_);
                   RCLCPP_INFO(get_logger(), "取消时停止打印机: %s", current_ink_printer_.c_str());
+                }
+
+                // 取消时步进电机复位
+                if (use_stepper_for_current_path_ && current_stepper_motor_id_ > 0)
+                {
+                  RCLCPP_INFO(get_logger(), "取消时步进电机反转: motor_id=%d, command=reverse",
+                              current_stepper_motor_id_);
+                  controlStepperMotor(current_stepper_motor_id_, "reverse");
+                }
+
+                // 重置控制器内部状态
+                if (base_follow_controller_)
+                {
+                  base_follow_controller_->cancel();
                 }
 
                 is_paused_.store(false);

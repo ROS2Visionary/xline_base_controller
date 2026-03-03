@@ -96,6 +96,7 @@ def analyze_path(sample_file, follow_max_w):
     canc = 0
     severe = 0
     sat = 0
+    logged_cancel = []
     start_aligned_sum = 0.0
     start_aligned_count = 0
 
@@ -117,6 +118,10 @@ def analyze_path(sample_file, follow_max_w):
         w = abs(to_float(r, "angular_cmd_rps", 0.0))
         if math.isfinite(phase_max_w) and phase_max_w > 1e-6 and w >= 0.98 * phase_max_w:
             sat += 1
+
+        c_logged = to_float(r, "cancel_ratio")
+        if math.isfinite(c_logged):
+            logged_cancel.append(c_logged)
 
         sa = to_float(r, "start_aligned")
         if math.isfinite(sa):
@@ -160,6 +165,7 @@ def analyze_path(sample_file, follow_max_w):
         "longest_over10_t_start": t10s,
         "longest_over10_t_end": t10e,
         "cancel_ratio": canc / n,
+        "mean_cancel_ratio_logged": (sum(logged_cancel) / len(logged_cancel)) if logged_cancel else float("nan"),
         "severe_cancel_ratio": severe / n,
         "w_saturation_ratio": sat / n,
         "start_aligned_ratio": (start_aligned_sum / start_aligned_count) if start_aligned_count else float("nan"),
@@ -177,7 +183,7 @@ def write_outputs(out_dir, batch_rows, analyzed_rows):
         "under3_ratio", "under5_ratio", "stable_under3_ratio", "stable_under5_ratio",
         "over5_ratio", "over10_ratio", "longest_over5_samples", "longest_over5_t_start",
         "longest_over5_t_end", "longest_over10_samples", "longest_over10_t_start",
-        "longest_over10_t_end", "cancel_ratio", "severe_cancel_ratio",
+        "longest_over10_t_end", "cancel_ratio", "mean_cancel_ratio_logged", "severe_cancel_ratio",
         "w_saturation_ratio", "start_aligned_ratio", "tail_under3_ratio",
         "tail_under5_ratio", "tail_stable_under5_ratio", "objective_score",
     ]
@@ -220,7 +226,8 @@ def write_outputs(out_dir, batch_rows, analyzed_rows):
         for r in worst_p90[:3]:
             f.write(
                 f"- {r['path']}: p90={r['p90_mm']:.3f}mm, over5={r['over5_ratio']*100:.1f}%, "
-                f"cancel={r['cancel_ratio']*100:.1f}%, sat={r['w_saturation_ratio']*100:.1f}%\n"
+                f"cancel={r['cancel_ratio']*100:.1f}%, sat={r['w_saturation_ratio']*100:.1f}%, "
+                f"cancel_ratio={r['mean_cancel_ratio_logged']:.3f}\n"
             )
 
 
