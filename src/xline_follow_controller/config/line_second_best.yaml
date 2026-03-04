@@ -7,9 +7,9 @@ debug:
 
 # 优化元信息（会写入 line_tracking_latest 的 metrics/batch，便于闭环分析）
 optimization:
-  id: "opt_20260304_b39_revert_tol_v1"
-  parent_batch_id: "1772652009287"
-  change_note: "revert align_tol 4mm->6mm(4mm导致path01系统偏左2mm,cancel>0.5:18%->48%,ζ骤降);ey_start=4.8mm已正确"
+  id: "opt_20260304_b33_dynamic_gains_v1"
+  parent_batch_id: "1772572362582"
+  change_note: "use_direct_gains=false;q1=0.39;q2=0.31;K1_max=8;K1_min=1.5;Ki=0.38;k2_gate.min_scale=0.50;k2_min_floor_scale=0.45;b32:etheta_lowpass;b31:remove_tail_k2_decay;add_k2_floor;integral_guard"
 
 
 # 航向PID控制
@@ -126,13 +126,11 @@ lqr_angular_control:
   enabled: true
 
   # LQR 权重参数（use_direct_gains=false 时生效）
-  # B36 目标：v=0.25 时 K1≈2.50，K2≈1.11，ζ≈0.70（B35 ζ=0.678 → B36 ζ=0.701）
-  # 公式：K1 = √(q1/r) / v  →  q1 = (K1×v)² = (2.50×0.25)² = 0.39（不变）
-  #       K2 = √(2√(q1·q2)/r + q2/r) → q2=0.42 → K2=1.109（B35: q2=0.38,K2=1.072）
-  # B36 动机：B35 path_05 p90=5.01mm（差0.01mm pass），K2+3.4%→ζ提升可推过5mm线
-  # floor = anti_cancel = 0.45×1.109 = 0.499（二者一致，floor不会覆盖anti_cancel）
+  # 推导目标：v=0.25 时 K1≈2.50，K2≈1.00，ζ≈0.65（临界最优阻尼）
+  # 公式：K1 = √(q1/r) / v  →  q1 = (K1×v)² = (2.50×0.25)² = 0.39
+  #       K2 = √(2√(q1·q2)/r + q2/r) = 1.00  →  q2 ≈ 0.31
   q1: 0.39
-  q2: 0.42
+  q2: 0.31
   r: 1.0
 
   # K1 限幅：低速段（对齐/减速）K1 理论值会升至 12+，K1_max=8 防止过激
@@ -146,33 +144,29 @@ lqr_angular_control:
   K2_direct: 0.84     # 备用（use_direct_gains=true 时才生效）
 
   # 大横向误差时动态衰减 K2，降低 -K1*e_y 与 -K2*e_theta 互相抵消
-  # B38 已撤回 ey_start 至 4.8mm（正确值）
-  # ey_start=4.8mm：<4.8mm 段保留完整 K2 阻尼，仅对 >4.8mm 大误差段激活门控
-  # K2 门控：K2=1.109，ey_end=18mm 减缓门控，使 8-15mm 大误差段阻尼更充足
-  # min_scale=0.62: 最差情况 K2_eff=1.109×0.62=0.688（门控上限）
+  # ey_start 提升至 4.8mm：<5mm 段保留完整 K2 阻尼，直接支撑 <3mm 精度目标
+  # K2 门控：动态模式 K2≈1.00（比 static 0.84 大），ey_start 维持 4.8mm 保护精细段
+  # min_scale 放宽至 0.50：K2=1.00×0.50=0.50 仍比旧版 0.84×0.28=0.24 大一倍
   k2_gate:
     enabled: true
     ey_start: 0.0048
-    ey_end: 0.0180
-    min_scale: 0.62
+    ey_end: 0.0120
+    min_scale: 0.50
 
-  # anti_cancel：scale 维持 0.45，阈值不变
+  # anti_cancel：K2 变大后 K2·e_theta 项更强，真实抵消更少，scale 放宽至 0.45
   k2_anti_cancel:
     enabled: true
     scale: 0.45
     ey_threshold: 0.0020
 
-  # K2 绝对下限：0.55→0.45（B35 修复：B34 的 0.55 会覆盖 anti_cancel 机制）
-  # B34 问题：floor=0.55×1.07=0.589 > anti_cancel_alone=0.45×1.07=0.482
-  # 导致 anti_cancel 被 floor 覆盖，path_01/02 对抗方向 K2 过高，收敛慢
-  # B35 修复：floor=0.45×1.07=0.482，与 anti_cancel 结果一致，不再额外增加对抗力
+  # K2 绝对下限：叠乘最差情况 K2_eff = 1.00×0.50×0.45 = 0.225
+  # k2_min_floor_scale=0.45 保证 K2_eff >= 1.00×0.45 = 0.45（比旧版下限 0.32 更高）
   k2_min_floor_scale: 0.45
 
-  # 积分项：path_04/05 积分长期饱和（78-89%），integral_max 从 0.010→0.015
-  # 最大积分输出：Ki×integral_max = 0.42×0.015 = 0.0063 rad/s（原 0.38×0.010=0.0038）
+  # 积分项：K1 降低后稳态误差带宽增大，Ki 适当提高至 0.38 以补偿侧坡漂移
   enable_integral: true
-  Ki: 0.42
-  integral_max: 0.015
+  Ki: 0.38
+  integral_max: 0.010
   integral_decay: 0.992
 
   # LQR 输出滤波（单独一组，避免与 PID 的滤波状态相互干扰）
