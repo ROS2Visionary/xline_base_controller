@@ -163,6 +163,7 @@ private:
   double integral_lqr_e_y_;           ///< LQR 横向误差积分状态（可选）
   double prev_ey_rate_;               ///< 速率限制器记忆项（上帧限制后的 e_y）
   double prev_ey_lowpass_;            ///< 一阶低通记忆项
+  double prev_e_theta_lowpass_;       ///< e_theta 一阶低通记忆项（不平整地面专用）
 
   std::shared_ptr<PIDController> heading_pid_controller_;  ///< 航向 PID 控制器
 
@@ -219,6 +220,10 @@ private:
   double lqr_dbg_omega_before_limits_;
   size_t lqr_dbg_nearest_idx_;
   size_t lqr_dbg_lookahead_idx_;
+  double lqr_dbg_integral_state_;     ///< 积分蓄积量原始值 [m·s]（监控 windup 风险）
+  double lqr_dbg_tail_schedule_;      ///< 长路径后段调度系数 [0,1]（K1 boost 生效程度）
+  double lqr_dbg_k2_floor_active_;    ///< K2 下限是否为当前约束（1=是，0=否）
+  double lqr_dbg_e_theta_raw_;        ///< e_theta 低通滤波前原始值 [rad]（地形扰动观测）
 
   std::mutex file_mutex_;             ///< 文件操作互斥锁
 

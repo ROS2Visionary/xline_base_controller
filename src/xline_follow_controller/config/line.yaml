@@ -7,9 +7,9 @@ debug:
 
 # 优化元信息（会写入 line_tracking_latest 的 metrics/batch，便于闭环分析）
 optimization:
-  id: "opt_20260303_b10_tail_sat_rebalance_v1"
-  parent_batch_id: "1772557974510"
-  change_note: "rollback_over_aggressive_gains;raise_follow_w_limit;restore_ey_response"
+  id: "opt_20260304_b33_dynamic_gains_v1"
+  parent_batch_id: "1772572362582"
+  change_note: "use_direct_gains=false;q1=0.39;q2=0.31;K1_max=8;K1_min=1.5;Ki=0.38;k2_gate.min_scale=0.50;k2_min_floor_scale=0.45;b32:etheta_lowpass;b31:remove_tail_k2_decay;add_k2_floor;integral_guard"
 
 
 # 航向PID控制
@@ -75,7 +75,7 @@ guidance:
 # 阶段控制参数
 phase:
   alignment:                         # 对齐阶段
-    max_angular_vel: 0.048           # 最大角速度 [rad/s]
+    max_angular_vel: 0.054           # 最大角速度 [rad/s]
     max_angular_accel: 3.4          # 最大角加速度 [rad/s²]
     current_heading_weight: 0.0      # 当前航向权重
     target_heading_weight: 1.0       # 目标航向权重
@@ -88,8 +88,8 @@ phase:
     line_alignment_stable_count: 5   # 起步：连续满足次数（抗抖）
 
   following:                         # 跟随阶段
-    max_angular_vel: 0.050           # 最大角速
-    max_angular_accel: 3.4          # 最大角加速度 [rad/s²]
+    max_angular_vel: 0.066           # 最大角速
+    max_angular_accel: 5.2          # 最大角加速度 [rad/s²]
     current_heading_weight: 0.0      # 当前航向权重
     target_heading_weight: 1.0       # 目标航向权重
     filter_alpha: 0.95               # 低通滤波系数
@@ -114,10 +114,10 @@ ey_filter:
   rate_limit:
     enabled: true
     noise_floor: 0.002         # 帧间变化最小阈值 [m]，对应 SG 后残余噪声顶部
-    rate_factor: 0.18          # 运动学分量系数：max_change = max(noise_floor, v*dt*factor)
+    rate_factor: 0.16          # 运动学分量系数：max_change = max(noise_floor, v*dt*factor)
   lowpass:
     enabled: true
-    alpha: 0.89                # 低通系数 (0,1]，越接近 1 延迟越小
+    alpha: 0.87                # 低通系数 (0,1]，越接近 1 延迟越小
 
 
 # LQR 角速度控制参数
@@ -125,37 +125,49 @@ lqr_angular_control:
   # 是否启用 LQR 方式计算角速度（false 则使用 PID）
   enabled: true
 
-  # LQR 权重参数（影响精度和响应速度）
-  q1: 4.5      # 横向误差权重（越大越重视横向精度）
-  q2: 3.0      # 航向误差权重（越大越重视航向精度）
-  r: 1.0         # 控制量权重（越大控制越温和）
+  # LQR 权重参数（use_direct_gains=false 时生效）
+  # 推导目标：v=0.25 时 K1≈2.50，K2≈1.00，ζ≈0.65（临界最优阻尼）
+  # 公式：K1 = √(q1/r) / v  →  q1 = (K1×v)² = (2.50×0.25)² = 0.39
+  #       K2 = √(2√(q1·q2)/r + q2/r) = 1.00  →  q2 ≈ 0.31
+  q1: 0.39
+  q2: 0.31
+  r: 1.0
 
-  K1_max: 30.0
-  K1_min: 10.0
+  # K1 限幅：低速段（对齐/减速）K1 理论值会升至 12+，K1_max=8 防止过激
+  # v=0.05: K1_theory=12.5 → clip 至 8.0，此时 ζ≈0.79（轻过阻尼，对齐更平稳）
+  K1_max: 8.0
+  K1_min: 1.5
 
-  # 是否直接指定增益（false 则从 q1, q2, r 计算）
-  use_direct_gains: true
-  K1_direct: 5.6     # 横向误差增益（直接指定时使用）
-  K2_direct: 0.86     # 航向误差增益（直接指定时使用）
+  # 是否直接指定增益（false 则从 q1, q2, r 计算，K1 随速度自适应）
+  use_direct_gains: false
+  K1_direct: 5.8     # 备用（use_direct_gains=true 时才生效）
+  K2_direct: 0.84     # 备用（use_direct_gains=true 时才生效）
 
   # 大横向误差时动态衰减 K2，降低 -K1*e_y 与 -K2*e_theta 互相抵消
+  # ey_start 提升至 4.8mm：<5mm 段保留完整 K2 阻尼，直接支撑 <3mm 精度目标
+  # K2 门控：动态模式 K2≈1.00（比 static 0.84 大），ey_start 维持 4.8mm 保护精细段
+  # min_scale 放宽至 0.50：K2=1.00×0.50=0.50 仍比旧版 0.84×0.28=0.24 大一倍
   k2_gate:
     enabled: true
-    ey_start: 0.0035
-    ey_end: 0.0108
-    min_scale: 0.30
+    ey_start: 0.0048
+    ey_end: 0.0120
+    min_scale: 0.50
 
-  # 仅在“横向项与航向项会互相抵消”时额外衰减 K2（精准抑制抵消）
+  # anti_cancel：K2 变大后 K2·e_theta 项更强，真实抵消更少，scale 放宽至 0.45
   k2_anti_cancel:
     enabled: true
-    scale: 0.28
+    scale: 0.45
     ey_threshold: 0.0020
 
-  # 积分项参数（LQI，可选）
-  enable_integral: false
-  Ki: 0.35
-  integral_max: 0.008
-  integral_decay: 0.990
+  # K2 绝对下限：叠乘最差情况 K2_eff = 1.00×0.50×0.45 = 0.225
+  # k2_min_floor_scale=0.45 保证 K2_eff >= 1.00×0.45 = 0.45（比旧版下限 0.32 更高）
+  k2_min_floor_scale: 0.45
+
+  # 积分项：K1 降低后稳态误差带宽增大，Ki 适当提高至 0.38 以补偿侧坡漂移
+  enable_integral: true
+  Ki: 0.38
+  integral_max: 0.010
+  integral_decay: 0.992
 
   # LQR 输出滤波（单独一组，避免与 PID 的滤波状态相互干扰）
   # - 一般建议先只开 smoother，lowpass 视噪声情况再开
@@ -166,3 +178,10 @@ lqr_angular_control:
     smoother_damping: 0.9
     use_lowpass: false
     lowpass_alpha: 0.95
+
+  # e_theta 一阶低通滤波（不平整地面专用）
+  # 地板缝/接缝产生的瞬态航向扰动（~0.02-0.05 rad）经 K2 放大后引发次生横向误差
+  # α=0.82：对 50ms 脉冲衰减 ~4x；对真实连续航向误差（<0.5 rad/s）影响 <5%
+  e_theta_lowpass:
+    enabled: true
+    alpha: 0.82

@@ -82,6 +82,9 @@ LineFollowController::LineFollowController()
   , lqr_dbg_omega_before_limits_(0.0)
   , lqr_dbg_nearest_idx_(0)
   , lqr_dbg_lookahead_idx_(0)
+  , lqr_dbg_integral_state_(0.0)
+  , lqr_dbg_tail_schedule_(0.0)
+  , lqr_dbg_k2_floor_active_(0.0)
 {
   updateParameters();
   initializeFilters();
@@ -358,7 +361,22 @@ void LineFollowController::updateParameters()
     if (parser.hasParameter("lqr_angular_control.output_filter.lowpass_alpha"))
     {
       params_.lqr.output_filter.lowpass_alpha = parser.getParameter<double>("lqr_angular_control.output_filter.lowpass_alpha");
-    }if (parser.hasParameter("lqr_angular_control.K1_max"))
+    }
+    if (parser.hasParameter("lqr_angular_control.k2_min_floor_scale"))
+    {
+      params_.lqr.k2_min_floor_scale = parser.getParameter<double>("lqr_angular_control.k2_min_floor_scale");
+    }
+    if (parser.hasParameter("lqr_angular_control.e_theta_lowpass.enabled"))
+    {
+      params_.lqr.e_theta_lowpass_enabled =
+          parser.getParameter<bool>("lqr_angular_control.e_theta_lowpass.enabled");
+    }
+    if (parser.hasParameter("lqr_angular_control.e_theta_lowpass.alpha"))
+    {
+      params_.lqr.e_theta_lowpass_alpha =
+          parser.getParameter<double>("lqr_angular_control.e_theta_lowpass.alpha");
+    }
+    if (parser.hasParameter("lqr_angular_control.K1_max"))
     {
       params_.lqr.K1_max = parser.getParameter<double>("lqr_angular_control.K1_max");
     }if (parser.hasParameter("lqr_angular_control.K1_min"))
@@ -488,6 +506,7 @@ void LineFollowController::resetControllerState()
   integral_lqr_e_y_ = 0.0;
   prev_ey_rate_ = 0.0;
   prev_ey_lowpass_ = 0.0;
+  prev_e_theta_lowpass_ = 0.0;
   tracking_error_abs_m_.clear();
   tracking_metrics_exported_ = false;
   tracking_elapsed_time_s_ = 0.0;
@@ -506,6 +525,10 @@ void LineFollowController::resetControllerState()
   lqr_dbg_omega_before_limits_ = 0.0;
   lqr_dbg_nearest_idx_ = 0;
   lqr_dbg_lookahead_idx_ = 0;
+  lqr_dbg_integral_state_ = 0.0;
+  lqr_dbg_tail_schedule_ = 0.0;
+  lqr_dbg_k2_floor_active_ = 0.0;
+  lqr_dbg_e_theta_raw_ = 0.0;
 
   if (heading_pid_controller_)
   {
@@ -1806,7 +1829,11 @@ void LineFollowController::recordTrackingSample(double dt,
         << lqr_dbg_omega_i_ << ","
         << lqr_dbg_omega_before_limits_ << ","
         << lqr_dbg_nearest_idx_ << ","
-        << lqr_dbg_lookahead_idx_;
+        << lqr_dbg_lookahead_idx_ << ","
+        << lqr_dbg_integral_state_ << ","
+        << lqr_dbg_tail_schedule_ << ","
+        << lqr_dbg_k2_floor_active_ << ","
+        << lqr_dbg_e_theta_raw_;
   }
   else
   {
@@ -1820,7 +1847,11 @@ void LineFollowController::recordTrackingSample(double dt,
         << nan_v << ","
         << nan_v << ","
         << 0 << ","
-        << 0;
+        << 0 << ","
+        << nan_v << ","
+        << nan_v << ","
+        << 0 << ","
+        << nan_v;
   }
 
   tracking_sample_rows_.push_back(row.str());
@@ -2211,7 +2242,8 @@ void LineFollowController::exportTrackingMetrics(const std::string& timestamp)
   }
   samples << "t_s,x,y,cross_track_mm,linear_speed_mps,angular_cmd_rps,path_yaw,target_yaw,"
              "yaw_error_rad,lqr_mode,start_aligned,phase_max_w,k1,k2,cancel_ratio,e_y_raw_mm,e_y_rate_limited_mm,e_y_filtered_mm,"
-             "e_theta_rad,omega_ff,omega_fb,omega_i,omega_before_limits,nearest_idx,lookahead_idx\n";
+             "e_theta_rad,omega_ff,omega_fb,omega_i,omega_before_limits,nearest_idx,lookahead_idx,"
+             "integral_state,tail_schedule,k2_floor_active,e_theta_raw_rad\n";
   for (const auto& row : tracking_sample_rows_)
   {
     samples << row << "\n";
@@ -2369,7 +2401,19 @@ double LineFollowController::computeAngularVelocityLQR(double robot_x, double ro
   const size_t nearest_idx = findNearestPointIndex(robot_x, robot_y);
 
   // 2. 计算基于速度的动态前瞻距离
-  const double lookahead_dist = getLookaheadDistance(motion_speed);
+  // 长路径后段前瞻收缩：
+  // - 长路径在后段更容易出现“误差持续放大”且纠偏滞后；
+  // - 后段适度缩短前瞻可提升纠偏及时性，同时保持前段平稳。
+  double lookahead_dist = getLookaheadDistance(motion_speed);
+  if (path_with_curvature_.size() > 1)
+  {
+    const double progress_near = static_cast<double>(nearest_idx) /
+                                 static_cast<double>(path_with_curvature_.size() - 1);
+    const double long_path_factor = std::clamp((path_length_ - 4.0) / 4.0, 0.0, 1.0);
+    const double tail_factor = std::clamp((progress_near - 0.35) / 0.55, 0.0, 1.0);
+    const double shrink = 1.0 - 0.18 * long_path_factor * tail_factor;
+    lookahead_dist = std::max(0.02, lookahead_dist * shrink);
+  }
 
   // 3. 在最近点前方查找前瞻点
   const size_t lookahead_idx = findLookaheadPointIndex(nearest_idx, robot_x, robot_y, lookahead_dist);
@@ -2385,6 +2429,18 @@ double LineFollowController::computeAngularVelocityLQR(double robot_x, double ro
   double e_theta = 0.0;
   computeLQRErrors(robot_x, robot_y, effective_robot_yaw, ref_point, e_y, e_theta);
   const double e_y_raw = e_y;
+  const double e_theta_raw = e_theta;
+
+  // 6b. e_theta 输入低通滤波（不平整地面专用）
+  // 地板缝/接缝产生的瞬态航向扰动（~0.02-0.05 rad，时长 50-100ms）会经 K2 直接放大
+  // 成 2-4mm 次生横向误差。低通 α=0.82 对 50ms 脉冲信号衰减约 4x，对真实连续航向
+  // 误差（变化率 <0.5 rad/s）的相位延迟仅约 5%，不影响正常跟线控制效果。
+  if (params_.lqr.e_theta_lowpass_enabled)
+  {
+    const double alpha = std::clamp(params_.lqr.e_theta_lowpass_alpha, 0.0, 1.0);
+    e_theta = alpha * e_theta + (1.0 - alpha) * prev_e_theta_lowpass_;
+  }
+  prev_e_theta_lowpass_ = e_theta;
 
   // 7. e_y 输入滤波（速率限制 + 一阶低通）
   //    速率限制：将 Hampel 回退阶跃从 step 转为 ramp，防止平滑器状态被污染
@@ -2419,7 +2475,34 @@ double LineFollowController::computeAngularVelocityLQR(double robot_x, double ro
   // ω_ff = v * κ (前馈项，对于直线路径 κ=0，故前馈为0)
   // ω_fb = -K1 * e_y - K2 * e_theta (反馈项，在前进等效系中计算)
   const double omega_ff = motion_speed * ref_point.curvature;  // 直线路径时为 0
+
+  // 长路径后段增稳调度：
+  // - 长路径后段更容易出现“误差持续+反馈抵消”。
+  // - 当后段横向误差达到阈值时，适度提升 K1、抑制 K2，
+  //   减少 -K1*e_y 与 -K2*e_theta 互相抵消并提升纠偏力度。
+  double k1_effective = K1_;
   double k2_effective = K2_;
+  double dbg_schedule = 0.0;  // 用于调试记录，函数级作用域
+  if (path_with_curvature_.size() > 1)
+  {
+    const double path_progress = static_cast<double>(lookahead_idx) /
+                                 static_cast<double>(path_with_curvature_.size() - 1);
+    const double long_path_factor = std::clamp((path_length_ - 4.0) / 4.0, 0.0, 1.0);
+    const double tail_factor = std::clamp((path_progress - 0.45) / 0.45, 0.0, 1.0);
+    const double schedule = long_path_factor * tail_factor;
+    dbg_schedule = schedule;
+    if (schedule > 0.0)
+    {
+      const double ey_abs = std::abs(e_y);
+      if (ey_abs >= 0.003)  // 仅在可观横向误差时触发
+      {
+        k1_effective *= (1.0 + 0.25 * schedule);
+        // K2 不在此处衰减：k2_gate/anti_cancel 已负责 K2 的自适应调节，
+        // 再额外衰减会将三层叠乘变为四层，破坏 LQR 的阻尼结构，反而加剧超调。
+      }
+    }
+  }
+
   if (params_.lqr.k2_gate_enabled)
   {
     const double ey_abs = std::abs(e_y);
@@ -2454,7 +2537,9 @@ double LineFollowController::computeAngularVelocityLQR(double robot_x, double ro
       if (term_max > 1e-9)
       {
         const double cancel_ratio = std::min(term_y, term_theta) / term_max;
-        constexpr double kCancelStart = 0.35;
+        // |e_y| 越大时，即使较低的 cancel_ratio 也代表可观的绝对抵消量，
+        // 故阈值随误差幅度线性降低：ey=0→0.35，ey=6mm→0.19。
+        const double kCancelStart = 0.35 * (1.0 - 0.45 * std::clamp(ey_abs / 0.006, 0.0, 1.0));
         if (cancel_ratio > kCancelStart)
         {
           const double beta = std::clamp((cancel_ratio - kCancelStart) / (1.0 - kCancelStart), 0.0, 1.0);
@@ -2465,9 +2550,23 @@ double LineFollowController::computeAngularVelocityLQR(double robot_x, double ro
     }
   }
 
-  const double omega_fb = -K1_ * e_y - k2_effective * e_theta;
+  // K2 下限保障：防止 k2_gate + anti_cancel 叠乘后航向约束完全消失。
+  // LQR 阻尼项（K2）过小等价于把系统退化为无阻尼的纯 K1 比例控制，
+  // 必然在大误差段出现持续漂移或振荡。保留至少 k2_min_floor_scale 比例。
+  double dbg_k2_floor_active = 0.0;
+  if (params_.lqr.k2_min_floor_scale > 0.0)
+  {
+    const double k2_floor = K2_ * params_.lqr.k2_min_floor_scale;
+    if (k2_effective < k2_floor)
+    {
+      k2_effective = k2_floor;
+      dbg_k2_floor_active = 1.0;
+    }
+  }
+
+  const double omega_fb = -k1_effective * e_y - k2_effective * e_theta;
   double cancel_ratio_logged = 0.0;
-  const double term_y_logged = std::abs(K1_ * e_y);
+  const double term_y_logged = std::abs(k1_effective * e_y);
   const double term_theta_logged = std::abs(k2_effective * e_theta);
   const double term_max_logged = std::max(term_y_logged, term_theta_logged);
   if ((e_y * e_theta) < 0.0 && term_max_logged > 1e-9)
@@ -2477,9 +2576,15 @@ double LineFollowController::computeAngularVelocityLQR(double robot_x, double ro
   double omega_i = 0.0;
   if (params_.lqr.enable_integral)
   {
-    const double decay = std::clamp(params_.lqr.integral_decay, 0.0, 1.0);
-    const double integral_dt = std::max(1e-4, dt);
-    integral_lqr_e_y_ = decay * integral_lqr_e_y_ + e_y * integral_dt;
+    // 仅在跟随阶段（start_line_aligned_=true）积累积分。
+    // 对齐阶段 e_y 可能达 6-10mm，若此时积累会在跟随阶段初期引发 windup 过冲。
+    // 不在对齐阶段清零，利用 integral_decay 自然衰减，保证状态连续平滑。
+    if (start_line_aligned_)
+    {
+      const double decay = std::clamp(params_.lqr.integral_decay, 0.0, 1.0);
+      const double integral_dt = std::max(1e-4, dt);
+      integral_lqr_e_y_ = decay * integral_lqr_e_y_ + e_y * integral_dt;
+    }
 
     if (std::abs(params_.lqr.Ki) > 1e-9)
     {
@@ -2501,6 +2606,7 @@ double LineFollowController::computeAngularVelocityLQR(double robot_x, double ro
   lqr_dbg_e_y_rate_limited_ = e_y_rate_limited;
   lqr_dbg_e_y_filtered_ = e_y_filtered;
   lqr_dbg_e_theta_ = e_theta;
+  lqr_dbg_e_theta_raw_ = e_theta_raw;
   lqr_dbg_omega_ff_ = omega_ff;
   lqr_dbg_omega_fb_ = omega_fb;
   lqr_dbg_omega_i_ = omega_i;
@@ -2508,6 +2614,9 @@ double LineFollowController::computeAngularVelocityLQR(double robot_x, double ro
   lqr_dbg_cancel_ratio_ = cancel_ratio_logged;
   lqr_dbg_nearest_idx_ = nearest_idx;
   lqr_dbg_lookahead_idx_ = lookahead_idx;
+  lqr_dbg_integral_state_ = integral_lqr_e_y_;
+  lqr_dbg_tail_schedule_ = dbg_schedule;
+  lqr_dbg_k2_floor_active_ = dbg_k2_floor_active;
 
   // 9. LQR 输出滤波（独立于 PID，避免相互干扰）
   double omega_before_limits = omega;

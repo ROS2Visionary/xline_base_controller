@@ -172,9 +172,18 @@ struct LineLQRParams
   bool k2_anti_cancel_enabled = true;
   double k2_anti_cancel_scale = 0.60;    ///< 额外缩放比例 [0,1]
   double k2_anti_cancel_ey_threshold = 0.003; ///< |e_y| 触发阈值 [m]
+  // 所有 K2 抑制机制（gate + anti_cancel + tail_schedule）作用后的绝对下限，
+  // 相对于 K2_direct 的比例；0 表示不设下限。
+  // 防止叠乘抑制把 LQR 阻尼项压至接近零，导致系统退化为无阻尼纯比例控制。
+  double k2_min_floor_scale = 0.0;       ///< K2_effective 下限比例 [0,1]
   LineLQROutputFilterParams output_filter;  ///< LQR 输出滤波（单独一组，避免与 PID 干扰）
   double K1_max = 50;
   double K1_min = 13;
+  // e_theta 一阶低通滤波（不平整地面专用）
+  // 地板缝/接缝产生的瞬态航向扰动（~0.02-0.05 rad，时长 50-100ms）经 K2 放大后
+  // 会引发 2-4mm 次生横向误差；低通 α=0.82 可衰减约 4x，对真实连续信号影响<5%
+  bool e_theta_lowpass_enabled = false;  ///< 是否启用 e_theta 低通滤波（默认关，不影响历史行为）
+  double e_theta_lowpass_alpha = 0.82;   ///< 低通系数 ∈ (0,1]，越接近 1 延迟越小（推荐 0.75-0.88）
 };
 
 // e_y 输入滤波参数 (ey_filter.*)

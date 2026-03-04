@@ -175,6 +175,17 @@ private:
     // 平滑控制
     double velocity_smooth_alpha;  // 速度平滑系数
 
+    // 动态速度重置（接收新目标时根据初始距离重置最大线速度）
+    double dynamic_vel_reset_max_vel;       // 重置后的最大线速度上限 [m/s]
+    double dynamic_vel_reset_min_vel;       // 重置后的最小线速度下限 [m/s]
+    double dynamic_vel_threshold_distance;  // 距离阈值 [m]：< 此值直接用 min_vel
+    double dynamic_vel_dist_step;           // 距离步长 [m]：超出阈值后每增加此距离
+    double dynamic_vel_vel_step;            // 速度步长 [m/s]：对应增加此速度
+
+    // 角速度大时线速度衰减（防止高角速度引起漂移）
+    double angular_vel_decel_scale;      // 衰减强度 [0,1]（0=不衰减，1=满角速度时线速度降为0）
+    double angular_vel_decel_min_factor; // 衰减后线速度的最小比例（防止被压得太低）
+
     // 调试
     bool debug_enabled;            // 是否启用调试输出
   };
@@ -213,6 +224,9 @@ private:
   // 时间管理
   std::chrono::steady_clock::time_point last_time_;
   rclcpp::Time last_log_output_time_; // 上次日志输出时间
+
+  // 动态速度重置标志
+  bool first_compute_after_goal_;     // 接收到新目标后是否是第一次 computeVelocityCommands
 
   // 阶段2控制状态
   double last_stage2_yaw_error_;      // 阶段2航向误差（用于过零判定）

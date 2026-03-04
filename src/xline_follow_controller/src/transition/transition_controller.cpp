@@ -39,6 +39,7 @@ TransitionController::TransitionController()
   , min_distance_reached_(std::numeric_limits<double>::max())
   , prev_linear_vel_(0.0)
   , prev_angular_vel_(0.0)
+  , first_compute_after_goal_(false)
   , last_stage2_yaw_error_(0.0)
   , stage2_entry_distance_(0.0)
   , stage2_position_relaxed_(false)
@@ -164,6 +165,34 @@ void TransitionController::updateParameters()
     // 平滑控制
     params_.velocity_smooth_alpha = parser.getParameter<double>("transition.velocity_smooth_alpha");
 
+    // 动态速度重置
+    params_.dynamic_vel_reset_max_vel = parser.hasParameter("transition.dynamic_velocity_reset.max_vel") ?
+        parser.getParameter<double>("transition.dynamic_velocity_reset.max_vel") : params_.max_velocity;
+    params_.dynamic_vel_reset_min_vel = parser.hasParameter("transition.dynamic_velocity_reset.min_vel") ?
+        parser.getParameter<double>("transition.dynamic_velocity_reset.min_vel") : params_.min_velocity;
+    params_.dynamic_vel_threshold_distance = parser.hasParameter("transition.dynamic_velocity_reset.threshold_distance") ?
+        parser.getParameter<double>("transition.dynamic_velocity_reset.threshold_distance") : 2.0;
+    params_.dynamic_vel_dist_step = parser.hasParameter("transition.dynamic_velocity_reset.dist_step") ?
+        parser.getParameter<double>("transition.dynamic_velocity_reset.dist_step") : 0.2;
+    params_.dynamic_vel_vel_step = parser.hasParameter("transition.dynamic_velocity_reset.vel_step") ?
+        parser.getParameter<double>("transition.dynamic_velocity_reset.vel_step") : 0.1;
+
+    // 保护性限幅
+    params_.dynamic_vel_reset_max_vel = std::clamp(params_.dynamic_vel_reset_max_vel, 0.0, params_.max_velocity);
+    params_.dynamic_vel_reset_min_vel = std::clamp(params_.dynamic_vel_reset_min_vel,
+                                                    params_.min_velocity, params_.dynamic_vel_reset_max_vel);
+    params_.dynamic_vel_threshold_distance = std::max(0.0, params_.dynamic_vel_threshold_distance);
+    params_.dynamic_vel_dist_step = std::max(1e-3, params_.dynamic_vel_dist_step);
+    params_.dynamic_vel_vel_step  = std::max(0.0, params_.dynamic_vel_vel_step);
+
+    // 角速度大时线速度衰减
+    params_.angular_vel_decel_scale = parser.hasParameter("transition.angular_vel_decel.scale") ?
+        parser.getParameter<double>("transition.angular_vel_decel.scale") : 0.0;
+    params_.angular_vel_decel_min_factor = parser.hasParameter("transition.angular_vel_decel.min_factor") ?
+        parser.getParameter<double>("transition.angular_vel_decel.min_factor") : 0.2;
+    params_.angular_vel_decel_scale = std::clamp(params_.angular_vel_decel_scale, 0.0, 1.0);
+    params_.angular_vel_decel_min_factor = std::clamp(params_.angular_vel_decel_min_factor, 0.0, 1.0);
+
     // 调试
     params_.debug_enabled = parser.getParameter<bool>("transition.debug_enabled");
 
@@ -235,6 +264,7 @@ bool TransitionController::setGoal(double goal_x, double goal_y)
   use_backward_ = false;  // 只到点模式不使用后退
   backward_decided_ = false;
   backward_switched_to_forward_ = false;
+  first_compute_after_goal_ = true;  // 标记：下次 computeVelocityCommands 时按距离重置 max_velocity
 
   // 重置后退安全检测
   prev_distance_ = 0.0;
@@ -264,6 +294,7 @@ bool TransitionController::setGoal(double goal_x, double goal_y, double goal_the
   use_backward_ = false;  // 将在首次计算时判断
   backward_decided_ = false;
   backward_switched_to_forward_ = false;
+  first_compute_after_goal_ = true;  // 标记：下次 computeVelocityCommands 时按距离重置 max_velocity
 
   // 重置后退安全检测
   prev_distance_ = 0.0;
@@ -328,6 +359,30 @@ bool TransitionController::computeVelocityCommands(
 
   // 4. 计算位置误差
   double distance = computeDistance(curr_x, curr_y);
+
+  // 4.1 接收新目标后第一次执行：根据初始距离动态重置最大线速度
+  // 策略：< threshold_distance 直接用 min_vel；
+  //       >= threshold_distance 每超出 dist_step 增加 vel_step，上限 max_vel
+  if (first_compute_after_goal_) {
+    first_compute_after_goal_ = false;
+    double dynamic_max;
+    if (distance < params_.dynamic_vel_threshold_distance) {
+      dynamic_max = params_.dynamic_vel_reset_min_vel;
+    } else {
+      double extra = distance - params_.dynamic_vel_threshold_distance;
+      double added_vel = (extra / params_.dynamic_vel_dist_step) * params_.dynamic_vel_vel_step;
+      dynamic_max = params_.dynamic_vel_reset_min_vel + added_vel;
+    }
+    params_.max_velocity = std::clamp(dynamic_max,
+                                      params_.dynamic_vel_reset_min_vel,
+                                      params_.dynamic_vel_reset_max_vel);
+    LOG_INFO("动态速度重置: 初始距离=%.3fm → max_vel=%.3fm/s "
+             "(阈值%.1fm, 步长%.2fm/%.3fm/s, 范围[%.3f, %.3f])",
+             distance, params_.max_velocity,
+             params_.dynamic_vel_threshold_distance,
+             params_.dynamic_vel_dist_step, params_.dynamic_vel_vel_step,
+             params_.dynamic_vel_reset_min_vel, params_.dynamic_vel_reset_max_vel);
+  }
 
   // 5. 根据模式选择控制策略
   double v, omega;
@@ -441,7 +496,26 @@ bool TransitionController::computeVelocityCommands(
         backward_decided_ = true;
       }
 
-      if (should_use_backward || (use_backward_ && backward_decided_)) {
+      bool use_backward_mode = should_use_backward || (use_backward_ && backward_decided_);
+      if (use_backward_mode) {
+        const double dx_world = goal_x_ - curr_x;
+        const double dy_world = goal_y_ - curr_y;
+        const double cos_theta = std::cos(curr_theta);
+        const double sin_theta = std::sin(curr_theta);
+        const double dx_local = dx_world * cos_theta + dy_world * sin_theta;
+
+        // 近目标时若目标已切换到车体前方，后退会造成来回穿越；仅允许单向切换一次到前进模式
+        const double switch_forward_threshold = 0.003;  // 3mm
+        if (!backward_switched_to_forward_ && distance <= params_.creep_distance && dx_local > switch_forward_threshold) {
+          use_backward_mode = false;
+          use_backward_ = false;
+          backward_switched_to_forward_ = true;
+          LOG_INFO("↻ 后退模式切换为前进模式（近目标穿越保护）: dist=%.1fcm, dx_local=%.1fmm",
+                   distance * 100.0, dx_local * 1000.0);
+        }
+      }
+
+      if (use_backward_mode) {
         // 后退模式（两步法中的“到达位置”阶段）：
         // - 阶段1目标是“到点”，因此航向应基于目标位置计算
         // - 使用“背向目标点的朝向”作为期望朝向，使得负线速度能朝目标收敛
@@ -672,6 +746,16 @@ bool TransitionController::computeVelocityCommands(
 
   // 7. 计算速度指令（已在上面计算）
 
+  // 7.5 角速度大时降低线速度（防止高角速度引起漂移）
+  // 原理：omega 越大（相对于 max_angular_vel），线速度按比例衰减，衰减量由 scale 控制
+  if (params_.angular_vel_decel_scale > 0.0 && params_.max_angular_vel > 1e-6 && std::abs(v) > 1e-12) {
+    double abs_omega_ratio = std::abs(omega) / params_.max_angular_vel;
+    abs_omega_ratio = std::clamp(abs_omega_ratio, 0.0, 1.0);
+    double decel_factor = 1.0 - params_.angular_vel_decel_scale * abs_omega_ratio;
+    decel_factor = std::clamp(decel_factor, params_.angular_vel_decel_min_factor, 1.0);
+    v *= decel_factor;
+  }
+
   // 8. 速度平滑
   smoothVelocity(v, omega, dt);
 
@@ -835,6 +919,7 @@ void TransitionController::reset()
   arrival_count_ = 0;
   prev_linear_vel_ = 0.0;
   prev_angular_vel_ = 0.0;
+  first_compute_after_goal_ = false;
   use_backward_ = false;
   backward_decided_ = false;
   backward_switched_to_forward_ = false;
@@ -988,7 +1073,12 @@ void TransitionController::enforceHardCreepMin(
     return;
   }
 
-  if (std::abs(v) >= params_.creep_velocity) {
+  // 距离越接近到达阈值，强制下限越小，避免 cm 级目标附近以固定速度来回穿越
+  const double denom = std::max(1e-6, params_.creep_distance - params_.arrival_tolerance);
+  const double proximity = std::clamp((distance - params_.arrival_tolerance) / denom, 0.0, 1.0);
+  const double forced_min_velocity = params_.creep_velocity * std::max(0.2, proximity);
+
+  if (std::abs(v) >= forced_min_velocity) {
     return;
   }
 
@@ -998,16 +1088,42 @@ void TransitionController::enforceHardCreepMin(
   const double sin_theta = std::sin(curr_theta);
   const double dx_local = dx_world * cos_theta + dy_world * sin_theta;
 
-  double desired_sign = 1.0;
-  if (std::abs(dx_local) > 1e-12) {
-    desired_sign = (dx_local >= 0.0) ? 1.0 : -1.0;
+  const double dx_sign_deadband = 0.003;  // 3mm
+  double desired_sign = 0.0;
+  if (goal_theta_set_ && !stage2_position_relaxed_) {
+    // 阶段1姿态伺服：保持与运动模式一致，避免"后退模式"被硬下限推成正速度
+    if (use_backward_) {
+      if (dx_local > dx_sign_deadband) {
+        v = 0.0;
+        prev_linear_vel_ = 0.0;
+        return;
+      }
+      desired_sign = -1.0;
+    } else {
+      if (dx_local < -dx_sign_deadband) {
+        v = 0.0;
+        prev_linear_vel_ = 0.0;
+        return;
+      }
+      desired_sign = 1.0;
+    }
+  } else if (dx_local > dx_sign_deadband) {
+    desired_sign = 1.0;
+  } else if (dx_local < -dx_sign_deadband) {
+    desired_sign = -1.0;
   } else if (std::abs(v) > 1e-12) {
     desired_sign = (v >= 0.0) ? 1.0 : -1.0;
   } else if (std::abs(prev_linear_vel_) > 1e-12) {
     desired_sign = (prev_linear_vel_ >= 0.0) ? 1.0 : -1.0;
+  } else {
+    desired_sign = 0.0;
   }
 
-  v = desired_sign * params_.creep_velocity;
+  if (std::abs(desired_sign) < 1e-12) {
+    return;
+  }
+
+  v = desired_sign * forced_min_velocity;
   v = std::clamp(v, -params_.max_velocity, params_.max_velocity);
 
   // 与 smoothVelocity 的内部状态保持一致（避免下一周期又被认为“冷启动”或被 slew-rate 压低）
