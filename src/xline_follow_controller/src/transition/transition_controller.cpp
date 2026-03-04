@@ -298,6 +298,7 @@ bool TransitionController::setGoal(double goal_x, double goal_y)
   backward_switched_to_forward_ = false;
   first_compute_after_goal_ = true;  // 标记：下次 computeVelocityCommands 时按距离重置 max_velocity
   stall_detection_active_ = false;
+  last_time_ = std::chrono::steady_clock::now();  // 重置时间基准，避免首帧 dt 异常大导致 slew-rate 跳过
 
   // 重置后退安全检测
   prev_distance_ = 0.0;
@@ -368,7 +369,7 @@ bool TransitionController::computeVelocityCommands(
   double dt = std::chrono::duration_cast<std::chrono::duration<double>>(now_tp - last_time_).count();
   last_time_ = now_tp;
   if (dt <= 0.0 || std::isnan(dt) || std::isinf(dt) || dt > 1.0) {
-    dt = 1 / 18;
+    dt = 1.0 / 18.0;  // 约 55ms，对应 18Hz；原写法 1/18 为整数除法结果为 0，导致 slew-rate 失效
   }
 
   // 1. 检查是否设置了目标
