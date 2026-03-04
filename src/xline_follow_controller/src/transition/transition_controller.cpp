@@ -40,6 +40,8 @@ TransitionController::TransitionController()
   , prev_linear_vel_(0.0)
   , prev_angular_vel_(0.0)
   , first_compute_after_goal_(false)
+  , stall_detection_active_(false)
+  , stall_check_start_distance_(0.0)
   , last_stage2_yaw_error_(0.0)
   , stage2_entry_distance_(0.0)
   , stage2_position_relaxed_(false)
@@ -75,11 +77,14 @@ void TransitionController::updateParameters()
     params_.max_angular_vel = parser.getParameter<double>("transition.max_angular_vel");
     params_.min_velocity = parser.getParameter<double>("transition.min_velocity");
 
-    // 线速度加减速限制
+    // 线速度加速限制
     params_.linear_accel_limit = parser.hasParameter("transition.linear_accel_limit") ?
         parser.getParameter<double>("transition.linear_accel_limit") : 0.25;
-    params_.linear_decel_limit = parser.hasParameter("transition.linear_decel_limit") ?
-        parser.getParameter<double>("transition.linear_decel_limit") : 0.35;
+
+    // 减速安全系数（减速限制由 max_velocity 和 slow_down_distance 自动计算，在 slow_down_distance 加载后计算）
+    params_.decel_safety_factor = parser.hasParameter("transition.decel_safety_factor") ?
+        parser.getParameter<double>("transition.decel_safety_factor") : 2.0;
+    params_.decel_safety_factor = std::max(1.0, params_.decel_safety_factor);
 
     // 控制增益
     params_.k_linear = parser.getParameter<double>("transition.k_linear");
@@ -97,6 +102,13 @@ void TransitionController::updateParameters()
     params_.creep_velocity = parser.getParameter<double>("transition.creep_velocity");
     params_.hard_creep_min_enabled = parser.hasParameter("transition.hard_creep_min.enabled") ?
         parser.getParameter<bool>("transition.hard_creep_min.enabled") : false;
+
+    // 自动计算减速限制：decel_limit = max_vel² / slow_down_distance × safety_factor
+    // 物理意义：保证速度曲线在减速段能被 slew-rate 限制器完整跟踪，safety_factor 提供裕量
+    params_.linear_decel_limit = (params_.slow_down_distance > 1e-6) ?
+        (params_.max_velocity * params_.max_velocity / params_.slow_down_distance * params_.decel_safety_factor)
+        : (params_.max_velocity * params_.decel_safety_factor);
+    params_.linear_decel_limit = std::max(0.0, params_.linear_decel_limit);
 
     // 大转角处理
     params_.large_angle_threshold = parser.getParameter<double>("transition.large_angle_threshold");
@@ -177,10 +189,11 @@ void TransitionController::updateParameters()
     params_.dynamic_vel_vel_step = parser.hasParameter("transition.dynamic_velocity_reset.vel_step") ?
         parser.getParameter<double>("transition.dynamic_velocity_reset.vel_step") : 0.1;
 
-    // 保护性限幅
-    params_.dynamic_vel_reset_max_vel = std::clamp(params_.dynamic_vel_reset_max_vel, 0.0, params_.max_velocity);
+    // 保护性限幅：dynamic_velocity_reset 直接替代静态 max_velocity，不受其约束
+    // （若需全局硬上限，由调用方 setSpeedLimit 控制）
+    params_.dynamic_vel_reset_max_vel = std::max(0.0, params_.dynamic_vel_reset_max_vel);
     params_.dynamic_vel_reset_min_vel = std::clamp(params_.dynamic_vel_reset_min_vel,
-                                                    params_.min_velocity, params_.dynamic_vel_reset_max_vel);
+                                                    0.0, params_.dynamic_vel_reset_max_vel);
     params_.dynamic_vel_threshold_distance = std::max(0.0, params_.dynamic_vel_threshold_distance);
     params_.dynamic_vel_dist_step = std::max(1e-3, params_.dynamic_vel_dist_step);
     params_.dynamic_vel_vel_step  = std::max(0.0, params_.dynamic_vel_vel_step);
@@ -193,11 +206,27 @@ void TransitionController::updateParameters()
     params_.angular_vel_decel_scale = std::clamp(params_.angular_vel_decel_scale, 0.0, 1.0);
     params_.angular_vel_decel_min_factor = std::clamp(params_.angular_vel_decel_min_factor, 0.0, 1.0);
 
+    // 蠕动段停滞检测
+    params_.stall_detection_enabled = parser.hasParameter("transition.stall_detection.enabled") ?
+        parser.getParameter<bool>("transition.stall_detection.enabled") : true;
+    params_.stall_distance_threshold = parser.hasParameter("transition.stall_detection.distance_threshold") ?
+        parser.getParameter<double>("transition.stall_detection.distance_threshold") : params_.creep_distance;
+    params_.stall_timeout = parser.hasParameter("transition.stall_detection.timeout") ?
+        parser.getParameter<double>("transition.stall_detection.timeout") : 3.0;
+    params_.stall_min_progress = parser.hasParameter("transition.stall_detection.min_progress") ?
+        parser.getParameter<double>("transition.stall_detection.min_progress") : 0.003;
+    params_.stall_distance_threshold = std::max(0.0, params_.stall_distance_threshold);
+    params_.stall_timeout            = std::max(0.1, params_.stall_timeout);
+    params_.stall_min_progress       = std::max(0.0, params_.stall_min_progress);
+
     // 调试
     params_.debug_enabled = parser.getParameter<bool>("transition.debug_enabled");
 
     LOG_INFO("参数加载成功 | 速度限制: v_max=%.2fm/s, ω_max=%.2frad/s | 控制增益: k_lin=%.1f, k_ang=%.1f",
              params_.max_velocity, params_.max_angular_vel, params_.k_linear, params_.k_angular);
+    LOG_INFO("  加减速: accel=%.3fm/s², decel=%.3fm/s²(%.1f²/%.2f×%.1f)",
+             params_.linear_accel_limit, params_.linear_decel_limit,
+             params_.max_velocity, params_.slow_down_distance, params_.decel_safety_factor);
     LOG_INFO("  精度: 位置±%.1fcm, 角度±%.1f° | 姿态伺服:%.2fm | 后退模式:%s(阈值%.0f°)",
              params_.arrival_tolerance * 100.0,
              params_.arrival_angle_tolerance * 57.3,
@@ -217,13 +246,16 @@ void TransitionController::updateParameters()
     params_.max_angular_vel = 1.0;
     params_.min_velocity = 0.05;
     params_.linear_accel_limit = 0.25;
-    params_.linear_decel_limit = 0.35;
+    params_.decel_safety_factor = 2.0;
     params_.k_linear = 1.0;
     params_.k_angular = 2.5;
     params_.arrival_tolerance = 0.03;
     params_.arrival_angle_tolerance = 0.1;  // 5.7度
     params_.arrival_confirm_count = 3;
     params_.slow_down_distance = 0.5;
+    // decel_limit 在 slow_down_distance 赋值后计算
+    params_.linear_decel_limit = params_.max_velocity * params_.max_velocity
+                                  / params_.slow_down_distance * params_.decel_safety_factor;
     params_.creep_distance = 0.1;
     params_.creep_velocity = 0.05;
     params_.hard_creep_min_enabled = false;
@@ -265,6 +297,7 @@ bool TransitionController::setGoal(double goal_x, double goal_y)
   backward_decided_ = false;
   backward_switched_to_forward_ = false;
   first_compute_after_goal_ = true;  // 标记：下次 computeVelocityCommands 时按距离重置 max_velocity
+  stall_detection_active_ = false;
 
   // 重置后退安全检测
   prev_distance_ = 0.0;
@@ -295,6 +328,7 @@ bool TransitionController::setGoal(double goal_x, double goal_y, double goal_the
   backward_decided_ = false;
   backward_switched_to_forward_ = false;
   first_compute_after_goal_ = true;  // 标记：下次 computeVelocityCommands 时按距离重置 max_velocity
+  stall_detection_active_ = false;
 
   // 重置后退安全检测
   prev_distance_ = 0.0;
@@ -376,12 +410,56 @@ bool TransitionController::computeVelocityCommands(
     params_.max_velocity = std::clamp(dynamic_max,
                                       params_.dynamic_vel_reset_min_vel,
                                       params_.dynamic_vel_reset_max_vel);
+    // 同步更新减速限制（decel_limit 与当前 max_velocity 和 slow_down_distance 挂钩）
+    if (params_.slow_down_distance > 1e-6) {
+      params_.linear_decel_limit = params_.max_velocity * params_.max_velocity
+                                    / params_.slow_down_distance * params_.decel_safety_factor;
+    }
     LOG_INFO("动态速度重置: 初始距离=%.3fm → max_vel=%.3fm/s "
              "(阈值%.1fm, 步长%.2fm/%.3fm/s, 范围[%.3f, %.3f])",
              distance, params_.max_velocity,
              params_.dynamic_vel_threshold_distance,
              params_.dynamic_vel_dist_step, params_.dynamic_vel_vel_step,
              params_.dynamic_vel_reset_min_vel, params_.dynamic_vel_reset_max_vel);
+  }
+
+  // 4.2 停滞检测（仅姿态伺服模式，且尚未进入阶段2）
+  // 当距离长时间无法收敛（< stall_distance_threshold 但未到 arrival_tolerance）时，
+  // 放弃位置精对准，强制进入阶段2直接对准航向
+  if (params_.stall_detection_enabled && goal_theta_set_ && !stage2_position_relaxed_ && !goal_reached_) {
+    if (distance < params_.stall_distance_threshold && distance > params_.arrival_tolerance) {
+      if (!stall_detection_active_) {
+        // 首次进入阈值区域，开始计时
+        stall_detection_active_ = true;
+        stall_check_start_time_ = this->now();
+        stall_check_start_distance_ = distance;
+      } else {
+        double elapsed = (this->now() - stall_check_start_time_).seconds();
+        double progress = stall_check_start_distance_ - distance;  // 正数表示距离在减小（在靠近）
+        if (progress >= params_.stall_min_progress) {
+          // 有实质进步，更新基准重新计时
+          stall_check_start_time_ = this->now();
+          stall_check_start_distance_ = distance;
+        } else if (elapsed >= params_.stall_timeout) {
+          // 超时且无进步 → 强制进入阶段2，放弃位置精对准
+          LOG_WARN("⚠ 蠕动停滞超时 %.1fs（距离 %.1fmm → %.1fmm，进步 %.1fmm < %.1fmm阈值），"
+                   "放弃位置对准，强制进入阶段2对准航向",
+                   elapsed,
+                   stall_check_start_distance_ * 1000.0, distance * 1000.0,
+                   progress * 1000.0, params_.stall_min_progress * 1000.0);
+          stage2_position_relaxed_ = true;
+          stage2_entry_distance_ = distance;
+          stage1_reentry_mode_ = false;
+          arrival_count_ = 0;
+          stall_detection_active_ = false;
+          prev_linear_vel_ = 0.0;
+          prev_angular_vel_ = 0.0;
+        }
+      }
+    } else {
+      // 距离 >= 阈值（离得远了）或已到达，重置计时器
+      stall_detection_active_ = false;
+    }
   }
 
   // 5. 根据模式选择控制策略
@@ -920,6 +998,7 @@ void TransitionController::reset()
   prev_linear_vel_ = 0.0;
   prev_angular_vel_ = 0.0;
   first_compute_after_goal_ = false;
+  stall_detection_active_ = false;
   use_backward_ = false;
   backward_decided_ = false;
   backward_switched_to_forward_ = false;
@@ -1188,9 +1267,13 @@ void TransitionController::smoothVelocity(double& v, double& omega, double dt)
     }
 
     // dt-based 加减速限制（让加速/减速更平滑）
+    // 注意：加速/减速应基于速度大小是否增大来判断，而非 dv 的符号。
+    // 后退模式下速度为负，减速（绝对值减小）时 dv > 0，若用 dv 符号会错误应用 accel_limit。
     if (dt > 1e-6) {
       double dv = v - prev_v;
-      double limit = (dv >= 0.0) ? (params_.linear_accel_limit * dt) : (params_.linear_decel_limit * dt);
+      bool is_same_sign = (v * prev_v >= 0.0);
+      bool is_decel = is_same_sign ? (std::abs(v) < std::abs(prev_v)) : true;
+      double limit = is_decel ? (params_.linear_decel_limit * dt) : (params_.linear_accel_limit * dt);
       if (limit > 0.0) {
         dv = std::clamp(dv, -limit, limit);
         v = prev_v + dv;

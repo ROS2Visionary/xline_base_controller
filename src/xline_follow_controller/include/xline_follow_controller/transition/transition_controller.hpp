@@ -122,9 +122,10 @@ private:
     double max_angular_vel;        // 最大角速度 [rad/s]
     double min_velocity;           // 最小线速度 [m/s]
 
-    // 线速度加减速限制（用于更平滑的加速/减速）
-    double linear_accel_limit;     // 最大加速度 [m/s^2]
-    double linear_decel_limit;     // 最大减速度 [m/s^2]（正数）
+    // 线速度加减速限制
+    double linear_accel_limit;     // 最大加速度 [m/s^2]（yaml 直接配置）
+    double linear_decel_limit;     // 最大减速度 [m/s^2]（自动计算：max_vel²/slow_down_dist×safety_factor）
+    double decel_safety_factor;    // 减速安全系数（>=1，越大减速越猛）
 
     // 控制增益
     double k_linear;               // 线速度增益
@@ -186,6 +187,12 @@ private:
     double angular_vel_decel_scale;      // 衰减强度 [0,1]（0=不衰减，1=满角速度时线速度降为0）
     double angular_vel_decel_min_factor; // 衰减后线速度的最小比例（防止被压得太低）
 
+    // 蠕动段停滞检测（近目标长时间无收敛时放弃位置对准，直接对准航向）
+    bool stall_detection_enabled;        // 是否启用停滞检测
+    double stall_distance_threshold;     // 开始计时的距离阈值 [m]
+    double stall_timeout;                // 停滞超时时间 [s]
+    double stall_min_progress;           // 重置计时的最小距离进步量 [m]
+
     // 调试
     bool debug_enabled;            // 是否启用调试输出
   };
@@ -227,6 +234,11 @@ private:
 
   // 动态速度重置标志
   bool first_compute_after_goal_;     // 接收到新目标后是否是第一次 computeVelocityCommands
+
+  // 蠕动段停滞检测状态
+  bool stall_detection_active_;           // 是否正在计时
+  rclcpp::Time stall_check_start_time_;   // 计时开始时刻
+  double stall_check_start_distance_;     // 计时开始时的距离
 
   // 阶段2控制状态
   double last_stage2_yaw_error_;      // 阶段2航向误差（用于过零判定）
