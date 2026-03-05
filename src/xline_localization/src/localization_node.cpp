@@ -39,8 +39,18 @@ LocalizationNode::LocalizationNode(const rclcpp::NodeOptions & options)
 
   // 创建姿态校准服务
   calibrate_service_ = this->create_service<std_srvs::srv::Trigger>(
-      "~/calibrate_pose",
+      "/localization/calibrate_pose",
       std::bind(&LocalizationNode::calibratePoseCallback, this, _1, _2));
+
+  // 创建应用校准服务（外部触发拟合并更新航向锚点）
+  apply_calibration_service_ = this->create_service<std_srvs::srv::Trigger>(
+      "/localization/apply_calibration",
+      std::bind(&LocalizationNode::applyCalibrationCallback, this, _1, _2));
+
+  // 创建中止校准服务（外部触发丢弃当前收集数据）
+  abort_calibration_service_ = this->create_service<std_srvs::srv::Trigger>(
+      "/localization/abort_calibration",
+      std::bind(&LocalizationNode::abortCalibrationCallback, this, _1, _2));
 
   // 初始化位姿消息
   reflector_pose_.header.frame_id = "map";
@@ -59,7 +69,7 @@ LocalizationNode::LocalizationNode(const rclcpp::NodeOptions & options)
               reflector_to_base_offset_.x(),
               reflector_to_base_offset_.y(),
               reflector_to_base_offset_.z());
-  RCLCPP_INFO(get_logger(), "服务: ~/calibrate_pose");
+  RCLCPP_INFO(get_logger(), "服务: /localization/calibrate_pose, /localization/apply_calibration, /localization/abort_calibration");
 }
 
 LocalizationNode::~LocalizationNode() = default;
@@ -117,7 +127,7 @@ void LocalizationNode::reflectorPositionCallback(
 
   if (!initialized_) {
     RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
-                         "定位节点未初始化,请调用 ~/calibrate_pose 服务进行校准");
+                         "定位节点未初始化,请调用 /localization/calibrate_pose 服务进行校准");
     // publishZeroPose();
     // return;
   }
@@ -188,29 +198,19 @@ void LocalizationNode::calibratePoseCallback(
 {
   (void)request;
 
-  RCLCPP_INFO(get_logger(), "开始姿态校准...");
-  RCLCPP_INFO(get_logger(), "请让机器人沿直线移动一段距离(建议>0.5米)");
+  RCLCPP_INFO(get_logger(), "开始收集校准位置数据...");
 
-  // 开始收集位置数据
+  // 清空并开始收集原始反射板位置数据
   {
     std::scoped_lock<std::mutex> lock(collection_mutex_);
     position_samples_.clear();
     is_collecting_ = true;
   }
 
-  // 创建单次定时器，3秒后异步完成校准
-  calibration_timer_ = this->create_wall_timer(
-      std::chrono::milliseconds(3000),
-      [this]() {
-        finishCalibration();
-        // 取消定时器（单次执行）
-        calibration_timer_->cancel();
-      });
-
-  // 立即返回响应
+  // 立即返回，等待外部通过 apply_calibration 触发拟合
   response->success = true;
-  response->message = "已开始校准，将在3秒后完成";
-  RCLCPP_INFO(get_logger(), "校准进行中，数据收集时间：3秒");
+  response->message = "已开始收集位置数据，请调用 apply_calibration 完成校准";
+  RCLCPP_INFO(get_logger(), "位置数据收集已启动，等待外部完成指令");
 }
 
 void LocalizationNode::finishCalibration()
@@ -254,6 +254,57 @@ void LocalizationNode::finishCalibration()
     std::scoped_lock<std::mutex> lock(pose_mutex_);
     pose_publisher_->publish(robot_pose_);
   }
+}
+
+void LocalizationNode::applyCalibrationCallback(
+    const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
+    std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+{
+  (void)request;
+
+  RCLCPP_INFO(get_logger(), "收到 apply_calibration 指令，执行拟合...");
+
+  // 停止收集
+  {
+    std::scoped_lock<std::mutex> lock(collection_mutex_);
+    is_collecting_ = false;
+  }
+
+  RCLCPP_INFO(get_logger(), "共收集 %zu 个位置点，开始拟合", position_samples_.size());
+
+  // 跳过前 1/3（LQR 对齐收敛段），只用稳定跟随段拟合
+  {
+    std::scoped_lock<std::mutex> lock(collection_mutex_);
+    const size_t skip = position_samples_.size() / 3;
+    if (skip > 0) {
+      position_samples_.erase(position_samples_.begin(), position_samples_.begin() + skip);
+      RCLCPP_INFO(get_logger(), "跳过前 %zu 个收敛段点，剩余 %zu 个点用于拟合", skip, position_samples_.size());
+    }
+  }
+
+  // 复用现有 finishCalibration()，逻辑完全不变
+  finishCalibration();
+
+  response->success = initialized_;
+  response->message = initialized_ ? "航向锚点更新成功" : "拟合失败，样本不足或移动距离过短";
+  RCLCPP_INFO(get_logger(), "apply_calibration 完成: %s", response->message.c_str());
+}
+
+void LocalizationNode::abortCalibrationCallback(
+    const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
+    std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+{
+  (void)request;
+
+  {
+    std::scoped_lock<std::mutex> lock(collection_mutex_);
+    is_collecting_ = false;
+    position_samples_.clear();
+  }
+
+  response->success = true;
+  response->message = "校准已中止，数据已清除";
+  RCLCPP_INFO(get_logger(), "abort_calibration: 数据收集已停止，样本已清除");
 }
 
 void LocalizationNode::updateParameter()

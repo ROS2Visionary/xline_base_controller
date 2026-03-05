@@ -53,13 +53,33 @@ namespace xline
       ~MotionControlCenter() override;
 
       /**
-       * 执行定位系统校准
-       * 协调机器人移动和调用定位节点的校准服务
-       * @param linear_velocity 校准时的前进速度(m/s)，默认0.2
-       * @param duration 移动持续时间(秒)，默认10
-       * @return 校准是否成功
+       * 执行定位系统校准（入口，自动选择策略）
+       *
+       * - 首次开机（initialized_ == false）：Bootstrap 方案
+       *   以固定线速度前进 0.5m，收集原始反射板位置，最小二乘拟合建立初始航向锚点。
+       *
+       * - 已有航向锚点：LQR 精确校准方案
+       *   以当前机器人正前方为目标生成 0.5m 临时路径，使用现有 LQR 闭环走直，
+       *   全程监控 e_y 质量门控（均值<2mm，p90<3mm），最多重试 max_retries 次。
+       *
+       * @param speed       校准行走速度（m/s），默认 0.10
+       * @param max_retries LQR 方案最大重试次数，默认 5
+       * @return 校准成功返回 true，失败返回 false
        */
-      bool executeLocalizationCalibration(double linear_velocity = 0.2, double duration = 10.0);
+      bool executeLocalizationCalibration(double speed = 0.10, int max_retries = 5);
+
+    private:
+      /**
+       * Bootstrap 校准（开机首次，无航向锚点）
+       * 固定线速度 0.5m，建立粗糙初始航向（σ_θ ≈ 0.17°）
+       */
+      bool executeBootstrapCalibration(double speed);
+
+      /**
+       * LQR 精确校准（已有航向锚点时使用）
+       * LQR 闭环走直 + e_y 质量门控，精度 σ_θ ≈ 0.12°
+       */
+      bool executeLQRCalibration(double speed, int max_retries);
 
     private:
       // ExecutePlan 动作服务器实例
@@ -85,6 +105,10 @@ namespace xline
 
       // 定位校准服务客户端
       rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr calibration_client_;
+      // 应用校准结果（触发拟合+更新锚点）
+      rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr apply_calibration_client_;
+      // 中止校准（丢弃采集数据）
+      rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr abort_calibration_client_;
 
       // 暂停/恢复服务
       rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr pause_service_;
@@ -98,12 +122,17 @@ namespace xline
 
       // 执行状态标志及互斥锁
       std::atomic<bool> is_executing_{false};
+      std::atomic<bool> is_calibrating_{false};           // 外部校准服务正在执行
+      std::atomic<bool> external_calibration_succeeded_{false};  // 外部校准结果
       std::atomic<bool> is_paused_{false};
       std::atomic<bool> shutdown_{false};  // 节点关闭标志
       bool pause_notified_{false};  // 标记是否已通知暂停（避免重复日志）
       std::condition_variable pause_cv_;
       std::mutex pause_mutex_;
-      std::mutex service_mutex_;  // 保护暂停/恢复服务
+      std::condition_variable calibration_done_cv_;  // 校准完成通知
+      std::mutex calibration_done_mutex_;
+      std::mutex state_mutex_;      // 保护 is_executing_ 与 is_calibrating_ 的原子检查+设置
+      std::mutex service_mutex_;    // 保护暂停/恢复服务
       
       uint32_t current_layer_id; // 当前路径id
       std::string current_layer_type; // 当前路径所属图层类型

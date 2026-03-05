@@ -38,7 +38,9 @@ namespace xline
                                                                              10);        // QoS 队列大小
 
       // 创建定位校准服务客户端
-      calibration_client_ = this->create_client<std_srvs::srv::Trigger>("/localization/calibrate_pose"); // 服务名
+      calibration_client_ = this->create_client<std_srvs::srv::Trigger>("/localization/calibrate_pose");
+      apply_calibration_client_ = this->create_client<std_srvs::srv::Trigger>("/localization/apply_calibration");
+      abort_calibration_client_ = this->create_client<std_srvs::srv::Trigger>("/localization/abort_calibration");
 
       // 创建暂停/恢复服务
       pause_service_ = this->create_service<std_srvs::srv::Trigger>(
@@ -58,7 +60,7 @@ namespace xline
       RCLCPP_INFO(get_logger(), "MotionControlCenter 动作服务器已就绪: 'execute_plan'");
       RCLCPP_INFO(get_logger(), "位姿订阅器已创建: '/robot_pose'");
       RCLCPP_INFO(get_logger(), "cmd_vel 发布器已创建: '/cmd_vel'");
-      RCLCPP_INFO(get_logger(), "校准服务客户端已创建: '/localization/calibrate_pose'");
+      RCLCPP_INFO(get_logger(), "校准服务客户端已创建: calibrate_pose / apply_calibration / abort_calibration");
       RCLCPP_INFO(get_logger(), "暂停服务已创建: '/execution/pause'");
       RCLCPP_INFO(get_logger(), "恢复服务已创建: '/execution/resume'");
       RCLCPP_INFO(get_logger(), "姿态校正服务已创建: '/motion_control/execute_calibration'");
@@ -80,9 +82,9 @@ namespace xline
       RCLCPP_INFO(get_logger(), "MotionControlCenter 正在关闭...");
       shutdown_.store(true);
 
-      // 唤醒可能正在暂停等待的线程
+      // 唤醒所有可能正在等待的线程（暂停等待 + 校准等待）
       pause_cv_.notify_all();
-
+      calibration_done_cv_.notify_all();
 
       // 给执行线程一些时间完成清理
       std::this_thread::sleep_for(std::chrono::milliseconds(200));
@@ -136,9 +138,9 @@ namespace xline
       (void)goal_handle;
       RCLCPP_INFO(get_logger(), "收到取消请求，接受取消");
 
-      // 唤醒可能正在暂停等待的线程
-      // 这样checkPauseState()中的条件变量会重新检查is_canceling()
+      // 唤醒所有可能正在等待的线程（暂停等待 + 校准等待）
       pause_cv_.notify_all();
+      calibration_done_cv_.notify_all();
 
       return rclcpp_action::CancelResponse::ACCEPT;
     }
@@ -163,18 +165,22 @@ namespace xline
 
     void MotionControlCenter::execute(const std::shared_ptr<GoalHandleExecutePlan> goal_handle)
     {
-      // 使用 compare_exchange_strong 原子地检查并设置执行标志
-      // 这样可以防止多个 goal 同时通过 handleGoal 检查后并发执行
-      bool expected = false;
-      if (!is_executing_.compare_exchange_strong(expected, true))
+      // 用 state_mutex_ 保证 is_executing_ 与 is_calibrating_ 的检查+设置是原子的，
+      // 防止与 handleCalibrationService 产生竞态
+      bool need_wait_calibration = false;
       {
-        // 竞态条件：另一个任务已经开始执行
-        auto result = std::make_shared<ExecutePlan::Result>();
-        result->success = false;
-        result->error_message = "系统忙：另一个任务正在执行中";
-        goal_handle->abort(result);
-        RCLCPP_ERROR(get_logger(), "拒绝执行：检测到并发任务冲突");
-        return;
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        if (is_executing_.load())
+        {
+          auto result = std::make_shared<ExecutePlan::Result>();
+          result->success = false;
+          result->error_message = "系统忙：另一个任务正在执行中";
+          goal_handle->abort(result);
+          RCLCPP_ERROR(get_logger(), "拒绝执行：检测到并发任务冲突");
+          return;
+        }
+        is_executing_.store(true);
+        need_wait_calibration = is_calibrating_.load();
       }
 
       // 使用RAII确保函数退出时清除所有状态标志
@@ -184,6 +190,40 @@ namespace xline
         is_paused_.store(false);  // 防止暂停标志残留
       };
       std::unique_ptr<void, decltype(cleanup)> guard(reinterpret_cast<void *>(1), cleanup);
+
+      // 若外部校准服务正在执行，等待其完成后再开始路径跟随
+      if (need_wait_calibration)
+      {
+        RCLCPP_INFO(get_logger(), "检测到外部校准正在进行，等待校准完成后再执行路径跟随...");
+        std::unique_lock<std::mutex> lock(calibration_done_mutex_);
+        calibration_done_cv_.wait(lock, [this, &goal_handle]()
+        {
+          return !is_calibrating_.load() || goal_handle->is_canceling() || shutdown_.load();
+        });
+
+        if (goal_handle->is_canceling() || shutdown_.load())
+        {
+          guard.reset();
+          auto result = std::make_shared<ExecutePlan::Result>();
+          result->success = false;
+          result->error_message = "等待校准期间任务被取消";
+          goal_handle->canceled(result);
+          return;
+        }
+
+        if (!external_calibration_succeeded_.load())
+        {
+          guard.reset();
+          auto result = std::make_shared<ExecutePlan::Result>();
+          result->success = false;
+          result->error_message = "外部航向校准失败，取消执行路径跟随";
+          goal_handle->abort(result);
+          RCLCPP_ERROR(get_logger(), "外部校准失败，放弃路径跟随任务");
+          return;
+        }
+
+        RCLCPP_INFO(get_logger(), "校准完成，开始执行路径跟随");
+      }
 
       const auto goal = goal_handle->get_goal();
       auto feedback = std::make_shared<ExecutePlan::Feedback>();
@@ -422,9 +462,9 @@ namespace xline
                       path_id);
 
           // 使用与姿态校正服务相同的参数
-          double calibration_velocity = 0.05;  // m/s
-          double calibration_duration = 3.0;   // 秒
-          bool calibration_success = executeLocalizationCalibration(calibration_velocity, calibration_duration);
+          double calibration_velocity = 0.10;  // m/s
+          int calibration_max_retries = 3;
+          bool calibration_success = executeLocalizationCalibration(calibration_velocity, calibration_max_retries);
 
           if (!calibration_success)
           {
@@ -1222,99 +1262,365 @@ namespace xline
     }
 
     /**
-     * 执行定位系统校准
-     * - 异步调用校准服务（不等待结果）
-     * - 控制机器人沿直线前进
+     * 执行定位系统校准（入口函数）
+     *
+     * 根据 localization 节点的初始化状态自动选择校准策略：
+     *   - initialized_ == false（开机首次）：Bootstrap 方案，固定线速度 0.5m
+     *   - initialized_ == true（已有锚点）  ：LQR 精确方案，闭环走直 + 质量门控
+     *
+     * 两种方案共用同一套服务接口（calibrate_pose / apply_calibration / abort_calibration），
+     * 对外触发方式（60s 自动 + 外部服务）完全不变。
      */
-    bool MotionControlCenter::executeLocalizationCalibration(double linear_velocity, double duration)
+    bool MotionControlCenter::executeLocalizationCalibration(double speed, int max_retries)
     {
-      RCLCPP_INFO(get_logger(), "开始定位系统校准流程...");
-      RCLCPP_INFO(get_logger(), "校准参数: 速度=%.2f m/s, 持续时间=%.1f秒", linear_velocity, duration);
-
-      // 1. 检查校准服务是否可用（快速检查，不阻塞）
-      if (!calibration_client_->service_is_ready())
+      // 通过 has_last_calibration_time_ 判断是否为首次校准
+      // has_last_calibration_time_=false 与 localization 的 initialized_=false 同步：
+      // 两者都在第一次成功校准后才被置为 true。
+      bool is_bootstrap = false;
       {
-        RCLCPP_WARN(get_logger(), "校准服务当前不可用，将尝试异步调用");
+        std::lock_guard<std::mutex> lock(calibration_mutex_);
+        is_bootstrap = !has_last_calibration_time_;
       }
 
-      // 2. 异步调用校准服务
-      auto request = std::make_shared<std_srvs::srv::Trigger::Request>();
-      auto future = calibration_client_->async_send_request(request);
-      
-      // 不等待服务响应，直接继续执行
-      RCLCPP_INFO(get_logger(), "校准服务请求已发送（异步）");
+      if (is_bootstrap)
+      {
+        RCLCPP_INFO(get_logger(), "[校准] 首次开机，使用 Bootstrap 方案（固定线速度 0.5m）");
+        return executeBootstrapCalibration(speed);
+      }
+      else
+      {
+        RCLCPP_INFO(get_logger(), "[校准] 已有航向锚点，使用 LQR 精确校准方案");
+        return executeLQRCalibration(speed, max_retries);
+      }
+    }
 
-      // 3. 控制机器人沿直线前进
-      RCLCPP_INFO(get_logger(), "控制机器人前进 %.1f 秒...", duration);
-      auto twist_msg = geometry_msgs::msg::Twist();
-      twist_msg.linear.x = linear_velocity;
-      twist_msg.linear.y = 0.0;
-      twist_msg.linear.z = 0.0;
-      twist_msg.angular.x = 0.0;
-      twist_msg.angular.y = 0.0;
-      twist_msg.angular.z = 0.0;
+    /**
+     * Bootstrap 校准（开机首次，无航向锚点）
+     *
+     * 由于开机时航向未知，robot_pose 位置偏差可达数百毫米，LQR 路径跟随无法可靠工作。
+     * 使用旧方案：固定线速度前进 0.5m，定位节点收集原始反射板位置后拟合得到初始航向。
+     * 精度 σ_θ ≈ 0.17°，足以作为后续 LQR 精确校准的起点。
+     */
+    bool MotionControlCenter::executeBootstrapCalibration(double speed)
+    {
+      constexpr double CALIB_DISTANCE = 0.5;               // 目标行程 [m]
+      const double     calib_duration = CALIB_DISTANCE / speed;  // 时间 [s]
 
-      // 以 20Hz 频率发布 cmd_vel
+      RCLCPP_INFO(get_logger(), "[Bootstrap] 速度=%.2f m/s，行程=%.1fm，时长=%.1fs",
+                  speed, CALIB_DISTANCE, calib_duration);
+
+      // 1. 通知 localization 开始收集原始反射板位置数据
+      {
+        auto req = std::make_shared<std_srvs::srv::Trigger::Request>();
+        calibration_client_->async_send_request(req);
+        RCLCPP_INFO(get_logger(), "[Bootstrap] 已发送 calibrate_pose 请求，开始收集数据");
+      }
+
+      // 2. 以固定线速度前进（不依赖航向估计）
+      geometry_msgs::msg::Twist forward;
+      forward.linear.x = speed;
       rclcpp::Rate loop_rate(20);
       auto start_time = this->now();
-      auto target_duration = rclcpp::Duration::from_seconds(duration);
+      auto target_dur = rclcpp::Duration::from_seconds(calib_duration);
 
-      while ((this->now() - start_time) < target_duration)
+      while (rclcpp::ok() && !shutdown_.load() && (this->now() - start_time) < target_dur)
       {
-        cmd_vel_publisher_->publish(twist_msg);
+        cmd_vel_publisher_->publish(forward);
         loop_rate.sleep();
       }
 
-      // 4. 停止机器人
-      RCLCPP_INFO(get_logger(), "停止机器人移动");
-      twist_msg.linear.x = 0.0;
-      cmd_vel_publisher_->publish(twist_msg);
-
-      // 4.1 在姿态校正结束后额外静止 0.5 秒
-      RCLCPP_INFO(get_logger(), "姿态校正完成，保持静止 0.5 秒...");
+      // 3. 停止机器人，静止 0.5s 等待运动完全停止
+      geometry_msgs::msg::Twist stop;
+      cmd_vel_publisher_->publish(stop);
       rclcpp::Rate stop_rate(20);
-      auto pause_start = this->now();
-      auto pause_duration = rclcpp::Duration::from_seconds(0.5);
-      while ((this->now() - pause_start) < pause_duration)
+      auto stop_start = this->now();
+      auto stop_dur   = rclcpp::Duration::from_seconds(0.5);
+      while (rclcpp::ok() && !shutdown_.load() && (this->now() - stop_start) < stop_dur)
       {
-        // 持续发布零速，确保机器人保持静止
-        cmd_vel_publisher_->publish(twist_msg);
+        cmd_vel_publisher_->publish(stop);
         stop_rate.sleep();
       }
 
-      auto calibration_end = this->now();
-      double total_duration = (calibration_end - start_time).seconds();
-      RCLCPP_INFO(get_logger(), "本次姿态校正总耗时约 %.3f 秒（含 0.5 秒静止）", total_duration);
+      // 节点关闭时不做拟合
+      if (shutdown_.load())
+      {
+        RCLCPP_WARN(get_logger(), "[Bootstrap] 节点关闭，中止校准");
+        return false;
+      }
 
-      // 更新最近一次姿态校正时间戳（从“校正+静止”结束时刻开始计时60秒）
+      RCLCPP_INFO(get_logger(), "[Bootstrap] 行走完成，触发拟合...");
+
+      // 4. 触发 apply_calibration，等待拟合完成（最多 5s）
+      auto apply_req = std::make_shared<std_srvs::srv::Trigger::Request>();
+      auto apply_future = apply_calibration_client_->async_send_request(apply_req);
+      auto apply_status = apply_future.wait_for(std::chrono::seconds(5));
+
+      if (apply_status != std::future_status::ready)
+      {
+        RCLCPP_ERROR(get_logger(), "[Bootstrap] apply_calibration 响应超时，校准失败");
+        return false;
+      }
+
+      auto apply_response = apply_future.get();
+      if (!apply_response->success)
+      {
+        RCLCPP_ERROR(get_logger(), "[Bootstrap] 拟合失败: %s", apply_response->message.c_str());
+        return false;
+      }
+
+      // 5. 更新校准时间戳，启动 60s 计时窗口
       {
         std::lock_guard<std::mutex> lock(calibration_mutex_);
-        last_calibration_time_ = calibration_end;
+        last_calibration_time_ = this->now();
         has_last_calibration_time_ = true;
       }
-      RCLCPP_INFO(get_logger(), "更新姿态校正时间戳，开始计时 60s 窗口");
 
-      // 5. 异步检查服务结果（不阻塞，可选）
-      auto async_task = std::async(std::launch::async, [this, future = std::move(future)]() mutable {
-        try {
-          auto status = future.wait_for(std::chrono::seconds(2));
-          if (status == std::future_status::ready) {
-            auto response = future.get();
-            if (response->success) {
-              RCLCPP_INFO(get_logger(), "校准服务完成: %s", response->message.c_str());
-            } else {
-              RCLCPP_WARN(get_logger(), "校准服务返回失败: %s", response->message.c_str());
-            }
-          } else {
-            RCLCPP_WARN(get_logger(), "校准服务响应超时（异步检查）");
-          }
-        } catch (const std::exception &e) {
-          RCLCPP_ERROR(get_logger(), "校准服务异常: %s", e.what());
+      RCLCPP_INFO(get_logger(), "[Bootstrap] 校准完成，航向锚点已建立，开始计时 60s 窗口");
+      return true;
+    }
+
+    /**
+     * LQR 精确校准（已有航向锚点时使用）
+     *
+     * 以当前机器人正前方为目标生成 0.5m 临时路径，调用现有 LQR 闭环走直。
+     * 全程监控反射板轨迹的横向误差（e_y），通过质量门控后触发拟合。
+     *
+     * 精度 σ_θ ≈ 0.12°（受限于全站仪 3mm 噪声，为当前硬件理论下限）。
+     */
+    bool MotionControlCenter::executeLQRCalibration(double speed, int max_retries)
+    {
+      constexpr double CALIB_DISTANCE  = 0.4;    // 校准行程 [m]
+      constexpr double MEAN_EY_LIMIT   = 0.002;  // 均值 e_y 上限 [m]
+      constexpr double P90_EY_LIMIT    = 0.003;  // p90  e_y 上限 [m]
+      constexpr double LOOP_HZ         = 18.0;   // 与 compute_velocity 控制频率一致
+      constexpr double TIMEOUT_SEC     = 30.0;   // 单次超时 [s]
+
+      for (int attempt = 0; attempt < max_retries; attempt++)
+      {
+        // 节点关闭时立即退出，避免继续访问已销毁的资源
+        if (shutdown_.load())
+        {
+          RCLCPP_WARN(get_logger(), "[LQR校准] 节点关闭，中止校准");
+          return false;
         }
-      });
-      (void)async_task;  // 显式忽略返回值，异步任务在后台运行
 
-      return true; // 立即返回，不等待校准完成
+        if (attempt > 0)
+        {
+          RCLCPP_INFO(get_logger(), "[LQR校准] 第 %d/%d 次重试，等待 0.5s...",
+                      attempt + 1, max_retries);
+          // 分段 sleep，每 50ms 检查一次 shutdown
+          for (int i = 0; i < 10 && !shutdown_.load(); ++i)
+          {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+          }
+          if (shutdown_.load()) { return false; }
+        }
+
+        // ── 1. 获取当前位姿（最多等待 2s）──────────────────────────────
+        geometry_msgs::msg::PoseStamped curr_pose;
+        {
+          auto wait_start = this->now();
+          while (!getLatestPose(curr_pose) ||
+                 (curr_pose.pose.position.x == 0.0 && curr_pose.pose.position.y == 0.0))
+          {
+            if (shutdown_.load())
+            {
+              RCLCPP_WARN(get_logger(), "[LQR校准] 节点关闭，中止等待位姿");
+              return false;
+            }
+            if ((this->now() - wait_start).seconds() > 2.0)
+            {
+              RCLCPP_ERROR(get_logger(), "[LQR校准] 等待有效位姿超时，校准失败");
+              return false;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+          }
+        }
+        const double sx  = curr_pose.pose.position.x;
+        const double sy  = curr_pose.pose.position.y;
+        const double yaw = tf2::getYaw(curr_pose.pose.orientation);
+
+        // ── 2. 目标点：机器人当前正前方 CALIB_DISTANCE 处 ────────────
+        const double tx = sx + CALIB_DISTANCE * std::cos(yaw);
+        const double ty = sy + CALIB_DISTANCE * std::sin(yaw);
+
+        // 校准线法向量（用于独立计算 e_y，不依赖 LQR 内部状态）
+        const double dx  = tx - sx;
+        const double dy  = ty - sy;
+        const double len = std::sqrt(dx * dx + dy * dy);
+        const double nx  = -dy / len;   // 法向量 x
+        const double ny  =  dx / len;   // 法向量 y
+
+        RCLCPP_INFO(get_logger(),
+                    "[LQR校准] 校准路径: (%.3f, %.3f) → (%.3f, %.3f)，航向=%.1f°",
+                    sx, sy, tx, ty, yaw * 180.0 / M_PI);
+
+        // ── 3. 通知 localization 开始收集 ────────────────────────────
+        {
+          auto req = std::make_shared<std_srvs::srv::Trigger::Request>();
+          calibration_client_->async_send_request(req);
+        }
+
+        // ── 4. 配置 LQR 路径跟随器 ───────────────────────────────────
+        line_follow_controller_->setSpeedLimit(speed);
+        line_follow_controller_->setTransitionPath(false);
+        line_follow_controller_->setBackFollow(false);
+        line_follow_controller_->setPlan(sx, sy, tx, ty);
+
+        // ── 5. LQR 主循环（18Hz）─────────────────────────────────────
+        std::vector<double> ey_samples;
+        ey_samples.reserve(static_cast<size_t>(CALIB_DISTANCE / speed * LOOP_HZ * 1.5));
+
+        rclcpp::Rate loop_rate(LOOP_HZ);
+        const auto loop_start = this->now();
+        bool timeout_flag = false;
+
+        while (rclcpp::ok() && !shutdown_.load())
+        {
+          if ((this->now() - loop_start).seconds() > TIMEOUT_SEC)
+          {
+            RCLCPP_WARN(get_logger(), "[LQR校准] 超时（%.0fs），触发重试", TIMEOUT_SEC);
+            timeout_flag = true;
+            break;
+          }
+
+          if (line_follow_controller_->isGoalReached())
+          {
+            break;
+          }
+
+          geometry_msgs::msg::PoseStamped pose;
+          if (!getLatestPose(pose) ||
+              (pose.pose.position.x == 0.0 && pose.pose.position.y == 0.0))
+          {
+            loop_rate.sleep();
+            continue;
+          }
+
+          // 计算速度指令
+          geometry_msgs::msg::Twist       vel_in;
+          geometry_msgs::msg::TwistStamped cmd_out;
+          line_follow_controller_->computeVelocityCommands(pose, vel_in, cmd_out);
+
+          geometry_msgs::msg::Twist twist;
+          twist.linear  = cmd_out.twist.linear;
+          twist.angular = cmd_out.twist.angular;
+          cmd_vel_publisher_->publish(twist);
+
+          // 计算横向误差（纯位置，不依赖航向估计）
+          const double rx  = pose.pose.position.x - sx;
+          const double ry  = pose.pose.position.y - sy;
+          const double e_y = std::abs(rx * nx + ry * ny);
+          ey_samples.push_back(e_y);
+
+          loop_rate.sleep();
+        }
+
+        // 停止机器人，静止 0.3s
+        {
+          geometry_msgs::msg::Twist stop;
+          rclcpp::Rate stop_rate(20);
+          auto stop_start = this->now();
+          auto stop_dur   = rclcpp::Duration::from_seconds(0.3);
+          while (rclcpp::ok() && !shutdown_.load() && (this->now() - stop_start) < stop_dur)
+          {
+            cmd_vel_publisher_->publish(stop);
+            stop_rate.sleep();
+          }
+        }
+
+        // 节点关闭导致主循环退出：直接中止，不做质量评估
+        if (shutdown_.load())
+        {
+          auto req = std::make_shared<std_srvs::srv::Trigger::Request>();
+          abort_calibration_client_->async_send_request(req);
+          line_follow_controller_->cancel();
+          RCLCPP_WARN(get_logger(), "[LQR校准] 节点关闭，中止校准");
+          return false;
+        }
+
+        // ── 6. 质量评估 ──────────────────────────────────────────────
+        // 样本不足（超时或路径太短）直接 abort
+        if (timeout_flag || ey_samples.size() < 20)
+        {
+          RCLCPP_WARN(get_logger(), "[LQR校准] 样本不足（%zu 个），中止本次", ey_samples.size());
+          auto req = std::make_shared<std_srvs::srv::Trigger::Request>();
+          abort_calibration_client_->async_send_request(req);
+          line_follow_controller_->cancel();
+          continue;
+        }
+
+        // 跳过前 1/3（对齐收敛段），仅评估稳定跟随段
+        const size_t skip = ey_samples.size() / 3;
+        const std::vector<double> stable(ey_samples.begin() + skip, ey_samples.end());
+
+        double mean_ey = 0.0;
+        for (double v : stable) { mean_ey += v; }
+        mean_ey /= static_cast<double>(stable.size());
+
+        std::vector<double> sorted = stable;
+        std::sort(sorted.begin(), sorted.end());
+        const double p90_ey = sorted[static_cast<size_t>(sorted.size() * 0.9)];
+
+        RCLCPP_INFO(get_logger(),
+                    "[LQR校准] 质量评估: mean_ey=%.1fmm，p90_ey=%.1fmm（阈值 %.0f/%.0fmm）",
+                    mean_ey * 1000.0, p90_ey * 1000.0,
+                    MEAN_EY_LIMIT * 1000.0, P90_EY_LIMIT * 1000.0);
+
+        const bool quality_ok = (mean_ey <= MEAN_EY_LIMIT) && (p90_ey <= P90_EY_LIMIT);
+
+        // ── 7. 根据质量结果分发 ──────────────────────────────────────
+        if (quality_ok)
+        {
+          // 触发拟合，等待 localization 完成（最多 5s）
+          auto apply_req    = std::make_shared<std_srvs::srv::Trigger::Request>();
+          auto apply_future = apply_calibration_client_->async_send_request(apply_req);
+          auto apply_status = apply_future.wait_for(std::chrono::seconds(5));
+
+          if (apply_status != std::future_status::ready)
+          {
+            RCLCPP_ERROR(get_logger(), "[LQR校准] apply_calibration 响应超时");
+            return false;
+          }
+          auto apply_response = apply_future.get();
+          if (!apply_response->success)
+          {
+            RCLCPP_ERROR(get_logger(), "[LQR校准] 拟合失败: %s", apply_response->message.c_str());
+            return false;
+          }
+
+          // 更新校准时间戳，重置 60s 计时窗口
+          {
+            std::lock_guard<std::mutex> lock(calibration_mutex_);
+            last_calibration_time_ = this->now();
+            has_last_calibration_time_ = true;
+          }
+
+          // 重置控制器状态（清除 setSpeedLimit 等设置，避免影响后续任务）
+          line_follow_controller_->cancel();
+
+          RCLCPP_INFO(get_logger(),
+                      "[LQR校准] 成功（第 %d 次尝试），航向锚点已更新，60s 窗口重置",
+                      attempt + 1);
+          return true;
+        }
+        else
+        {
+          auto req = std::make_shared<std_srvs::srv::Trigger::Request>();
+          abort_calibration_client_->async_send_request(req);
+          line_follow_controller_->cancel();
+          RCLCPP_WARN(get_logger(),
+                      "[LQR校准] 质量不达标，准备第 %d/%d 次重试",
+                      attempt + 2, max_retries);
+        }
+      }
+
+      // 重置控制器状态，避免残留 setSpeedLimit 影响后续任务
+      line_follow_controller_->cancel();
+
+      RCLCPP_ERROR(get_logger(), "[LQR校准] 已重试 %d 次，均未通过质量门控，校准失败",
+                   max_retries);
+      return false;
     }
 
     /**
@@ -1484,45 +1790,55 @@ namespace xline
 
       RCLCPP_INFO(get_logger(), "收到姿态校正服务请求");
 
-      // 使用 compare_exchange_strong 原子地检查并设置执行标志
-      // 防止校准服务与 Action 任务并发执行，同时抢占 cmd_vel 控制权
-      bool expected = false;
-      if (!is_executing_.compare_exchange_strong(expected, true))
+      // 用 state_mutex_ 保证 is_executing_ 与 is_calibrating_ 的检查+设置是原子的
       {
-        response->success = false;
-        response->message = "拒绝校正：当前有任务正在执行中，请先完成或取消当前任务";
-        RCLCPP_WARN(get_logger(), "%s", response->message.c_str());
-        return;
+        std::lock_guard<std::mutex> lock(state_mutex_);
+
+        if (is_executing_.load())
+        {
+          response->success = false;
+          response->message = "拒绝校正：当前有路径跟随任务正在执行中，请先完成或取消当前任务";
+          RCLCPP_WARN(get_logger(), "%s", response->message.c_str());
+          return;
+        }
+
+        if (is_calibrating_.load())
+        {
+          response->success = false;
+          response->message = "拒绝校正：已有校准正在进行中";
+          RCLCPP_WARN(get_logger(), "%s", response->message.c_str());
+          return;
+        }
+
+        is_calibrating_.store(true);
       }
 
-      // 使用 RAII 确保执行标志被清理
-      auto cleanup = [this](void *)
+      // 将校准执行移至独立线程，避免在服务回调线程中同步等待另一个服务响应（防止死锁）
+      std::thread([this]()
       {
-        is_executing_.store(false);
-        is_paused_.store(false);  // 清理可能残留的暂停标志
-      };
-      std::unique_ptr<void, decltype(cleanup)> guard(reinterpret_cast<void *>(1), cleanup);
+        bool calibration_success = executeLocalizationCalibration(0.10, 5);
 
-      // 设置默认校准参数（从配置文件读取或使用默认值）
-      // double calibration_velocity = 0.05;  // m/s
-      // double calibration_duration = 3.0;   // 秒
+        if (!calibration_success)
+        {
+          RCLCPP_ERROR(get_logger(), "[外部校准] 姿态校正失败，请查看日志了解详情");
+        }
+        else
+        {
+          RCLCPP_INFO(get_logger(), "[外部校准] 姿态校正完成");
+        }
 
-      // 执行姿态校正
-      // bool calibration_success = executeLocalizationCalibration(calibration_velocity, calibration_duration);
+        // 记录校准结果，供 execute() 唤醒后判断是否继续执行
+        external_calibration_succeeded_.store(calibration_success);
 
-      // if (!calibration_success)
-      // {
-      //   response->success = false;
-      //   response->message = "姿态校正失败，请查看日志了解详情";
-      //   RCLCPP_ERROR(get_logger(), " %s", response->message.c_str());
-      //   return;
-      // }
+        // 清理标志并通知等待的路径跟随任务
+        is_calibrating_.store(false);
+        calibration_done_cv_.notify_all();
+      }).detach();
 
-
-      // 立即返回成功响应（喷码机恢复在后台进行）
+      // 立即返回，告知调用方校准已启动
       response->success = true;
-      response->message = "姿态校正完成，喷码机正在后台恢复";
-      RCLCPP_INFO(get_logger(), " %s", response->message.c_str());
+      response->message = "姿态校正已启动（异步执行）";
+      RCLCPP_INFO(get_logger(), "姿态校正已在后台启动");
     }
 
   } // namespace base_controller

@@ -55,6 +55,8 @@ private:
 
   // 服务
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr calibrate_service_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr apply_calibration_service_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr abort_calibration_service_;
 
   // 定时器
   rclcpp::TimerBase::SharedPtr watchdog_timer_;
@@ -136,9 +138,25 @@ private:
 
   /**
    * 完成校准处理
-   * 由定时器异步调用，处理收集的数据并完成校准
+   * 停止数据收集，执行直线拟合并更新航向锚点
    */
   void finishCalibration();
+
+  /**
+   * 应用校准服务回调
+   * 停止收集位置数据，执行直线拟合并更新航向锚点
+   */
+  void applyCalibrationCallback(
+    const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
+    std::shared_ptr<std_srvs::srv::Trigger::Response> response);
+
+  /**
+   * 中止校准服务回调
+   * 停止收集位置数据并丢弃已收集的样本
+   */
+  void abortCalibrationCallback(
+    const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
+    std::shared_ptr<std_srvs::srv::Trigger::Response> response);
 
   /**
    * 获取IMU数据(线程安全)
