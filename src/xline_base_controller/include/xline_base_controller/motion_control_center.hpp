@@ -62,11 +62,11 @@ namespace xline
        *   以当前机器人正前方为目标生成 0.5m 临时路径，使用现有 LQR 闭环走直，
        *   全程监控 e_y 质量门控（均值<2mm，p90<3mm），最多重试 max_retries 次。
        *
-       * @param speed       校准行走速度（m/s），默认 0.10
+       * @param speed       校准行走速度（m/s），默认 0.05
        * @param max_retries LQR 方案最大重试次数，默认 5
        * @return 校准成功返回 true，失败返回 false
        */
-      bool executeLocalizationCalibration(double speed = 0.10, int max_retries = 5);
+      bool executeLocalizationCalibration(double speed = 0.05, int max_retries = 5);
 
     private:
       /**
@@ -78,8 +78,11 @@ namespace xline
       /**
        * LQR 精确校准（已有航向锚点时使用）
        * LQR 闭环走直 + e_y 质量门控，精度 σ_θ ≈ 0.12°
+       *
+       * @param use_open_loop true：以固定线速度开环行走（不使用 LQR），
+       *                      false（默认）：使用 LQR 闭环控制
        */
-      bool executeLQRCalibration(double speed, int max_retries);
+      bool executeLQRCalibration(double speed, int max_retries, bool use_open_loop = false);
 
     private:
       // ExecutePlan 动作服务器实例

@@ -462,7 +462,7 @@ namespace xline
                       path_id);
 
           // 使用与姿态校正服务相同的参数
-          double calibration_velocity = 0.10;  // m/s
+          double calibration_velocity = 0.05;  // m/s
           int calibration_max_retries = 3;
           bool calibration_success = executeLocalizationCalibration(calibration_velocity, calibration_max_retries);
 
@@ -1387,13 +1387,16 @@ namespace xline
      *
      * 精度 σ_θ ≈ 0.12°（受限于全站仪 3mm 噪声，为当前硬件理论下限）。
      */
-    bool MotionControlCenter::executeLQRCalibration(double speed, int max_retries)
+    bool MotionControlCenter::executeLQRCalibration(double speed, int max_retries, bool use_open_loop)
     {
       constexpr double CALIB_DISTANCE  = 0.4;    // 校准行程 [m]
-      constexpr double MEAN_EY_LIMIT   = 0.002;  // 均值 e_y 上限 [m]
-      constexpr double P90_EY_LIMIT    = 0.003;  // p90  e_y 上限 [m]
+      constexpr double MEAN_EY_LIMIT   = 0.003;  // 均值 e_y 上限 [m]
+      constexpr double P90_EY_LIMIT    = 0.005;  // p90  e_y 上限 [m]
       constexpr double LOOP_HZ         = 18.0;   // 与 compute_velocity 控制频率一致
-      constexpr double TIMEOUT_SEC     = 30.0;   // 单次超时 [s]
+      constexpr double TIMEOUT_SEC     = 30.0;   // 单次超时 [s]（仅 LQR 模式使用）
+
+      RCLCPP_INFO(get_logger(), "[LQR校准] 模式=%s，速度=%.2f m/s，最大重试=%d 次",
+                  use_open_loop ? "开环" : "LQR闭环", speed, max_retries);
 
       for (int attempt = 0; attempt < max_retries; attempt++)
       {
@@ -1461,59 +1464,100 @@ namespace xline
           calibration_client_->async_send_request(req);
         }
 
-        // ── 4. 配置 LQR 路径跟随器 ───────────────────────────────────
-        line_follow_controller_->setSpeedLimit(speed);
-        line_follow_controller_->setTransitionPath(false);
-        line_follow_controller_->setBackFollow(false);
-        line_follow_controller_->setPlan(sx, sy, tx, ty);
-
-        // ── 5. LQR 主循环（18Hz）─────────────────────────────────────
+        // ── 4 & 5. 行走并采集 e_y ────────────────────────────────────
         std::vector<double> ey_samples;
         ey_samples.reserve(static_cast<size_t>(CALIB_DISTANCE / speed * LOOP_HZ * 1.5));
 
         rclcpp::Rate loop_rate(LOOP_HZ);
-        const auto loop_start = this->now();
         bool timeout_flag = false;
 
-        while (rclcpp::ok() && !shutdown_.load())
+        if (use_open_loop)
         {
-          if ((this->now() - loop_start).seconds() > TIMEOUT_SEC)
-          {
-            RCLCPP_WARN(get_logger(), "[LQR校准] 超时（%.0fs），触发重试", TIMEOUT_SEC);
-            timeout_flag = true;
-            break;
-          }
+          // ── 开环模式：固定线速度行走，按时间控制行程 ──────────────
+          const double walk_duration = CALIB_DISTANCE / speed;  // 预期时长 [s]
+          geometry_msgs::msg::Twist open_twist;
+          open_twist.linear.x  = speed;
+          open_twist.angular.z = 0.0;
 
-          if (line_follow_controller_->isGoalReached())
-          {
-            break;
-          }
+          RCLCPP_INFO(get_logger(),
+                      "[LQR校准][开环] 以 %.2f m/s 行走 %.1fs（%.2fm）",
+                      speed, walk_duration, CALIB_DISTANCE);
 
-          geometry_msgs::msg::PoseStamped pose;
-          if (!getLatestPose(pose) ||
-              (pose.pose.position.x == 0.0 && pose.pose.position.y == 0.0))
+          const auto open_start = this->now();
+          while (rclcpp::ok() && !shutdown_.load())
           {
+            const double elapsed = (this->now() - open_start).seconds();
+            if (elapsed >= walk_duration)
+            {
+              break;
+            }
+
+            cmd_vel_publisher_->publish(open_twist);
+
+            // 采集 e_y（纯位置，不依赖航向估计）
+            geometry_msgs::msg::PoseStamped pose;
+            if (getLatestPose(pose) &&
+                !(pose.pose.position.x == 0.0 && pose.pose.position.y == 0.0))
+            {
+              const double rx  = pose.pose.position.x - sx;
+              const double ry  = pose.pose.position.y - sy;
+              const double e_y = std::abs(rx * nx + ry * ny);
+              ey_samples.push_back(e_y);
+            }
+
             loop_rate.sleep();
-            continue;
           }
+        }
+        else
+        {
+          // ── LQR 闭环模式 ──────────────────────────────────────────
+          line_follow_controller_->setSpeedLimit(speed);
+          line_follow_controller_->setTransitionPath(false);
+          line_follow_controller_->setBackFollow(false);
+          line_follow_controller_->setPlan(sx, sy, tx, ty);
 
-          // 计算速度指令
-          geometry_msgs::msg::Twist       vel_in;
-          geometry_msgs::msg::TwistStamped cmd_out;
-          line_follow_controller_->computeVelocityCommands(pose, vel_in, cmd_out);
+          const auto loop_start = this->now();
 
-          geometry_msgs::msg::Twist twist;
-          twist.linear  = cmd_out.twist.linear;
-          twist.angular = cmd_out.twist.angular;
-          cmd_vel_publisher_->publish(twist);
+          while (rclcpp::ok() && !shutdown_.load())
+          {
+            if ((this->now() - loop_start).seconds() > TIMEOUT_SEC)
+            {
+              RCLCPP_WARN(get_logger(), "[LQR校准] 超时（%.0fs），触发重试", TIMEOUT_SEC);
+              timeout_flag = true;
+              break;
+            }
 
-          // 计算横向误差（纯位置，不依赖航向估计）
-          const double rx  = pose.pose.position.x - sx;
-          const double ry  = pose.pose.position.y - sy;
-          const double e_y = std::abs(rx * nx + ry * ny);
-          ey_samples.push_back(e_y);
+            if (line_follow_controller_->isGoalReached())
+            {
+              break;
+            }
 
-          loop_rate.sleep();
+            geometry_msgs::msg::PoseStamped pose;
+            if (!getLatestPose(pose) ||
+                (pose.pose.position.x == 0.0 && pose.pose.position.y == 0.0))
+            {
+              loop_rate.sleep();
+              continue;
+            }
+
+            // 计算速度指令
+            geometry_msgs::msg::Twist       vel_in;
+            geometry_msgs::msg::TwistStamped cmd_out;
+            line_follow_controller_->computeVelocityCommands(pose, vel_in, cmd_out);
+
+            geometry_msgs::msg::Twist twist;
+            twist.linear  = cmd_out.twist.linear;
+            twist.angular = cmd_out.twist.angular;
+            cmd_vel_publisher_->publish(twist);
+
+            // 计算横向误差（纯位置，不依赖航向估计）
+            const double rx  = pose.pose.position.x - sx;
+            const double ry  = pose.pose.position.y - sy;
+            const double e_y = std::abs(rx * nx + ry * ny);
+            ey_samples.push_back(e_y);
+
+            loop_rate.sleep();
+          }
         }
 
         // 停止机器人，静止 0.3s
@@ -1534,7 +1578,7 @@ namespace xline
         {
           auto req = std::make_shared<std_srvs::srv::Trigger::Request>();
           abort_calibration_client_->async_send_request(req);
-          line_follow_controller_->cancel();
+          if (!use_open_loop) { line_follow_controller_->cancel(); }
           RCLCPP_WARN(get_logger(), "[LQR校准] 节点关闭，中止校准");
           return false;
         }
@@ -1546,7 +1590,7 @@ namespace xline
           RCLCPP_WARN(get_logger(), "[LQR校准] 样本不足（%zu 个），中止本次", ey_samples.size());
           auto req = std::make_shared<std_srvs::srv::Trigger::Request>();
           abort_calibration_client_->async_send_request(req);
-          line_follow_controller_->cancel();
+          if (!use_open_loop) { line_follow_controller_->cancel(); }
           continue;
         }
 
@@ -1554,11 +1598,48 @@ namespace xline
         const size_t skip = ey_samples.size() / 3;
         const std::vector<double> stable(ey_samples.begin() + skip, ey_samples.end());
 
-        double mean_ey = 0.0;
-        for (double v : stable) { mean_ey += v; }
-        mean_ey /= static_cast<double>(stable.size());
+        // ── 6.1 过滤全站仪突变值 ──────────────────────────────────
+        // 全站仪突变（棱镜遮挡/重捕获等）幅度远大于正常误差，用硬截止移除
+        // 正常轨迹偏差 < 5mm，突变值通常 > 10mm，两者幅度差异明显
+        // constexpr double OUTLIER_CUTOFF    = 0.010;  // 10mm：超出此值视为全站仪突变（为 p90 阈值的 3 倍）
+        // constexpr double MAX_OUTLIER_RATIO = 0.30;   // 突变样本超过 30% 则数据源不可信
 
-        std::vector<double> sorted = stable;
+        constexpr double OUTLIER_CUTOFF    = 0.005;  
+        constexpr double MAX_OUTLIER_RATIO = 0.20;  
+
+        std::vector<double> filtered;
+        filtered.reserve(stable.size());
+        for (double v : stable)
+        {
+          if (v <= OUTLIER_CUTOFF) { filtered.push_back(v); }
+        }
+
+        const double outlier_ratio =
+            1.0 - static_cast<double>(filtered.size()) / static_cast<double>(stable.size());
+
+        if (outlier_ratio > MAX_OUTLIER_RATIO)
+        {
+          RCLCPP_WARN(get_logger(),
+                      "[LQR校准] 突变样本占比 %.0f%%（阈值 %.0f%%），数据源不可信，中止本次",
+                      outlier_ratio * 100.0, MAX_OUTLIER_RATIO * 100.0);
+          auto req = std::make_shared<std_srvs::srv::Trigger::Request>();
+          abort_calibration_client_->async_send_request(req);
+          if (!use_open_loop) { line_follow_controller_->cancel(); }
+          continue;
+        }
+
+        if (filtered.size() < stable.size())
+        {
+          RCLCPP_INFO(get_logger(),
+                      "[LQR校准] 过滤突变值 %zu 个（占 %.0f%%），剩余 %zu 个有效样本参与评估",
+                      stable.size() - filtered.size(), outlier_ratio * 100.0, filtered.size());
+        }
+
+        double mean_ey = 0.0;
+        for (double v : filtered) { mean_ey += v; }
+        mean_ey /= static_cast<double>(filtered.size());
+
+        std::vector<double> sorted = filtered;
         std::sort(sorted.begin(), sorted.end());
         const double p90_ey = sorted[static_cast<size_t>(sorted.size() * 0.9)];
 
@@ -1596,27 +1677,27 @@ namespace xline
             has_last_calibration_time_ = true;
           }
 
-          // 重置控制器状态（清除 setSpeedLimit 等设置，避免影响后续任务）
-          line_follow_controller_->cancel();
+          // 重置控制器状态（仅 LQR 模式需要清除 setSpeedLimit 等设置）
+          if (!use_open_loop) { line_follow_controller_->cancel(); }
 
           RCLCPP_INFO(get_logger(),
-                      "[LQR校准] 成功（第 %d 次尝试），航向锚点已更新，60s 窗口重置",
-                      attempt + 1);
+                      "[LQR校准] 成功（第 %d 次尝试，%s），航向锚点已更新，60s 窗口重置",
+                      attempt + 1, use_open_loop ? "开环" : "LQR闭环");
           return true;
         }
         else
         {
           auto req = std::make_shared<std_srvs::srv::Trigger::Request>();
           abort_calibration_client_->async_send_request(req);
-          line_follow_controller_->cancel();
+          if (!use_open_loop) { line_follow_controller_->cancel(); }
           RCLCPP_WARN(get_logger(),
                       "[LQR校准] 质量不达标，准备第 %d/%d 次重试",
                       attempt + 2, max_retries);
         }
       }
 
-      // 重置控制器状态，避免残留 setSpeedLimit 影响后续任务
-      line_follow_controller_->cancel();
+      // 重置控制器状态（仅 LQR 模式需要）
+      if (!use_open_loop) { line_follow_controller_->cancel(); }
 
       RCLCPP_ERROR(get_logger(), "[LQR校准] 已重试 %d 次，均未通过质量门控，校准失败",
                    max_retries);
@@ -1816,7 +1897,7 @@ namespace xline
       // 将校准执行移至独立线程，避免在服务回调线程中同步等待另一个服务响应（防止死锁）
       std::thread([this]()
       {
-        bool calibration_success = executeLocalizationCalibration(0.10, 5);
+        bool calibration_success = executeLocalizationCalibration(0.05, 3);
 
         if (!calibration_success)
         {

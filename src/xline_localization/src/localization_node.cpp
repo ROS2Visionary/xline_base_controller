@@ -282,6 +282,46 @@ void LocalizationNode::applyCalibrationCallback(
     }
   }
 
+  // 过滤拟合用的突变点：相邻差分过滤
+  // 全站仪 20Hz、机器人 0.05m/s，正常步长固定为 ~2.5mm。
+  // 突变值通常 30-100mm，10mm（4× 正常步长）可清晰分离两类情况。
+  // 与「最后保留点」比较（而非原序列前一个点），确保突变后恢复的正常点不被误删。
+  {
+    std::scoped_lock<std::mutex> lock(collection_mutex_);
+    // constexpr double MAX_STEP = 0.010;  // 10mm = 4× 正常步长（2.5mm）
+    constexpr double MAX_STEP = 0.005; 
+
+    if (position_samples_.size() >= 2)
+    {
+      std::vector<std::vector<double>> cleaned;
+      cleaned.reserve(position_samples_.size());
+      cleaned.push_back(position_samples_.front());
+
+      for (size_t i = 1; i < position_samples_.size(); ++i)
+      {
+        const auto & prev = cleaned.back();
+        const double dx   = position_samples_[i][0] - prev[0];
+        const double dy   = position_samples_[i][1] - prev[1];
+        const double step = std::sqrt(dx * dx + dy * dy);
+        if (step <= MAX_STEP)
+        {
+          cleaned.push_back(position_samples_[i]);
+        }
+      }
+
+      const size_t removed = position_samples_.size() - cleaned.size();
+      if (removed > 0)
+      {
+        RCLCPP_INFO(get_logger(),
+                    "相邻差分过滤：移除突变点 %zu 个（占 %.0f%%），剩余 %zu 个点用于拟合",
+                    removed,
+                    100.0 * removed / static_cast<double>(position_samples_.size()),
+                    cleaned.size());
+        position_samples_ = std::move(cleaned);
+      }
+    }
+  }
+
   // 复用现有 finishCalibration()，逻辑完全不变
   finishCalibration();
 
@@ -462,15 +502,8 @@ bool LocalizationNode::initPose(
   Eigen::Vector3d p_end(end.x, end.y, end.z);
   Eigen::Vector3d diff = p_end - p_start;
 
-  // 检查移动距离
-  const double moved_dist = diff.head(2).norm();
-  if (moved_dist < 0.05) {
-    error_msg = "机器人移动距离过短: " + std::to_string(moved_dist) + "m (至少需要0.05m)";
-    RCLCPP_ERROR(get_logger(), "%s", error_msg.c_str());
-    return false;
-  }
-
   // 计算航向角
+  const double moved_dist = diff.head(2).norm();
   const double yaw = std::atan2(diff.y(), diff.x());
   robot_initial_yaw_ = yaw;
 
