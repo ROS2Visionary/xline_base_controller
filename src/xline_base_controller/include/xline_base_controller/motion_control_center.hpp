@@ -56,33 +56,34 @@ namespace xline
        * 执行定位系统校准（入口，自动选择策略）
        *
        * - 首次开机（initialized_ == false）：Bootstrap 方案
-       *   以固定线速度前进 0.5m，收集原始反射板位置，最小二乘拟合建立初始航向锚点。
+       *   以固定线速度前进 0.4m，收集原始反射板位置，最小二乘拟合建立初始航向锚点。
        *
-       * - 已有航向锚点：LQR 精确校准方案
-       *   以当前机器人正前方为目标生成 0.5m 临时路径，使用现有 LQR 闭环走直，
-       *   全程监控 e_y 质量门控（均值<2mm，p90<3mm），最多重试 max_retries 次。
+       * - 已有航向锚点：开环 + IMU 航向增量门控方案
+       *   以固定线速度前进 0.4m，全程采集 IMU 航向增量（Δθ），
+       *   通过漂移幅值与标准差判断是否走直，最多重试 max_retries 次。
+       *   若全部重试失败，自动降级为 Bootstrap 方案重建航向锚点。
        *
        * @param speed       校准行走速度（m/s），默认 0.05
-       * @param max_retries LQR 方案最大重试次数，默认 5
+       * @param max_retries 开环方案最大重试次数，默认 2
        * @return 校准成功返回 true，失败返回 false
        */
-      bool executeLocalizationCalibration(double speed = 0.05, int max_retries = 5);
+      bool executeLocalizationCalibration(double speed = 0.05, int max_retries = 2);
 
     private:
       /**
        * Bootstrap 校准（开机首次，无航向锚点）
-       * 固定线速度 0.5m，建立粗糙初始航向（σ_θ ≈ 0.17°）
+       * 固定线速度前进 0.4m，收集反射板位置后最小二乘拟合，建立初始航向锚点。
        */
       bool executeBootstrapCalibration(double speed);
 
       /**
-       * LQR 精确校准（已有航向锚点时使用）
-       * LQR 闭环走直 + e_y 质量门控，精度 σ_θ ≈ 0.12°
-       *
-       * @param use_open_loop true：以固定线速度开环行走（不使用 LQR），
-       *                      false（默认）：使用 LQR 闭环控制
+       * 开环校准（已有航向锚点时使用）
+       * 固定线速度前进 0.4m，采集 IMU 航向增量（Δθ）进行质量门控：
+       *   - max(|Δθ|) < MAX_DRIFT_RAD (~1.1°)
+       *   - std(Δθ)   < MAX_STD_RAD   (~0.6°)
+       * 全部重试失败后由调用方降级为 Bootstrap 方案。
        */
-      bool executeLQRCalibration(double speed, int max_retries, bool use_open_loop = false);
+      bool executeLQRCalibration(double speed, int max_retries);
 
     private:
       // ExecutePlan 动作服务器实例

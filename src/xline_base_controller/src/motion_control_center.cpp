@@ -463,7 +463,7 @@ namespace xline
 
           // 使用与姿态校正服务相同的参数
           double calibration_velocity = 0.05;  // m/s
-          int calibration_max_retries = 3;
+          int calibration_max_retries = 2;
           bool calibration_success = executeLocalizationCalibration(calibration_velocity, calibration_max_retries);
 
           if (!calibration_success)
@@ -1265,8 +1265,8 @@ namespace xline
      * 执行定位系统校准（入口函数）
      *
      * 根据 localization 节点的初始化状态自动选择校准策略：
-     *   - initialized_ == false（开机首次）：Bootstrap 方案，固定线速度 0.5m
-     *   - initialized_ == true（已有锚点）  ：LQR 精确方案，闭环走直 + 质量门控
+     *   - initialized_ == false（开机首次）：Bootstrap 方案，固定线速度 0.4m
+     *   - initialized_ == true（已有锚点）  ：开环方案，固定速度行走 + IMU 航向增量门控
      *
      * 两种方案共用同一套服务接口（calibrate_pose / apply_calibration / abort_calibration），
      * 对外触发方式（60s 自动 + 外部服务）完全不变。
@@ -1284,26 +1284,33 @@ namespace xline
 
       if (is_bootstrap)
       {
-        RCLCPP_INFO(get_logger(), "[校准] 首次开机，使用 Bootstrap 方案（固定线速度 0.5m）");
+        RCLCPP_INFO(get_logger(), "[校准] 首次开机，使用 Bootstrap 方案（固定线速度 0.4m）");
         return executeBootstrapCalibration(speed);
       }
       else
       {
-        RCLCPP_INFO(get_logger(), "[校准] 已有航向锚点，使用 LQR 精确校准方案");
-        return executeLQRCalibration(speed, max_retries);
+        RCLCPP_INFO(get_logger(), "[校准] 已有航向锚点，使用开环+IMU航向门控方案");
+        bool success = executeLQRCalibration(speed, max_retries);
+
+        if (!success)
+        {
+          RCLCPP_WARN(get_logger(), "[校准] 开环校准失败，降级为 Bootstrap 重建航向锚点");
+          success = executeBootstrapCalibration(speed);
+        }
+
+        return success;
       }
     }
 
     /**
      * Bootstrap 校准（开机首次，无航向锚点）
      *
-     * 由于开机时航向未知，robot_pose 位置偏差可达数百毫米，LQR 路径跟随无法可靠工作。
-     * 使用旧方案：固定线速度前进 0.5m，定位节点收集原始反射板位置后拟合得到初始航向。
-     * 精度 σ_θ ≈ 0.17°，足以作为后续 LQR 精确校准的起点。
+     * 开机时航向未知，定位坐标系尚未建立，无法使用闭环控制。
+     * 以固定线速度前进 0.4m，定位节点收集原始反射板位置后最小二乘拟合得到初始航向锚点。
      */
     bool MotionControlCenter::executeBootstrapCalibration(double speed)
     {
-      constexpr double CALIB_DISTANCE = 0.5;               // 目标行程 [m]
+      constexpr double CALIB_DISTANCE = 0.4;               // 目标行程 [m]
       const double     calib_duration = CALIB_DISTANCE / speed;  // 时间 [s]
 
       RCLCPP_INFO(get_logger(), "[Bootstrap] 速度=%.2f m/s，行程=%.1fm，时长=%.1fs",
@@ -1380,36 +1387,31 @@ namespace xline
     }
 
     /**
-     * LQR 精确校准（已有航向锚点时使用）
+     * 开环校准（已有航向锚点时使用）
      *
-     * 以当前机器人正前方为目标生成 0.5m 临时路径，调用现有 LQR 闭环走直。
-     * 全程监控反射板轨迹的横向误差（e_y），通过质量门控后触发拟合。
-     *
-     * 精度 σ_θ ≈ 0.12°（受限于全站仪 3mm 噪声，为当前硬件理论下限）。
+     * 固定线速度前进 0.4m，以 IMU 航向增量门控验证机器人是否走直，
+     * 通过后触发 localization 拟合更新航向锚点。
+     * 与 heading_anchor 无关，可在锚点漂移时正常工作。
      */
-    bool MotionControlCenter::executeLQRCalibration(double speed, int max_retries, bool use_open_loop)
+    bool MotionControlCenter::executeLQRCalibration(double speed, int max_retries)
     {
-      constexpr double CALIB_DISTANCE  = 0.4;    // 校准行程 [m]
-      constexpr double MEAN_EY_LIMIT   = 0.003;  // 均值 e_y 上限 [m]
-      constexpr double P90_EY_LIMIT    = 0.005;  // p90  e_y 上限 [m]
-      constexpr double LOOP_HZ         = 18.0;   // 与 compute_velocity 控制频率一致
-      constexpr double TIMEOUT_SEC     = 30.0;   // 单次超时 [s]（仅 LQR 模式使用）
+      constexpr double CALIB_DISTANCE = 0.4;    // 校准行程 [m]
+      constexpr double LOOP_HZ        = 20.0;   // 控制频率
 
-      RCLCPP_INFO(get_logger(), "[LQR校准] 模式=%s，速度=%.2f m/s，最大重试=%d 次",
-                  use_open_loop ? "开环" : "LQR闭环", speed, max_retries);
+      RCLCPP_INFO(get_logger(), "[开环校准] 速度=%.2f m/s，最大重试=%d 次", speed, max_retries);
 
       for (int attempt = 0; attempt < max_retries; attempt++)
       {
         // 节点关闭时立即退出，避免继续访问已销毁的资源
         if (shutdown_.load())
         {
-          RCLCPP_WARN(get_logger(), "[LQR校准] 节点关闭，中止校准");
+          RCLCPP_WARN(get_logger(), "[开环校准] 节点关闭，中止校准");
           return false;
         }
 
         if (attempt > 0)
         {
-          RCLCPP_INFO(get_logger(), "[LQR校准] 第 %d/%d 次重试，等待 0.5s...",
+          RCLCPP_INFO(get_logger(), "[开环校准] 第 %d/%d 次重试，等待 0.5s...",
                       attempt + 1, max_retries);
           // 分段 sleep，每 50ms 检查一次 shutdown
           for (int i = 0; i < 10 && !shutdown_.load(); ++i)
@@ -1428,12 +1430,12 @@ namespace xline
           {
             if (shutdown_.load())
             {
-              RCLCPP_WARN(get_logger(), "[LQR校准] 节点关闭，中止等待位姿");
+              RCLCPP_WARN(get_logger(), "[开环校准] 节点关闭，中止等待位姿");
               return false;
             }
             if ((this->now() - wait_start).seconds() > 2.0)
             {
-              RCLCPP_ERROR(get_logger(), "[LQR校准] 等待有效位姿超时，校准失败");
+              RCLCPP_ERROR(get_logger(), "[开环校准] 等待有效位姿超时，校准失败");
               return false;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -1443,20 +1445,9 @@ namespace xline
         const double sy  = curr_pose.pose.position.y;
         const double yaw = tf2::getYaw(curr_pose.pose.orientation);
 
-        // ── 2. 目标点：机器人当前正前方 CALIB_DISTANCE 处 ────────────
-        const double tx = sx + CALIB_DISTANCE * std::cos(yaw);
-        const double ty = sy + CALIB_DISTANCE * std::sin(yaw);
-
-        // 校准线法向量（用于独立计算 e_y，不依赖 LQR 内部状态）
-        const double dx  = tx - sx;
-        const double dy  = ty - sy;
-        const double len = std::sqrt(dx * dx + dy * dy);
-        const double nx  = -dy / len;   // 法向量 x
-        const double ny  =  dx / len;   // 法向量 y
-
         RCLCPP_INFO(get_logger(),
-                    "[LQR校准] 校准路径: (%.3f, %.3f) → (%.3f, %.3f)，航向=%.1f°",
-                    sx, sy, tx, ty, yaw * 180.0 / M_PI);
+                    "[开环校准] 起点: (%.3f, %.3f)，航向=%.1f°",
+                    sx, sy, yaw * 180.0 / M_PI);
 
         // ── 3. 通知 localization 开始收集 ────────────────────────────
         {
@@ -1464,100 +1455,40 @@ namespace xline
           calibration_client_->async_send_request(req);
         }
 
-        // ── 4 & 5. 行走并采集 e_y ────────────────────────────────────
-        std::vector<double> ey_samples;
-        ey_samples.reserve(static_cast<size_t>(CALIB_DISTANCE / speed * LOOP_HZ * 1.5));
+        // ── 4 & 5. 固定线速度行走，采集 IMU 航向增量 ────────────────
+        // Δθ = θ_current - θ_start，差值与 heading_anchor 无关
+        std::vector<double> dtheta_samples;
+        dtheta_samples.reserve(static_cast<size_t>(CALIB_DISTANCE / speed * LOOP_HZ * 1.5));
 
         rclcpp::Rate loop_rate(LOOP_HZ);
-        bool timeout_flag = false;
+        const double theta_start   = yaw;
+        const double walk_duration = CALIB_DISTANCE / speed;
+        geometry_msgs::msg::Twist open_twist;
+        open_twist.linear.x  = speed;
+        open_twist.angular.z = 0.0;
 
-        if (use_open_loop)
+        RCLCPP_INFO(get_logger(),
+                    "[开环校准] 以 %.2f m/s 行走 %.1fs（%.2fm），监听 IMU 航向增量",
+                    speed, walk_duration, CALIB_DISTANCE);
+
+        const auto open_start = this->now();
+        while (rclcpp::ok() && !shutdown_.load())
         {
-          // ── 开环模式：固定线速度行走，按时间控制行程 ──────────────
-          const double walk_duration = CALIB_DISTANCE / speed;  // 预期时长 [s]
-          geometry_msgs::msg::Twist open_twist;
-          open_twist.linear.x  = speed;
-          open_twist.angular.z = 0.0;
+          if ((this->now() - open_start).seconds() >= walk_duration) { break; }
 
-          RCLCPP_INFO(get_logger(),
-                      "[LQR校准][开环] 以 %.2f m/s 行走 %.1fs（%.2fm）",
-                      speed, walk_duration, CALIB_DISTANCE);
+          cmd_vel_publisher_->publish(open_twist);
 
-          const auto open_start = this->now();
-          while (rclcpp::ok() && !shutdown_.load())
+          geometry_msgs::msg::PoseStamped pose;
+          if (getLatestPose(pose) &&
+              !(pose.pose.position.x == 0.0 && pose.pose.position.y == 0.0))
           {
-            const double elapsed = (this->now() - open_start).seconds();
-            if (elapsed >= walk_duration)
-            {
-              break;
-            }
-
-            cmd_vel_publisher_->publish(open_twist);
-
-            // 采集 e_y（纯位置，不依赖航向估计）
-            geometry_msgs::msg::PoseStamped pose;
-            if (getLatestPose(pose) &&
-                !(pose.pose.position.x == 0.0 && pose.pose.position.y == 0.0))
-            {
-              const double rx  = pose.pose.position.x - sx;
-              const double ry  = pose.pose.position.y - sy;
-              const double e_y = std::abs(rx * nx + ry * ny);
-              ey_samples.push_back(e_y);
-            }
-
-            loop_rate.sleep();
+            double dtheta = tf2::getYaw(pose.pose.orientation) - theta_start;
+            while (dtheta >  M_PI) dtheta -= 2.0 * M_PI;
+            while (dtheta < -M_PI) dtheta += 2.0 * M_PI;
+            dtheta_samples.push_back(dtheta);
           }
-        }
-        else
-        {
-          // ── LQR 闭环模式 ──────────────────────────────────────────
-          line_follow_controller_->setSpeedLimit(speed);
-          line_follow_controller_->setTransitionPath(false);
-          line_follow_controller_->setBackFollow(false);
-          line_follow_controller_->setPlan(sx, sy, tx, ty);
 
-          const auto loop_start = this->now();
-
-          while (rclcpp::ok() && !shutdown_.load())
-          {
-            if ((this->now() - loop_start).seconds() > TIMEOUT_SEC)
-            {
-              RCLCPP_WARN(get_logger(), "[LQR校准] 超时（%.0fs），触发重试", TIMEOUT_SEC);
-              timeout_flag = true;
-              break;
-            }
-
-            if (line_follow_controller_->isGoalReached())
-            {
-              break;
-            }
-
-            geometry_msgs::msg::PoseStamped pose;
-            if (!getLatestPose(pose) ||
-                (pose.pose.position.x == 0.0 && pose.pose.position.y == 0.0))
-            {
-              loop_rate.sleep();
-              continue;
-            }
-
-            // 计算速度指令
-            geometry_msgs::msg::Twist       vel_in;
-            geometry_msgs::msg::TwistStamped cmd_out;
-            line_follow_controller_->computeVelocityCommands(pose, vel_in, cmd_out);
-
-            geometry_msgs::msg::Twist twist;
-            twist.linear  = cmd_out.twist.linear;
-            twist.angular = cmd_out.twist.angular;
-            cmd_vel_publisher_->publish(twist);
-
-            // 计算横向误差（纯位置，不依赖航向估计）
-            const double rx  = pose.pose.position.x - sx;
-            const double ry  = pose.pose.position.y - sy;
-            const double e_y = std::abs(rx * nx + ry * ny);
-            ey_samples.push_back(e_y);
-
-            loop_rate.sleep();
-          }
+          loop_rate.sleep();
         }
 
         // 停止机器人，静止 0.3s
@@ -1576,130 +1507,87 @@ namespace xline
         // 节点关闭导致主循环退出：直接中止，不做质量评估
         if (shutdown_.load())
         {
-          auto req = std::make_shared<std_srvs::srv::Trigger::Request>();
-          abort_calibration_client_->async_send_request(req);
-          if (!use_open_loop) { line_follow_controller_->cancel(); }
-          RCLCPP_WARN(get_logger(), "[LQR校准] 节点关闭，中止校准");
+          abort_calibration_client_->async_send_request(
+              std::make_shared<std_srvs::srv::Trigger::Request>());
+          RCLCPP_WARN(get_logger(), "[开环校准] 节点关闭，中止校准");
           return false;
         }
 
-        // ── 6. 质量评估 ──────────────────────────────────────────────
-        // 样本不足（超时或路径太短）直接 abort
-        if (timeout_flag || ey_samples.size() < 20)
+        // ── 6 & 7. IMU 航向增量门控 ──────────────────────────────────
+        if (dtheta_samples.size() < 20)
         {
-          RCLCPP_WARN(get_logger(), "[LQR校准] 样本不足（%zu 个），中止本次", ey_samples.size());
-          auto req = std::make_shared<std_srvs::srv::Trigger::Request>();
-          abort_calibration_client_->async_send_request(req);
-          if (!use_open_loop) { line_follow_controller_->cancel(); }
+          RCLCPP_WARN(get_logger(), "[开环校准] 样本不足（%zu 个），中止本次",
+                      dtheta_samples.size());
+          abort_calibration_client_->async_send_request(
+              std::make_shared<std_srvs::srv::Trigger::Request>());
           continue;
         }
 
-        // 跳过前 1/3（对齐收敛段），仅评估稳定跟随段
-        const size_t skip = ey_samples.size() / 3;
-        const std::vector<double> stable(ey_samples.begin() + skip, ey_samples.end());
+        // 跳过前 1/3（起步加速段）
+        const size_t skip_dt = dtheta_samples.size() / 3;
+        const std::vector<double> stable_dt(dtheta_samples.begin() + skip_dt,
+                                            dtheta_samples.end());
 
-        // ── 6.1 过滤全站仪突变值 ──────────────────────────────────
-        // 全站仪突变（棱镜遮挡/重捕获等）幅度远大于正常误差，用硬截止移除
-        // 正常轨迹偏差 < 5mm，突变值通常 > 10mm，两者幅度差异明显
-        // constexpr double OUTLIER_CUTOFF    = 0.010;  // 10mm：超出此值视为全站仪突变（为 p90 阈值的 3 倍）
-        // constexpr double MAX_OUTLIER_RATIO = 0.30;   // 突变样本超过 30% 则数据源不可信
+        // 最大偏转量
+        double max_drift = 0.0;
+        for (double v : stable_dt) { max_drift = std::max(max_drift, std::abs(v)); }
 
-        constexpr double OUTLIER_CUTOFF    = 0.005;  
-        constexpr double MAX_OUTLIER_RATIO = 0.20;  
+        // 标准差
+        double mean_dt = 0.0;
+        for (double v : stable_dt) { mean_dt += v; }
+        mean_dt /= static_cast<double>(stable_dt.size());
+        double var_dt = 0.0;
+        for (double v : stable_dt) { var_dt += (v - mean_dt) * (v - mean_dt); }
+        const double std_dt = std::sqrt(var_dt / static_cast<double>(stable_dt.size()));
 
-        std::vector<double> filtered;
-        filtered.reserve(stable.size());
-        for (double v : stable)
-        {
-          if (v <= OUTLIER_CUTOFF) { filtered.push_back(v); }
-        }
+        constexpr double MAX_DRIFT_RAD = 0.020;  // ~1.1°：行走期间累积偏转上限
+        constexpr double MAX_STD_RAD   = 0.010;  // ~0.6°：航向抖动上限
 
-        const double outlier_ratio =
-            1.0 - static_cast<double>(filtered.size()) / static_cast<double>(stable.size());
-
-        if (outlier_ratio > MAX_OUTLIER_RATIO)
-        {
-          RCLCPP_WARN(get_logger(),
-                      "[LQR校准] 突变样本占比 %.0f%%（阈值 %.0f%%），数据源不可信，中止本次",
-                      outlier_ratio * 100.0, MAX_OUTLIER_RATIO * 100.0);
-          auto req = std::make_shared<std_srvs::srv::Trigger::Request>();
-          abort_calibration_client_->async_send_request(req);
-          if (!use_open_loop) { line_follow_controller_->cancel(); }
-          continue;
-        }
-
-        if (filtered.size() < stable.size())
-        {
-          RCLCPP_INFO(get_logger(),
-                      "[LQR校准] 过滤突变值 %zu 个（占 %.0f%%），剩余 %zu 个有效样本参与评估",
-                      stable.size() - filtered.size(), outlier_ratio * 100.0, filtered.size());
-        }
-
-        double mean_ey = 0.0;
-        for (double v : filtered) { mean_ey += v; }
-        mean_ey /= static_cast<double>(filtered.size());
-
-        std::vector<double> sorted = filtered;
-        std::sort(sorted.begin(), sorted.end());
-        const double p90_ey = sorted[static_cast<size_t>(sorted.size() * 0.9)];
+        const bool quality_ok = (max_drift < MAX_DRIFT_RAD) && (std_dt < MAX_STD_RAD);
 
         RCLCPP_INFO(get_logger(),
-                    "[LQR校准] 质量评估: mean_ey=%.1fmm，p90_ey=%.1fmm（阈值 %.0f/%.0fmm）",
-                    mean_ey * 1000.0, p90_ey * 1000.0,
-                    MEAN_EY_LIMIT * 1000.0, P90_EY_LIMIT * 1000.0);
+                    "[开环校准] IMU 质量评估: max_drift=%.2f°, std=%.2f°"
+                    "（阈值 max<%.1f°, std<%.1f°）",
+                    max_drift * 180.0 / M_PI, std_dt * 180.0 / M_PI,
+                    MAX_DRIFT_RAD * 180.0 / M_PI, MAX_STD_RAD * 180.0 / M_PI);
 
-        const bool quality_ok = (mean_ey <= MEAN_EY_LIMIT) && (p90_ey <= P90_EY_LIMIT);
-
-        // ── 7. 根据质量结果分发 ──────────────────────────────────────
         if (quality_ok)
         {
-          // 触发拟合，等待 localization 完成（最多 5s）
-          auto apply_req    = std::make_shared<std_srvs::srv::Trigger::Request>();
-          auto apply_future = apply_calibration_client_->async_send_request(apply_req);
-          auto apply_status = apply_future.wait_for(std::chrono::seconds(5));
-
-          if (apply_status != std::future_status::ready)
+          auto apply_future = apply_calibration_client_->async_send_request(
+              std::make_shared<std_srvs::srv::Trigger::Request>());
+          if (apply_future.wait_for(std::chrono::seconds(5)) != std::future_status::ready)
           {
-            RCLCPP_ERROR(get_logger(), "[LQR校准] apply_calibration 响应超时");
+            RCLCPP_ERROR(get_logger(), "[开环校准] apply_calibration 响应超时");
             return false;
           }
-          auto apply_response = apply_future.get();
-          if (!apply_response->success)
+          auto apply_resp = apply_future.get();
+          if (!apply_resp->success)
           {
-            RCLCPP_ERROR(get_logger(), "[LQR校准] 拟合失败: %s", apply_response->message.c_str());
-            return false;
+            RCLCPP_WARN(get_logger(), "[开环校准] 拟合失败（%s），本次放弃，触发重试",
+                        apply_resp->message.c_str());
+            continue;
           }
-
-          // 更新校准时间戳，重置 60s 计时窗口
           {
             std::lock_guard<std::mutex> lock(calibration_mutex_);
-            last_calibration_time_ = this->now();
+            last_calibration_time_     = this->now();
             has_last_calibration_time_ = true;
           }
-
-          // 重置控制器状态（仅 LQR 模式需要清除 setSpeedLimit 等设置）
-          if (!use_open_loop) { line_follow_controller_->cancel(); }
-
           RCLCPP_INFO(get_logger(),
-                      "[LQR校准] 成功（第 %d 次尝试，%s），航向锚点已更新，60s 窗口重置",
-                      attempt + 1, use_open_loop ? "开环" : "LQR闭环");
+                      "[开环校准] 成功（第 %d 次尝试），航向锚点已更新，60s 窗口重置",
+                      attempt + 1);
           return true;
         }
         else
         {
-          auto req = std::make_shared<std_srvs::srv::Trigger::Request>();
-          abort_calibration_client_->async_send_request(req);
-          if (!use_open_loop) { line_follow_controller_->cancel(); }
+          abort_calibration_client_->async_send_request(
+              std::make_shared<std_srvs::srv::Trigger::Request>());
           RCLCPP_WARN(get_logger(),
-                      "[LQR校准] 质量不达标，准备第 %d/%d 次重试",
+                      "[开环校准] 质量不达标，准备第 %d/%d 次重试",
                       attempt + 2, max_retries);
         }
       }
 
-      // 重置控制器状态（仅 LQR 模式需要）
-      if (!use_open_loop) { line_follow_controller_->cancel(); }
-
-      RCLCPP_ERROR(get_logger(), "[LQR校准] 已重试 %d 次，均未通过质量门控，校准失败",
+      RCLCPP_ERROR(get_logger(), "[开环校准] 已重试 %d 次，均未通过质量门控，校准失败",
                    max_retries);
       return false;
     }
@@ -1897,7 +1785,7 @@ namespace xline
       // 将校准执行移至独立线程，避免在服务回调线程中同步等待另一个服务响应（防止死锁）
       std::thread([this]()
       {
-        bool calibration_success = executeLocalizationCalibration(0.05, 3);
+        bool calibration_success = executeLocalizationCalibration(0.05, 2);
 
         if (!calibration_success)
         {

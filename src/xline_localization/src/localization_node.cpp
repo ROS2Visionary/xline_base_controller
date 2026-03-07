@@ -213,8 +213,8 @@ void LocalizationNode::calibratePoseCallback(
   RCLCPP_INFO(get_logger(), "位置数据收集已启动，等待外部完成指令");
 }
 
-void LocalizationNode::finishCalibration()
-{  
+bool LocalizationNode::finishCalibration()
+{
   // 停止收集
   {
     std::scoped_lock<std::mutex> lock(collection_mutex_);
@@ -228,14 +228,14 @@ void LocalizationNode::finishCalibration()
 
   if (!fitted_result.success) {
     RCLCPP_ERROR(get_logger(), "直线拟合失败");
-    return;
+    return false;
   }
 
   // 初始化位姿
   std::string error_msg;
   if (!initPose(fitted_result.start, fitted_result.end, error_msg)) {
     RCLCPP_ERROR(get_logger(), "%s", error_msg.c_str());
-    return;
+    return false;
   }
 
   // 记录IMU初始方向
@@ -254,6 +254,8 @@ void LocalizationNode::finishCalibration()
     std::scoped_lock<std::mutex> lock(pose_mutex_);
     pose_publisher_->publish(robot_pose_);
   }
+
+  return true;
 }
 
 void LocalizationNode::applyCalibrationCallback(
@@ -322,11 +324,10 @@ void LocalizationNode::applyCalibrationCallback(
     }
   }
 
-  // 复用现有 finishCalibration()，逻辑完全不变
-  finishCalibration();
+  const bool ok = finishCalibration();
 
-  response->success = initialized_;
-  response->message = initialized_ ? "航向锚点更新成功" : "拟合失败，样本不足或移动距离过短";
+  response->success = ok;
+  response->message = ok ? "航向锚点更新成功" : "拟合失败，样本不足或移动距离过短";
   RCLCPP_INFO(get_logger(), "apply_calibration 完成: %s", response->message.c_str());
 }
 
@@ -504,6 +505,16 @@ bool LocalizationNode::initPose(
 
   // 计算航向角
   const double moved_dist = diff.head(2).norm();
+
+  // 有效移动距离过短时，拟合结果不可信（噪声/距离 比值过大）
+  constexpr double MIN_FIT_DIST = 0.05;  // 50mm：用于拟合的反射板轨迹最小长度
+  if (moved_dist < MIN_FIT_DIST) {
+    error_msg = "有效拟合距离过短（" + std::to_string(moved_dist * 1000.0).substr(0, 5) +
+                "mm < " + std::to_string(static_cast<int>(MIN_FIT_DIST * 1000)) +
+                "mm），定位数据质量差，拒绝更新航向锚点";
+    return false;
+  }
+
   const double yaw = std::atan2(diff.y(), diff.x());
   robot_initial_yaw_ = yaw;
 

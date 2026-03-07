@@ -139,8 +139,9 @@ private:
   /**
    * 完成校准处理
    * 停止数据收集，执行直线拟合并更新航向锚点
+   * @return 校准成功（距离足够、拟合有效、锚点已更新）返回 true
    */
-  void finishCalibration();
+  bool finishCalibration();
 
   /**
    * 应用校准服务回调
