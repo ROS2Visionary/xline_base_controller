@@ -74,7 +74,7 @@ namespace xline
        * Bootstrap 校准（开机首次，无航向锚点）
        * 固定线速度前进 0.4m，收集反射板位置后最小二乘拟合，建立初始航向锚点。
        */
-      bool executeBootstrapCalibration(double speed);
+      bool executeBootstrapCalibration(double speed, int max_retries = 3);
 
       /**
        * 开环校准（已有航向锚点时使用）

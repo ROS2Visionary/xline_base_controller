@@ -225,6 +225,21 @@ namespace xline
         RCLCPP_INFO(get_logger(), "校准完成，开始执行路径跟随");
       }
 
+      // 无论是否刚等过校准，只要定位从未成功初始化，就拒绝任务
+      {
+        std::lock_guard<std::mutex> lock(calibration_mutex_);
+        if (!has_last_calibration_time_)
+        {
+          guard.reset();
+          auto result = std::make_shared<ExecutePlan::Result>();
+          result->success = false;
+          result->error_message = "定位系统未初始化，请先完成姿态校准";
+          goal_handle->abort(result);
+          RCLCPP_ERROR(get_logger(), "拒绝任务：定位系统尚未完成初始化校准");
+          return;
+        }
+      }
+
       const auto goal = goal_handle->get_goal();
       auto feedback = std::make_shared<ExecutePlan::Feedback>();
       auto result = std::make_shared<ExecutePlan::Result>();
@@ -468,10 +483,18 @@ namespace xline
 
           if (!calibration_success)
           {
+            // 校准失败时仍更新计时，避免每次转场路径都重试校准造成死循环。
+            // 旧锚点仍有效（has_last_calibration_time_=true），本次 abort 后
+            // 后续任务可继续执行，操作者应检查定位传感器。
+            {
+              std::lock_guard<std::mutex> lock(calibration_mutex_);
+              last_calibration_time_ = this->now();
+            }
             result->success = false;
             result->error_message = "转场路径前姿态校正失败";
             goal_handle->abort(result);
-            RCLCPP_ERROR(get_logger(), "转场路径前姿态校正失败：plan_uid=%s", goal->plan_uid.c_str());
+            RCLCPP_ERROR(get_logger(), "转场路径前姿态校正失败：plan_uid=%s，60s 计时已重置，请检查定位传感器",
+                         goal->plan_uid.c_str());
             return;
           }
         }
@@ -1306,84 +1329,109 @@ namespace xline
      * Bootstrap 校准（开机首次，无航向锚点）
      *
      * 开机时航向未知，定位坐标系尚未建立，无法使用闭环控制。
-     * 以固定线速度前进 0.4m，定位节点收集原始反射板位置后最小二乘拟合得到初始航向锚点。
+     * 以固定线速度前进，定位节点收集原始反射板位置后最小二乘拟合得到初始航向锚点。
+     * 失败时自动重试（最多 max_retries 次），每次重试前调用 abort_calibration 清空旧样本。
      */
-    bool MotionControlCenter::executeBootstrapCalibration(double speed)
+    bool MotionControlCenter::executeBootstrapCalibration(double speed, int max_retries)
     {
       constexpr double CALIB_DISTANCE = 0.4;               // 目标行程 [m]
       const double     calib_duration = CALIB_DISTANCE / speed;  // 时间 [s]
 
-      RCLCPP_INFO(get_logger(), "[Bootstrap] 速度=%.2f m/s，行程=%.1fm，时长=%.1fs",
-                  speed, CALIB_DISTANCE, calib_duration);
-
-      // 1. 通知 localization 开始收集原始反射板位置数据
+      for (int attempt = 0; attempt < max_retries; ++attempt)
       {
-        auto req = std::make_shared<std_srvs::srv::Trigger::Request>();
-        calibration_client_->async_send_request(req);
-        RCLCPP_INFO(get_logger(), "[Bootstrap] 已发送 calibrate_pose 请求，开始收集数据");
-      }
+        if (shutdown_.load()) return false;
 
-      // 2. 以固定线速度前进（不依赖航向估计）
-      geometry_msgs::msg::Twist forward;
-      forward.linear.x = speed;
-      rclcpp::Rate loop_rate(20);
-      auto start_time = this->now();
-      auto target_dur = rclcpp::Duration::from_seconds(calib_duration);
+        // 重试前：清空旧样本，等待机器人完全静止
+        if (attempt > 0)
+        {
+          RCLCPP_WARN(get_logger(), "[Bootstrap] 第 %d/%d 次重试，清空旧样本，等待 1s...",
+                      attempt + 1, max_retries);
+          abort_calibration_client_->async_send_request(
+              std::make_shared<std_srvs::srv::Trigger::Request>());
+          // 分段 sleep，每 50ms 检查一次 shutdown
+          for (int i = 0; i < 20 && !shutdown_.load(); ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+          if (shutdown_.load()) return false;
+        }
 
-      while (rclcpp::ok() && !shutdown_.load() && (this->now() - start_time) < target_dur)
-      {
-        cmd_vel_publisher_->publish(forward);
-        loop_rate.sleep();
-      }
+        RCLCPP_INFO(get_logger(), "[Bootstrap] 第%d/%d次：速度=%.2f m/s，行程=%.1fm，时长=%.1fs",
+                    attempt + 1, max_retries, speed, CALIB_DISTANCE, calib_duration);
 
-      // 3. 停止机器人，静止 0.5s 等待运动完全停止
-      geometry_msgs::msg::Twist stop;
-      cmd_vel_publisher_->publish(stop);
-      rclcpp::Rate stop_rate(20);
-      auto stop_start = this->now();
-      auto stop_dur   = rclcpp::Duration::from_seconds(0.5);
-      while (rclcpp::ok() && !shutdown_.load() && (this->now() - stop_start) < stop_dur)
-      {
+        // 1. 通知 localization 开始收集原始反射板位置数据
+        {
+          auto req = std::make_shared<std_srvs::srv::Trigger::Request>();
+          calibration_client_->async_send_request(req);
+          RCLCPP_INFO(get_logger(), "[Bootstrap] 已发送 calibrate_pose 请求，开始收集数据");
+        }
+
+        // 2. 以固定线速度前进（不依赖航向估计）
+        geometry_msgs::msg::Twist forward;
+        forward.linear.x = speed;
+        rclcpp::Rate loop_rate(20);
+        auto start_time = this->now();
+        auto target_dur = rclcpp::Duration::from_seconds(calib_duration);
+
+        while (rclcpp::ok() && !shutdown_.load() && (this->now() - start_time) < target_dur)
+        {
+          cmd_vel_publisher_->publish(forward);
+          loop_rate.sleep();
+        }
+
+        // 3. 停止机器人，静止 0.5s 等待运动完全停止
+        geometry_msgs::msg::Twist stop;
         cmd_vel_publisher_->publish(stop);
-        stop_rate.sleep();
+        rclcpp::Rate stop_rate(20);
+        auto stop_start = this->now();
+        auto stop_dur   = rclcpp::Duration::from_seconds(0.5);
+        while (rclcpp::ok() && !shutdown_.load() && (this->now() - stop_start) < stop_dur)
+        {
+          cmd_vel_publisher_->publish(stop);
+          stop_rate.sleep();
+        }
+
+        // 节点关闭时不做拟合
+        if (shutdown_.load())
+        {
+          RCLCPP_WARN(get_logger(), "[Bootstrap] 节点关闭，中止校准");
+          return false;
+        }
+
+        RCLCPP_INFO(get_logger(), "[Bootstrap] 行走完成，触发拟合...");
+
+        // 4. 触发 apply_calibration，等待拟合完成（最多 5s）
+        auto apply_req    = std::make_shared<std_srvs::srv::Trigger::Request>();
+        auto apply_future = apply_calibration_client_->async_send_request(apply_req);
+
+        if (apply_future.wait_for(std::chrono::seconds(5)) != std::future_status::ready)
+        {
+          RCLCPP_WARN(get_logger(), "[Bootstrap] 第%d次：apply_calibration 响应超时，准备重试",
+                      attempt + 1);
+          continue;
+        }
+
+        auto apply_response = apply_future.get();
+        if (!apply_response->success)
+        {
+          RCLCPP_WARN(get_logger(), "[Bootstrap] 第%d次：拟合失败（%s），准备重试",
+                      attempt + 1, apply_response->message.c_str());
+          continue;
+        }
+
+        // 5. 成功：更新校准时间戳，启动 60s 计时窗口
+        {
+          std::lock_guard<std::mutex> lock(calibration_mutex_);
+          last_calibration_time_ = this->now();
+          has_last_calibration_time_ = true;
+        }
+
+        RCLCPP_INFO(get_logger(), "[Bootstrap] 第%d次成功，航向锚点已建立，开始计时 60s 窗口",
+                    attempt + 1);
+        return true;
       }
 
-      // 节点关闭时不做拟合
-      if (shutdown_.load())
-      {
-        RCLCPP_WARN(get_logger(), "[Bootstrap] 节点关闭，中止校准");
-        return false;
-      }
-
-      RCLCPP_INFO(get_logger(), "[Bootstrap] 行走完成，触发拟合...");
-
-      // 4. 触发 apply_calibration，等待拟合完成（最多 5s）
-      auto apply_req = std::make_shared<std_srvs::srv::Trigger::Request>();
-      auto apply_future = apply_calibration_client_->async_send_request(apply_req);
-      auto apply_status = apply_future.wait_for(std::chrono::seconds(5));
-
-      if (apply_status != std::future_status::ready)
-      {
-        RCLCPP_ERROR(get_logger(), "[Bootstrap] apply_calibration 响应超时，校准失败");
-        return false;
-      }
-
-      auto apply_response = apply_future.get();
-      if (!apply_response->success)
-      {
-        RCLCPP_ERROR(get_logger(), "[Bootstrap] 拟合失败: %s", apply_response->message.c_str());
-        return false;
-      }
-
-      // 5. 更新校准时间戳，启动 60s 计时窗口
-      {
-        std::lock_guard<std::mutex> lock(calibration_mutex_);
-        last_calibration_time_ = this->now();
-        has_last_calibration_time_ = true;
-      }
-
-      RCLCPP_INFO(get_logger(), "[Bootstrap] 校准完成，航向锚点已建立，开始计时 60s 窗口");
-      return true;
+      RCLCPP_ERROR(get_logger(), "[Bootstrap] 已重试 %d 次均失败，请检查定位传感器信号质量",
+                   max_retries);
+      return false;
     }
 
     /**

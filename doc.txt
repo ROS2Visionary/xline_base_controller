@@ -76,3 +76,5 @@ localization:
     reflector_to_base_y: 0.0
     reflector_to_base_z: 0.0
 
+
+下发任务，校准失败时，server在不断的重试发送，app的状态显示也不对

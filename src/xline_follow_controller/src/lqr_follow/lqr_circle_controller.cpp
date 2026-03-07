@@ -176,6 +176,44 @@ void LQRCircleController::updateParameters(const std::string& config_path)
           parser.getParameter<std::string>("debug.grid_map_path"));
     }
 
+    // 加载半径自适应速度调度参数（可选）
+    if (parser.hasParameter("velocity_schedule.enable_radius_schedule"))
+    {
+      params_.enable_radius_schedule =
+          parser.getParameter<bool>("velocity_schedule.enable_radius_schedule");
+    }
+    if (parser.hasParameter("velocity_schedule.radius_threshold"))
+    {
+      params_.radius_threshold =
+          parser.getParameter<double>("velocity_schedule.radius_threshold");
+    }
+    if (parser.hasParameter("velocity_schedule.radius_step"))
+    {
+      params_.radius_step =
+          parser.getParameter<double>("velocity_schedule.radius_step");
+    }
+    if (parser.hasParameter("velocity_schedule.velocity_step"))
+    {
+      params_.velocity_step =
+          parser.getParameter<double>("velocity_schedule.velocity_step");
+    }
+
+    // 加载优化元信息（可选，用于调参记录）
+    if (parser.hasParameter("optimization.id"))
+    {
+      params_.optimization.id = parser.getParameter<std::string>("optimization.id");
+    }
+    if (parser.hasParameter("optimization.parent_batch_id"))
+    {
+      params_.optimization.parent_batch_id =
+          parser.getParameter<std::string>("optimization.parent_batch_id");
+    }
+    if (parser.hasParameter("optimization.change_note"))
+    {
+      params_.optimization.change_note =
+          parser.getParameter<std::string>("optimization.change_note");
+    }
+
     RCLCPP_INFO(get_logger(), "LQR参数已从配置文件加载: %s", full_path.c_str());
   }
   catch (const std::exception& e)
@@ -294,6 +332,13 @@ bool LQRCircleController::setPlanForCircle(double circle_center_x, double circle
   // 再保存圆形路径特有的参数（在 reset() 之后保存，避免被清零）
   // 这个半径用于 updateAccumulatedAngle() 中计算角速度补偿
   circle_radius_ = circle_radius;
+
+  // 保存圆心坐标（用于径向误差计算）
+  circle_center_x_ = circle_center_x;
+  circle_center_y_ = circle_center_y;
+
+  // 准备数据采集槽位（在 reset() 之后调用，避免被清零）
+  prepareCircleSlot();
 
   // 根据 circle_total_angle_ 自动判断路径类型
   // 如果总角度 >= 1.95π，视为完整圆形；否则视为圆弧
@@ -423,10 +468,21 @@ bool LQRCircleController::computeVelocityCommands(
   double current_y = current_pose.pose.position.y;
   double current_theta = tf2::getYaw(current_pose.pose.orientation);
 
-  // 根据路径类型设置期望速度
-  // 无论圆形路径还是一般路径，都使用期望速度计算前馈
-  // 原因：底层速度控制良好，使用期望速度可避免测量噪声影响前馈稳定性
-  double current_v = params_.v_max;
+  // 计算真实控制周期 dt（用于数据采集计时）
+  auto ctrl_now = std::chrono::steady_clock::now();
+  double ctrl_dt = params_.control_period;
+  if (last_control_time_initialized_)
+  {
+    ctrl_dt = std::chrono::duration_cast<std::chrono::duration<double>>(
+        ctrl_now - last_control_time_).count();
+    ctrl_dt = std::clamp(ctrl_dt, 0.005, 0.2);
+  }
+  last_control_time_ = ctrl_now;
+  last_control_time_initialized_ = true;
+
+  // 根据圆弧半径计算调度线速度（小半径慢速，大半径适当加速）
+  // 使用期望速度（非测量值）计算前馈，避免测量噪声影响前馈稳定性
+  double current_v = computeScheduledVelocity(circle_radius_);
 
   // 0. 检查是否需要航向预对准
   if (need_yaw_prealign_ && !yaw_prealign_done_)
@@ -508,13 +564,44 @@ bool LQRCircleController::computeVelocityCommands(
   double omega = omega_ff + omega_correction;
 
   // 11. 应用角速度和角加速度限幅
+  const double omega_before_limits = omega;  // 保存限幅前值（调试用）
   omega = applyLimits(omega);
 
   // 12. 对于圆形路径，检查是否完成
   bool completed = updateAccumulatedAngle(current_theta);
+
+  // 13. 数据采集（在跟踪阶段，即 yaw 初始化之后；完成帧也记录）
+  if (last_yaw_initialized_)
+  {
+    tracking_elapsed_time_s_ += ctrl_dt;
+    if (tracking_elapsed_time_s_ + 1e-9 >= next_tracking_sample_time_s_)
+    {
+      // 径向误差：机器人到圆心距离 - 标称半径（正=偏外，负=偏内）
+      double radial_err_m = 0.0;
+      if (circle_radius_ > 0.0)
+      {
+        double dist_to_center = std::hypot(current_x - circle_center_x_,
+                                           current_y - circle_center_y_);
+        radial_err_m = dist_to_center - circle_radius_;
+      }
+
+      sampleTrackingData(current_x, current_y,
+                         e_y, radial_err_m,
+                         current_v, omega,
+                         ref.theta, e_theta,
+                         omega_ff, omega_fb, omega_correction, omega_i,
+                         omega_before_limits, feedback_limit,
+                         K1_, K2_,
+                         nearest_idx, accumulated_angle_,
+                         start_print, integral_e_y_);
+    }
+  }
+
   if (completed)
   {
     goal_reached_ = true;
+    exportTrackingMetrics();
+
     cmd_vel.header.stamp = this->now();
     cmd_vel.header.frame_id = pose.header.frame_id;
     cmd_vel.twist.linear.x = 0.0;
@@ -570,6 +657,7 @@ bool LQRCircleController::isGoalReached()
 
 bool LQRCircleController::cancel()
 {
+  exportTrackingMetrics();  // 取消时也导出已采集的数据
   reset();
   RCLCPP_INFO(get_logger(), "LQR控制器已取消");
   return true;
@@ -929,6 +1017,17 @@ void LQRCircleController::reset()
   h_x_filter.reset(params_.hampel_window, params_.hampel_k);
   h_y_filter.reset(params_.hampel_window, params_.hampel_k);
 
+  // 重置数据采集状态（批次管理变量不重置，由 prepareCircleSlot 管理）
+  tracking_error_abs_m_.clear();
+  tracking_radial_err_m_.clear();
+  tracking_angle_at_sample_.clear();
+  tracking_sample_rows_.clear();
+  tracking_metrics_exported_   = false;
+  tracking_elapsed_time_s_     = 0.0;
+  next_tracking_sample_time_s_ = 0.0;
+
+  // 重置控制周期计时
+  last_control_time_initialized_ = false;
 
   RCLCPP_DEBUG(get_logger(), "LQR控制器状态已重置");
 }
@@ -1276,6 +1375,485 @@ bool LQRCircleController::updateAccumulatedAngle(double current_yaw)
 
   // 路径未完成，继续跟踪
   return false;
+}
+
+// ============================================================================
+// 数据采集与导出
+// ============================================================================
+
+void LQRCircleController::prepareCircleSlot()
+{
+  constexpr int kBatchSize = 8;  // 每批最多记录 8 圈（支持 ≤8 个不同半径）
+
+  if (!circle_batch_initialized_ || circle_count_in_batch_ >= kBatchSize)
+  {
+    circle_batch_initialized_ = true;
+    circle_count_in_batch_    = 0;
+
+    const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::system_clock::now().time_since_epoch())
+                            .count();
+    circle_batch_id_ = std::to_string(now_ms);
+
+    // 清空并重建 circle_tracking_latest 目录
+    const std::string latest_dir = getTrackingRecordDir() + "/circle_tracking_latest";
+    std::lock_guard<std::mutex> lock(file_mutex_);
+    std::error_code ec;
+    if (std::filesystem::exists(latest_dir))
+    {
+      std::filesystem::remove_all(latest_dir, ec);
+    }
+    std::filesystem::create_directories(latest_dir, ec);
+
+    RCLCPP_INFO(get_logger(), "初始化圆弧验证批次: batch_id=%s", circle_batch_id_.c_str());
+  }
+
+  circle_slot_ = circle_count_in_batch_ + 1;
+  circle_count_in_batch_ += 1;
+
+  RCLCPP_INFO(get_logger(), "设置圆弧采集槽位: %d/%d, 半径=%.3fm",
+              circle_slot_, kBatchSize, circle_radius_);
+}
+
+void LQRCircleController::sampleTrackingData(
+    double robot_x, double robot_y,
+    double cross_track_m, double radial_err_m,
+    double linear_speed, double angular_cmd,
+    double ref_theta, double e_theta,
+    double omega_ff, double omega_fb_raw,
+    double omega_correction, double omega_i,
+    double omega_before_limits, double feedback_limit,
+    double k1, double k2,
+    size_t nearest_idx, double accumulated_angle_rad,
+    bool is_printing, double integral_state)
+{
+  // 记录误差用于统计
+  tracking_error_abs_m_.push_back(std::abs(cross_track_m));
+  tracking_radial_err_m_.push_back(radial_err_m);
+  tracking_angle_at_sample_.push_back(accumulated_angle_rad);
+
+  // 生成 CSV 行
+  const double nan_v = std::numeric_limits<double>::quiet_NaN();
+  (void)nan_v;
+
+  // 计算真实几何角度：atan2(robot_y - center_y, robot_x - center_x) 归一化到 [0, 2π)
+  const double real_angle_rad = [&]() {
+    double a = std::atan2(robot_y - circle_center_y_, robot_x - circle_center_x_);
+    if (a < 0.0) a += 2.0 * M_PI;
+    return a;
+  }();
+
+  std::ostringstream row;
+  row << std::fixed << std::setprecision(6)
+      << tracking_elapsed_time_s_           << ","  // t_s
+      << robot_x                            << ","  // x_m
+      << robot_y                            << ","  // y_m
+      << circle_center_x_                   << ","  // circle_center_x_m
+      << circle_center_y_                   << ","  // circle_center_y_m
+      << (cross_track_m * 1000.0)           << ","  // cross_track_mm (Frenet e_y，带符号)
+      << (radial_err_m  * 1000.0)           << ","  // radial_err_mm (正=偏外，负=偏内)
+      << accumulated_angle_rad              << ","  // accum_angle_rad
+      << real_angle_rad                     << ","  // real_angle_rad (真实几何角度，[0,2π))
+      << circle_radius_                     << ","  // circle_radius_m
+      << linear_speed                       << ","  // linear_speed_mps
+      << angular_cmd                        << ","  // angular_cmd_rps (最终指令)
+      << ref_theta                          << ","  // ref_theta_rad
+      << e_theta                            << ","  // e_theta_rad
+      << omega_ff                           << ","  // omega_ff_rps
+      << omega_fb_raw                       << ","  // omega_fb_raw_rps (限幅前)
+      << omega_correction                   << ","  // omega_correction_rps (限幅后)
+      << omega_i                            << ","  // omega_i_rps
+      << omega_before_limits                << ","  // omega_before_limits_rps
+      << feedback_limit                     << ","  // feedback_limit_rps
+      << k1                                 << ","  // k1
+      << k2                                 << ","  // k2
+      << nearest_idx                        << ","  // nearest_idx
+      << (is_printing ? 1 : 0)             << ","  // is_printing (1=喷墨中)
+      << integral_state;                            // integral_state (积分累积量原始值)
+
+  tracking_sample_rows_.push_back(row.str());
+  next_tracking_sample_time_s_ += kTrackingSampleInterval;
+}
+
+void LQRCircleController::exportTrackingMetrics()
+{
+  if (tracking_metrics_exported_)
+  {
+    return;
+  }
+  tracking_metrics_exported_ = true;
+
+  if (tracking_error_abs_m_.empty())
+  {
+    RCLCPP_WARN(get_logger(), "本次圆弧未记录到有效样本，跳过指标导出");
+    return;
+  }
+
+  // ── 计算统计量 ──
+  const double p50_mm  = computePercentile(tracking_error_abs_m_, 50.0)  * 1000.0;
+  const double p90_mm  = computePercentile(tracking_error_abs_m_, 90.0)  * 1000.0;
+  const double p95_mm  = computePercentile(tracking_error_abs_m_, 95.0)  * 1000.0;
+  const double max_mm  = computePercentile(tracking_error_abs_m_, 100.0) * 1000.0;
+  const double mean_mm =
+      (std::accumulate(tracking_error_abs_m_.begin(), tracking_error_abs_m_.end(), 0.0) /
+       static_cast<double>(tracking_error_abs_m_.size())) * 1000.0;
+  const double ratio_lt_3mm = computeShareBelowThreshold(tracking_error_abs_m_, 0.003);
+  const double ratio_lt_5mm = computeShareBelowThreshold(tracking_error_abs_m_, 0.005);
+
+  // 径向误差统计（带符号均值，正=偏外，负=偏内）
+  const double mean_radial_mm =
+      (std::accumulate(tracking_radial_err_m_.begin(), tracking_radial_err_m_.end(), 0.0) /
+       static_cast<double>(tracking_radial_err_m_.size())) * 1000.0;
+  const double sq_sum = std::accumulate(
+      tracking_radial_err_m_.begin(), tracking_radial_err_m_.end(), 0.0,
+      [](double acc, double v) { return acc + v * v; });
+  const double std_radial_mm =
+      std::sqrt(sq_sum / static_cast<double>(tracking_radial_err_m_.size())) * 1000.0;
+
+  // ── 基于真实几何角度（atan2(y-cy, x-cx)）的象限分析 ──
+  // 真实角度范围[-π, π]，但样本可能跨越2π（完整圆），需要归一化到[0, 2π)
+  // 先用径向误差计算真实p90（比基于lookahead的cross_track更准确）
+  const double p90_radial_mm  = computePercentile(
+      [&]() {
+        std::vector<double> abs_rad;
+        abs_rad.reserve(tracking_radial_err_m_.size());
+        for (double v : tracking_radial_err_m_) abs_rad.push_back(std::abs(v));
+        return abs_rad;
+      }(), 90.0) * 1000.0;
+  const double p50_radial_mm  = computePercentile(
+      [&]() {
+        std::vector<double> abs_rad;
+        abs_rad.reserve(tracking_radial_err_m_.size());
+        for (double v : tracking_radial_err_m_) abs_rad.push_back(std::abs(v));
+        return abs_rad;
+      }(), 50.0) * 1000.0;
+  const double ratio_lt_3mm_radial = computeShareBelowThreshold(
+      [&]() {
+        std::vector<double> abs_rad;
+        abs_rad.reserve(tracking_radial_err_m_.size());
+        for (double v : tracking_radial_err_m_) abs_rad.push_back(std::abs(v));
+        return abs_rad;
+      }(), 0.003);
+  const double ratio_lt_5mm_radial = computeShareBelowThreshold(
+      [&]() {
+        std::vector<double> abs_rad;
+        abs_rad.reserve(tracking_radial_err_m_.size());
+        for (double v : tracking_radial_err_m_) abs_rad.push_back(std::abs(v));
+        return abs_rad;
+      }(), 0.005);
+
+  // 角度分段分析（基于真实几何角度 atan2(y-cy, x-cx)，而非偏航角积分）
+  // 真实角度能准确映射到圆弧物理位置
+  // 注：tracking_sample_rows_ 存储的是字符串，角度从 tracking_angle_at_sample_ 取
+  // tracking_angle_at_sample_ 存的是 accum_angle_rad（偏航积分），
+  // 我们在 samples CSV 中单独存了 real_angle_rad（几何角），但内存中还是 accum_angle。
+  // 用 x_m/y_m + center 重算真实角度来做象限划分：
+  // 由于 samples 已是字符串，需从 tracking_radial_err_m_ 对应索引重建角度分组。
+  // 此处用 accum_angle 近似（0~2π 均分），已足够定位大致问题段。
+  auto quadrant_mean_radial = [&](double q_start, double q_end) -> double {
+    std::vector<double> seg;
+    for (size_t i = 0; i < tracking_angle_at_sample_.size(); ++i)
+    {
+      const double a = tracking_angle_at_sample_[i];
+      if (a >= q_start && a < q_end)
+      {
+        seg.push_back(std::abs(tracking_radial_err_m_[i]));
+      }
+    }
+    if (seg.empty()) return 0.0;
+    return (std::accumulate(seg.begin(), seg.end(), 0.0) /
+            static_cast<double>(seg.size())) * 1000.0;
+  };
+  const double q1_mean_mm = quadrant_mean_radial(0.0,         M_PI * 0.5);
+  const double q2_mean_mm = quadrant_mean_radial(M_PI * 0.5,  M_PI * 1.0);
+  const double q3_mean_mm = quadrant_mean_radial(M_PI * 1.0,  M_PI * 1.5);
+  const double q4_mean_mm = quadrant_mean_radial(M_PI * 1.5,  M_PI * 2.0);
+
+  // 控制饱和率（omega_correction 触碰 feedback_limit 的比例）— 从样本解析
+  // 此处仅用样本数量做摘要，详细分析由 analyze.py 完成
+
+  RCLCPP_INFO(get_logger(),
+              "Circle误差统计: N=%zu, P50=%.3fmm, P90=%.3fmm, P95=%.3fmm, MAX=%.3fmm, MEAN=%.3fmm",
+              tracking_error_abs_m_.size(), p50_mm, p90_mm, p95_mm, max_mm, mean_mm);
+  RCLCPP_INFO(get_logger(),
+              "Circle覆盖统计: <3mm=%.1f%%, <5mm=%.1f%%",
+              ratio_lt_3mm * 100.0, ratio_lt_5mm * 100.0);
+  RCLCPP_INFO(get_logger(),
+              "Circle径向偏差: mean=%.3fmm (正=偏外), std=%.3fmm",
+              mean_radial_mm, std_radial_mm);
+  RCLCPP_INFO(get_logger(),
+              "Circle象限分布: Q1=%.3fmm, Q2=%.3fmm, Q3=%.3fmm, Q4=%.3fmm",
+              q1_mean_mm, q2_mean_mm, q3_mean_mm, q4_mean_mm);
+
+  // ── 写入文件 ──
+  const std::string base_dir   = getTrackingRecordDir();
+  const std::string latest_dir = base_dir + "/circle_tracking_latest";
+
+  std::lock_guard<std::mutex> lock(file_mutex_);
+
+  try
+  {
+    std::filesystem::create_directories(latest_dir);
+  }
+  catch (const std::exception& e)
+  {
+    RCLCPP_ERROR(get_logger(), "无法创建指标目录 %s: %s", latest_dir.c_str(), e.what());
+    return;
+  }
+
+  // 时间戳
+  const auto now_sys = std::chrono::system_clock::now();
+  const std::time_t now_t = std::chrono::system_clock::to_time_t(now_sys);
+  std::ostringstream ts_ss;
+  ts_ss << std::put_time(std::localtime(&now_t), "%Y%m%d_%H%M%S");
+  const std::string timestamp = ts_ss.str();
+
+  // 槽位标签
+  std::ostringstream slot_ss;
+  slot_ss << std::setw(2) << std::setfill('0') << circle_slot_;
+  const std::string circle_tag  = "circle_" + slot_ss.str();
+  const std::string metrics_file = latest_dir + "/" + circle_tag + "_metrics.csv";
+  const std::string samples_file = latest_dir + "/" + circle_tag + "_samples.csv";
+  const std::string batch_file   = latest_dir + "/batch_metrics.csv";
+
+  // CSV 文本消毒（逗号/换行替换为分号）
+  auto sanitize = [](std::string s) {
+    for (char& c : s)
+    {
+      if (c == ',' || c == '\n' || c == '\r') c = ';';
+    }
+    return s;
+  };
+  const std::string opt_id     = sanitize(params_.optimization.id);
+  const std::string opt_parent = sanitize(params_.optimization.parent_batch_id);
+  const std::string opt_note   = sanitize(params_.optimization.change_note);
+  const std::string path_type_str =
+      (path_type_ == PathType::CIRCLE) ? "CIRCLE" : "ARC";
+
+  // 删除旧的同槽位文件（避免数据混淆）
+  for (const auto& f : {metrics_file, samples_file})
+  {
+    if (std::filesystem::exists(f))
+    {
+      std::error_code ec;
+      std::filesystem::remove(f, ec);
+    }
+  }
+
+  // ── metrics CSV ──
+  std::ofstream metrics(metrics_file, std::ios::out);
+  if (!metrics.is_open())
+  {
+    RCLCPP_ERROR(get_logger(), "无法写入指标文件: %s", metrics_file.c_str());
+    return;
+  }
+  metrics << "batch_id,circle_slot,timestamp,n_samples,circle_radius_m,path_type,"
+             "circle_center_x_m,circle_center_y_m,"
+             "total_angle_rad,p50_mm,p90_mm,p95_mm,max_mm,mean_mm,"
+             "ratio_lt_3mm,ratio_lt_5mm,"
+             "p90_radial_mm,p50_radial_mm,ratio_lt_3mm_radial,ratio_lt_5mm_radial,"
+             "mean_radial_mm,std_radial_mm,"
+             "q1_mean_mm,q2_mean_mm,q3_mean_mm,q4_mean_mm,"
+             "target_p90_mm,pass_p90_lt_5mm,"
+             "v_max,omega_max,lookahead_dist,lookahead_time,sg_window,"
+             "feedback_ratio_before,feedback_ratio_after,feedback_min_limit,"
+             "enable_integral,ki,integral_max,"
+             "q1_lqr,q2_lqr,r_lqr,"
+             "optimization_id,parent_batch_id,change_note\n";
+  metrics << std::fixed << std::setprecision(6)
+          << circle_batch_id_           << ","
+          << circle_slot_               << ","
+          << timestamp                  << ","
+          << tracking_error_abs_m_.size() << ","
+          << circle_radius_             << ","
+          << path_type_str              << ","
+          << circle_center_x_           << ","   // circle_center_x_m
+          << circle_center_y_           << ","   // circle_center_y_m
+          << target_total_angle_        << ","
+          << p50_mm                     << ","
+          << p90_mm                     << ","
+          << p95_mm                     << ","
+          << max_mm                     << ","
+          << mean_mm                    << ","
+          << ratio_lt_3mm               << ","
+          << ratio_lt_5mm               << ","
+          << p90_radial_mm              << ","   // 真实几何精度（主指标）
+          << p50_radial_mm              << ","
+          << ratio_lt_3mm_radial        << ","
+          << ratio_lt_5mm_radial        << ","
+          << mean_radial_mm             << ","
+          << std_radial_mm              << ","
+          << q1_mean_mm                 << ","
+          << q2_mean_mm                 << ","
+          << q3_mean_mm                 << ","
+          << q4_mean_mm                 << ","
+          << 5.0                        << ","   // target_p90_mm
+          << (p90_radial_mm < 5.0 ? 1 : 0) << ","  // pass_p90_lt_5mm（用径向误差判断）
+          << computeScheduledVelocity(circle_radius_) << ","  // v_max (实际调度速度)
+          << params_.omega_max          << ","
+          << params_.lookahead_distance << ","
+          << params_.lookahead_time     << ","
+          << params_.savgol_window      << ","
+          << params_.feedback_limit_ratio_before_print << ","
+          << params_.feedback_limit_ratio_after_print  << ","
+          << params_.feedback_min_limit << ","
+          << (params_.enable_integral ? 1 : 0) << ","
+          << params_.Ki                 << ","
+          << params_.integral_max       << ","
+          << params_.q1                 << ","
+          << params_.q2                 << ","
+          << params_.r                  << ","
+          << "\"" << opt_id     << "\","
+          << "\"" << opt_parent << "\","
+          << "\"" << opt_note   << "\""
+          << "\n";
+  metrics.close();
+
+  // ── samples CSV ──
+  std::ofstream samples(samples_file, std::ios::out);
+  if (!samples.is_open())
+  {
+    RCLCPP_ERROR(get_logger(), "无法写入采样文件: %s", samples_file.c_str());
+    return;
+  }
+  samples << "t_s,x_m,y_m,circle_center_x_m,circle_center_y_m,"
+             "cross_track_mm,radial_err_mm,accum_angle_rad,real_angle_rad,circle_radius_m,"
+             "linear_speed_mps,angular_cmd_rps,ref_theta_rad,e_theta_rad,"
+             "omega_ff_rps,omega_fb_raw_rps,omega_correction_rps,omega_i_rps,"
+             "omega_before_limits_rps,feedback_limit_rps,k1,k2,nearest_idx,"
+             "is_printing,integral_state\n";
+  for (const auto& row : tracking_sample_rows_)
+  {
+    samples << row << "\n";
+  }
+  samples.close();
+
+  // ── batch_metrics CSV（追加模式）──
+  const bool need_header = !std::filesystem::exists(batch_file) ||
+                           std::filesystem::file_size(batch_file) == 0;
+  std::ofstream batch(batch_file, std::ios::app);
+  if (batch.is_open())
+  {
+    if (need_header)
+    {
+      batch << "batch_id,circle_slot,timestamp,n_samples,circle_radius_m,path_type,"
+               "circle_center_x_m,circle_center_y_m,"
+               "total_angle_rad,p50_mm,p90_mm,p95_mm,max_mm,mean_mm,"
+               "ratio_lt_3mm,ratio_lt_5mm,"
+               "p90_radial_mm,p50_radial_mm,ratio_lt_3mm_radial,ratio_lt_5mm_radial,"
+               "mean_radial_mm,std_radial_mm,"
+               "q1_mean_mm,q2_mean_mm,q3_mean_mm,q4_mean_mm,"
+               "pass_p90_lt_5mm,optimization_id,parent_batch_id,change_note\n";
+    }
+    batch << std::fixed << std::setprecision(6)
+          << circle_batch_id_           << ","
+          << circle_slot_               << ","
+          << timestamp                  << ","
+          << tracking_error_abs_m_.size() << ","
+          << circle_radius_             << ","
+          << path_type_str              << ","
+          << circle_center_x_           << ","
+          << circle_center_y_           << ","
+          << target_total_angle_        << ","
+          << p50_mm                     << ","
+          << p90_mm                     << ","
+          << p95_mm                     << ","
+          << max_mm                     << ","
+          << mean_mm                    << ","
+          << ratio_lt_3mm               << ","
+          << ratio_lt_5mm               << ","
+          << p90_radial_mm              << ","
+          << p50_radial_mm              << ","
+          << ratio_lt_3mm_radial        << ","
+          << ratio_lt_5mm_radial        << ","
+          << mean_radial_mm             << ","
+          << std_radial_mm              << ","
+          << q1_mean_mm                 << ","
+          << q2_mean_mm                 << ","
+          << q3_mean_mm                 << ","
+          << q4_mean_mm                 << ","
+          << (p90_radial_mm < 5.0 ? 1 : 0) << ","
+          << "\"" << opt_id     << "\","
+          << "\"" << opt_parent << "\","
+          << "\"" << opt_note   << "\""
+          << "\n";
+    batch.close();
+  }
+
+  RCLCPP_INFO(get_logger(), "圆弧跟踪数据已导出: %s", latest_dir.c_str());
+}
+
+double LQRCircleController::computePercentile(
+    const std::vector<double>& values, double percentile) const
+{
+  if (values.empty()) return 0.0;
+
+  const double p = std::clamp(percentile, 0.0, 100.0);
+  std::vector<double> sorted(values.begin(), values.end());
+  std::sort(sorted.begin(), sorted.end());
+
+  if (sorted.size() == 1) return sorted.front();
+
+  const double rank = (p / 100.0) * static_cast<double>(sorted.size() - 1);
+  const size_t lo   = static_cast<size_t>(std::floor(rank));
+  const size_t hi   = static_cast<size_t>(std::ceil(rank));
+  const double t    = rank - static_cast<double>(lo);
+  return sorted[lo] + (sorted[hi] - sorted[lo]) * t;
+}
+
+double LQRCircleController::computeShareBelowThreshold(
+    const std::vector<double>& values, double threshold_m) const
+{
+  if (values.empty()) return 0.0;
+  size_t hit = 0;
+  for (const double v : values)
+  {
+    if (std::isfinite(v) && std::abs(v) < threshold_m) ++hit;
+  }
+  return static_cast<double>(hit) / static_cast<double>(values.size());
+}
+
+double LQRCircleController::computeScheduledVelocity(double radius) const
+{
+  // 未启用调度或半径无效，直接使用 v_max
+  if (!params_.enable_radius_schedule || radius <= 0.0)
+  {
+    return params_.v_max;
+  }
+
+  const double v_min = std::max(0.01, params_.v_min);
+  const double v_max = std::max(v_min, params_.v_max);
+
+  // R < radius_threshold：使用最小速度
+  if (radius < params_.radius_threshold)
+  {
+    return v_min;
+  }
+
+  // R >= radius_threshold：按步长递增
+  // steps = floor((R - threshold) / radius_step)
+  // v     = v_min + steps * velocity_step，上限 v_max
+  const double excess = radius - params_.radius_threshold;
+  const double step_size = std::max(1e-3, params_.radius_step);    // 防止除零
+  const int    steps     = static_cast<int>(std::floor(excess / step_size));
+  const double v         = v_min + static_cast<double>(steps) * params_.velocity_step;
+
+  return std::clamp(v, v_min, v_max);
+}
+
+std::string LQRCircleController::getTrackingRecordDir() const
+{
+  const char* ws_root = std::getenv("XLINE_WS_ROOT");
+  if (ws_root && *ws_root) return std::string(ws_root);
+
+  // 回退：使用当前进程工作目录
+  try
+  {
+    return std::filesystem::current_path().string();
+  }
+  catch (const std::exception&) {}
+
+  return ".";
 }
 
 }  // namespace follow_controller

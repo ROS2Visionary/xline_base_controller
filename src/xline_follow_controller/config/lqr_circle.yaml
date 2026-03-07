@@ -1,6 +1,13 @@
 # ==============================================================================
-# 前馈+LQR 高精度路径跟踪控制器参数配置
+# 前馈+LQR 高精度路径跟踪控制器参数配置（圆弧/圆形路径）
 # ==============================================================================
+
+# 优化元信息（每次调参必须更新这三个字段）
+# id 格式：circle_C<批次号>_<简短标签>
+optimization:
+  id: "circle_C01_limit_ratio_after_0p20"
+  parent_batch_id: "circle_C00_baseline"
+  change_note: "喷后反馈限制从5%提升到20%：C00全部圆饱和率99%+，LQR形同bang-bang，修正能力不足"
 
 # LQR 权重参数
 lqr:
@@ -35,18 +42,47 @@ lqr:
   integral_decay: 0.99
 
 # 速度限制参数
+# 机器人物理能力范围: 线速度 0.05~0.10 m/s
 velocity:
-  # 最大线速度 (m/s)
-  max: 0.07
+  # 最大线速度上限 (m/s)，速度调度不会超过此值
+  max: 0.10
 
-  # 最小线速度 (m/s)
-  min: 0.01
+  # 最小线速度 (m/s)，小半径圆弧使用此速度
+  min: 0.05
 
   # 最大角速度 (rad/s)
   omega_max: 0.3
 
   # 最大角加速度 (rad/s²)
   omega_dot_max: 0.5
+
+# 基于半径的速度自适应调度
+# 调度逻辑：
+#   R < radius_threshold            → v = v_min
+#   R >= radius_threshold           → v = v_min + floor((R - threshold) / radius_step) × velocity_step
+#   v 超过 velocity.max 时封顶
+#
+# 当前默认调度表（v_min=0.05, threshold=0.5, step_r=0.1, step_v=0.01）：
+#   R=0.3m → 0.05 m/s
+#   R=0.4m → 0.05 m/s
+#   R=0.5m → 0.05 m/s
+#   R=0.6m → 0.06 m/s
+#   R=0.7m → 0.07 m/s
+#   R=0.8m → 0.08 m/s
+#   R=0.9m → 0.09 m/s
+#   R=1.0m → 0.10 m/s (封顶)
+velocity_schedule:
+  # 是否启用半径自适应速度（false 时始终使用 velocity.max）
+  enable_radius_schedule: true
+
+  # 半径基准值 (m)：低于此值使用最小速度
+  radius_threshold: 0.5
+
+  # 半径步长 (m)：每增加此值，速度增加一个 velocity_step
+  radius_step: 0.1
+
+  # 速度步长 (m/s)：每个半径步长对应的速度增量
+  velocity_step: 0.01
 
 # 机器人参数
 robot:
@@ -116,7 +152,7 @@ feedback:
   # 喷墨后的反馈角速度限制比例（相对于前馈的百分比）
   # 喷墨后应设置较小值（如5%），保证喷印质量的稳定性和精度
   # 推荐范围: 0.03 - 0.10 (3% - 10%)
-  limit_ratio_after_print: 0.05
+  limit_ratio_after_print: 0.20
 
   # 最小反馈限制 (rad/s)
   # 设置为0表示不使用最小限制，严格按照比例计算

@@ -18,6 +18,12 @@
 #include <cmath>
 #include <algorithm>
 #include <filesystem>
+#include <chrono>
+#include <mutex>
+#include <fstream>
+#include <sstream>
+#include <iomanip>
+#include <numeric>
 
 namespace xline
 {
@@ -232,6 +238,56 @@ private:
                                          double radius,
                                          const geometry_msgs::msg::PoseStamped& start_pose) const;
 
+  // ================================
+  // 数据采集与导出
+  // ================================
+
+  /**
+   * @brief 准备新的圆弧采集槽位（每次 setPlanForCircle 调用）
+   */
+  void prepareCircleSlot();
+
+  /**
+   * @brief 按采样间隔记录一帧跟踪数据
+   */
+  void sampleTrackingData(double robot_x, double robot_y,
+                          double cross_track_m, double radial_err_m,
+                          double linear_speed, double angular_cmd,
+                          double ref_theta, double e_theta,
+                          double omega_ff, double omega_fb_raw,
+                          double omega_correction, double omega_i,
+                          double omega_before_limits, double feedback_limit,
+                          double k1, double k2,
+                          size_t nearest_idx, double accumulated_angle_rad,
+                          bool is_printing, double integral_state);
+
+  /**
+   * @brief 导出本次圆弧的跟踪指标和采样数据到 CSV
+   */
+  void exportTrackingMetrics();
+
+  /**
+   * @brief 计算百分位数
+   */
+  double computePercentile(const std::vector<double>& values, double percentile) const;
+
+  /**
+   * @brief 计算绝对值低于阈值的样本比例
+   */
+  double computeShareBelowThreshold(const std::vector<double>& values, double threshold_m) const;
+
+  /**
+   * @brief 获取跟踪数据根目录（优先使用 XLINE_WS_ROOT 环境变量）
+   */
+  std::string getTrackingRecordDir() const;
+
+  /**
+   * @brief 根据圆弧半径计算调度线速度
+   * @param radius 圆弧半径 (m)
+   * @return 调度后的线速度，范围 [v_min, v_max]
+   */
+  double computeScheduledVelocity(double radius) const;
+
   /**
    * @brief 位置滤波（使用Hampel滤波器和Savitzky-Golay滤波器）
    * @param robot_pose 原始机器人位姿
@@ -408,6 +464,47 @@ private:
   double start_print_angle_ = 0.0;          ///< 开始打印触发角度
   double stop_print_start_angle_ = 0.0;     ///< 停止打印窗口起始角度
   double stop_print_end_angle_ = 0.0;       ///< 停止打印窗口结束角度
+
+  // ================================
+  // 圆心坐标（用于径向误差计算）
+  // ================================
+  double circle_center_x_ = 0.0;
+  double circle_center_y_ = 0.0;
+
+  // ================================
+  // 数据采集状态
+  // ================================
+
+  /// 横向误差绝对值序列（单位：m，用于统计）
+  std::vector<double> tracking_error_abs_m_;
+  /// 径向误差序列（正=偏外，负=偏内，单位：m）
+  std::vector<double> tracking_radial_err_m_;
+  /// 每个样本对应的累计角度（用于角度分布分析）
+  std::vector<double> tracking_angle_at_sample_;
+  /// CSV 采样行缓存
+  std::vector<std::string> tracking_sample_rows_;
+
+  bool   tracking_metrics_exported_   = false; ///< 是否已导出指标
+  double tracking_elapsed_time_s_     = 0.0;   ///< 跟踪已用时间（s）
+  double next_tracking_sample_time_s_ = 0.0;   ///< 下次采样时刻（s）
+  static constexpr double kTrackingSampleInterval = 0.05; ///< 采样间隔（50ms）
+
+  // ================================
+  // 批次管理
+  // ================================
+  std::string circle_batch_id_;         ///< 当前批次 ID（时间戳）
+  int         circle_slot_              = 0;     ///< 当前圆弧槽位（1-based）
+  bool        circle_batch_initialized_ = false; ///< 批次是否已初始化
+  int         circle_count_in_batch_   = 0;     ///< 本批次已完成圆弧数
+
+  // ================================
+  // 控制周期计时
+  // ================================
+  std::chrono::steady_clock::time_point last_control_time_;
+  bool last_control_time_initialized_ = false;
+
+  /// 文件写入互斥锁
+  mutable std::mutex file_mutex_;
 
   /**
    * @brief 更新累计角度

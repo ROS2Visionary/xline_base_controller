@@ -194,6 +194,35 @@ struct LQRParams
 
   /// 栅格图保存路径
   std::string grid_map_path = "grid_maps";
+
+  // ================================
+  // 半径自适应速度调度
+  // ================================
+
+  /// 是否启用基于半径的速度自适应（false 时始终使用 v_max）
+  bool enable_radius_schedule = true;
+
+  /// 半径基准值 (m)：低于此值使用 v_min
+  double radius_threshold = 0.5;
+
+  /// 半径步长 (m)：每增加此值，速度增加一个 velocity_step
+  double radius_step = 0.1;
+
+  /// 速度步长 (m/s)：每个半径步长对应的速度增量
+  double velocity_step = 0.01;
+
+  // ================================
+  // 优化元信息（调参记录）
+  // ================================
+
+  struct {
+    /// 当前优化批次 ID（格式：circle_C00_baseline）
+    std::string id              = "circle_C00_baseline";
+    /// 父批次 ID（用于追踪优化链路）
+    std::string parent_batch_id = "";
+    /// 本次变更说明
+    std::string change_note     = "初始基线";
+  } optimization;
 };
 
 }  // namespace follow_controller
