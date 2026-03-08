@@ -71,9 +71,10 @@ public:
    * @param goal_x 目标X坐标 [m]
    * @param goal_y 目标Y坐标 [m]
    * @param goal_theta 目标朝向 [rad]
+   * @param align_heading 最后一步是否执行朝向对准（阶段2），默认true
    * @return 成功返回true
    */
-  bool setGoal(double goal_x, double goal_y, double goal_theta);
+  bool setGoal(double goal_x, double goal_y, double goal_theta, bool align_heading = true);
 
   /**
    * @brief 设置路径（兼容接口，提取终点）
@@ -209,6 +210,7 @@ private:
   double goal_theta_;              // 目标朝向
   bool goal_set_;                  // 是否设置了目标
   bool goal_theta_set_;            // 是否设置了目标朝向
+  bool align_heading_;             // 是否在最后一步对准航向（阶段2）
 
   // 到达状态
   bool goal_reached_;              // 是否到达目标

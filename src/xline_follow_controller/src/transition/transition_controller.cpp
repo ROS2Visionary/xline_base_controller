@@ -313,7 +313,7 @@ bool TransitionController::setGoal(double goal_x, double goal_y)
   return true;
 }
 
-bool TransitionController::setGoal(double goal_x, double goal_y, double goal_theta)
+bool TransitionController::setGoal(double goal_x, double goal_y, double goal_theta, bool align_heading)
 {
 
   updateParameters();
@@ -322,7 +322,8 @@ bool TransitionController::setGoal(double goal_x, double goal_y, double goal_the
   goal_y_ = goal_y;
   goal_theta_ = goal_theta;
   goal_set_ = true;
-  goal_theta_set_ = true;  // 控制朝向
+  goal_theta_set_ = true;   // 始终走 Mode2（保留后退能力）
+  align_heading_ = align_heading;  // 控制是否执行阶段2航向对准
   goal_reached_ = false;
   arrival_count_ = 0;
   use_backward_ = false;  // 将在首次计算时判断
@@ -339,8 +340,9 @@ bool TransitionController::setGoal(double goal_x, double goal_y, double goal_the
   stage2_entry_distance_ = 0.0;
   stage2_position_relaxed_ = false;
 
-  LOG_INFO("设置目标姿态: (%.3f, %.3f, %.2f°) [姿态伺服模式]",
-           goal_x_, goal_y_, goal_theta_ * 180.0 / M_PI);
+  LOG_INFO("设置目标姿态: (%.3f, %.3f, %.2f°) [%s]",
+           goal_x_, goal_y_, goal_theta_ * 180.0 / M_PI,
+           align_heading ? "姿态伺服模式" : "只到点（跳过航向对准）");
 
   return true;
 }
@@ -427,7 +429,7 @@ bool TransitionController::computeVelocityCommands(
   // 4.2 停滞检测（仅姿态伺服模式，且尚未进入阶段2）
   // 当距离长时间无法收敛（< stall_distance_threshold 但未到 arrival_tolerance）时，
   // 放弃位置精对准，强制进入阶段2直接对准航向
-  if (params_.stall_detection_enabled && goal_theta_set_ && !stage2_position_relaxed_ && !goal_reached_) {
+  if (params_.stall_detection_enabled && goal_theta_set_ && align_heading_ && !stage2_position_relaxed_ && !goal_reached_) {
     if (distance < params_.stall_distance_threshold && distance > params_.arrival_tolerance) {
       if (!stall_detection_active_) {
         // 首次进入阈值区域，开始计时
@@ -537,8 +539,8 @@ bool TransitionController::computeVelocityCommands(
           last_drift_warn_time = now;
         }
       }
-    } else if (distance <= params_.arrival_tolerance) {
-      // 首次满足到点精度，进入阶段2
+    } else if (distance <= params_.arrival_tolerance && align_heading_) {
+      // 首次满足到点精度，且需要对准航向，进入阶段2
       use_stage2 = true;
     }
 

@@ -595,7 +595,9 @@ namespace xline
           
           // line_follow_controller_->setPlan(robot_pose.pose.position.x, robot_pose.pose.position.y, line_data.end_x, line_data.end_y);
           // line_follow_controller_->setBackFollow(is_backward);
-          transition_controller->setGoal(line_data.end_x, line_data.end_y,line_data.next_path_heading);
+          // 仅当下一条路径是执行路径（next_path_heading 有效）时才对准航向
+          bool next_is_work_path = (line_data.next_path_heading != -999.0);
+          transition_controller->setGoal(line_data.end_x, line_data.end_y, line_data.next_path_heading, next_is_work_path);
           base_follow_controller_ = transition_controller;
           
         }else{
