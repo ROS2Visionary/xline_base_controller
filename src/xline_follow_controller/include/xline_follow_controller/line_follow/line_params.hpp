@@ -70,10 +70,8 @@ struct LineDistanceParams
 struct LineRotationParams
 {
   double max_w = 0.8;                ///< 最大角速度 [rad/s]
-  double min_w = 0.15;               ///< 最小角速度 [rad/s]
-  double factor = 1.2;               ///< 角速度调节因子
-  double angle_threshold = 0.5;      ///< 角度阈值 [rad]
-  double smooth_factor = 0.6;        ///< 平滑因子
+  double min_w = 0.15;               ///< 最小角速度 [rad/s]（固定下限，克服静摩擦）
+  double decel = 1.6;                ///< 最大角减速度 [rad/s²]（梯形规划制动参数）
 };
 
 // 滤波器参数 (filter.*)

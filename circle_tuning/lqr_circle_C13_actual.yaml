@@ -1,0 +1,92 @@
+# ==============================================================================
+# C13 实测配置快照（历史最优实测，原汁原味）
+# ==============================================================================
+#
+# 实测批次  : 1772989187240（新地形 center≈0.98,3.59）
+# 实测成绩  : 4/5 通过，avg_p90=4.79mm，avg<3mm%=68.1%  ← 历史最优
+# 通过圆弧  : circle_01✓ circle_02✓ circle_04✓ circle_05✓
+# 未通过    : circle_03（R=0.705m，积分上限不足，bias+2.38mm→积分state_cap=0.003限幅）
+#
+# 注意：此文件是 C13 测试时的原始参数，与当前最优配置(C19)的差异：
+#   - integral_max : 0.025（C13）vs 0.040（C19，C14改进后）
+#   - after_print  : 0.40（C13）vs 0.50（C19，C16改进后）
+#   - 其余参数相同
+#
+# 保存此文件的目的：留存历史最优实测的原始参数，供对比参考
+# ==============================================================================
+
+optimization:
+  id: "circle_C13_split_limit_30_40"
+  parent_batch_id: "circle_C12_limit_ratio_0p40"
+  change_note: "C12教训：before=40%使circle_05 Q1入圆P90=11.48mm(过冲)。before回退0.30，after保留0.40。精确分离喷墨前后反馈限制。实测4/5通过，avg_p90=4.79mm，跨地形验证✓"
+
+lqr:
+  q1: 200.0
+  q2: 300.0
+  r:  1.0
+  use_direct_gains: true
+  K1_direct: 6.0
+  K2_direct: 1.5
+
+  enable_integral: true
+  Ki: 8.0
+  integral_max: 0.025   # C13原始值（state_cap=0.003125 m·s）；C14改为0.040修复circle_03
+  integral_decay: 0.99
+
+velocity:
+  max: 0.10
+  min: 0.05
+  omega_max: 0.3
+  omega_dot_max: 0.5
+
+velocity_schedule:
+  enable_radius_schedule: true
+  radius_threshold: 0.5
+  radius_step: 0.1
+  velocity_step: 0.01
+
+robot:
+  wheel_base: 0.31
+
+lookahead:
+  distance: 0.015
+  time: 0.05
+
+search:
+  window_back: 10
+  window_forward: 50
+
+goal:
+  dist_tolerance: 0.01
+  angle_tolerance: 0.05
+
+control:
+  frequency: 18.0
+
+rotation:
+  factor: 1.2
+  max_w: 0.8
+  min_w: 0.15
+  angle_threshold: 0.5
+  smooth_factor: 0.6
+
+feedback:
+  limit_ratio_before_print: 0.30   # C13的核心变更：入圆阶段减小反馈，防过冲
+  limit_ratio_after_print: 0.40    # C12确立（C16后升至0.50，但C13时为0.40）
+  int_limit_ratio: 0.35
+  max_ey_jump_m: 0.005
+  e_theta_lowpass_alpha: 0.82
+  min_limit: 0.0
+
+filter:
+  position:
+    hampel_window: 5
+    hampel_k: 3.0
+    savgol_window: 7
+    savgol_order: 3
+
+debug:
+  enable: true
+  verbose: true
+  enable_grid_map: true
+  grid_map_path: 'grid_maps'

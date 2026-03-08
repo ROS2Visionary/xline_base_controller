@@ -128,12 +128,10 @@ void LQRCircleController::updateParameters(const std::string& config_path)
     // 加载控制频率
     params_.control_frequency = parser.getParameter<double>("control.frequency");
 
-    // 加载原地旋转控制参数
-    params_.rotation_factor = parser.getParameter<double>("rotation.factor");
+    // 加载原地旋转控制参数（梯形速度规划）
     params_.rotation_max_w = parser.getParameter<double>("rotation.max_w");
     params_.rotation_min_w = parser.getParameter<double>("rotation.min_w");
-    params_.rotation_angle_threshold = parser.getParameter<double>("rotation.angle_threshold");
-    params_.rotation_smooth_factor = parser.getParameter<double>("rotation.smooth_factor");
+    params_.rotation_decel  = parser.getParameter<double>("rotation.decel");
 
     // 加载反馈限制参数（分段控制）
     // 优先加载分段参数，如果不存在则使用统一参数（向后兼容）
@@ -1074,23 +1072,11 @@ bool LQRCircleController::performYawPrealignment(const geometry_msgs::msg::PoseS
 
 double LQRCircleController::calculateRotationVelocity(double angle_diff)
 {
-  // 使用sigmoid函数计算角速度因子（与line_follow_controller一致）
-  double factor = 1.0 / (1.0 + std::exp(-params_.rotation_factor * std::abs(angle_diff)));
-
-  // 对于小角度，使用余弦函数进一步平滑
-  if (std::abs(angle_diff) < params_.rotation_angle_threshold)
-  {
-    double cosine_factor = params_.rotation_smooth_factor *
-        (1.0 - std::cos(M_PI * std::abs(angle_diff) / params_.rotation_angle_threshold));
-    factor *= cosine_factor;
-  }
-
-  // 计算角速度
-  double rot_vel = params_.rotation_max_w * factor;
-  rot_vel = std::max(rot_vel, params_.rotation_min_w);
-
-  // 根据角度差的符号确定旋转方向
-  return (angle_diff > 0.0) ? rot_vel : -rot_vel;
+  // 梯形速度规划：制动速度 = sqrt(2 * decel * |e|)
+  // 物理保证：在剩余角度内能以 rotation_decel 刹停，不过冲
+  double omega = std::sqrt(2.0 * params_.rotation_decel * std::abs(angle_diff));
+  omega = std::clamp(omega, params_.rotation_min_w, params_.rotation_max_w);
+  return (angle_diff > 0.0) ? omega : -omega;
 }
 
 bool LQRCircleController::handleWaitingState(geometry_msgs::msg::TwistStamped& cmd_vel)

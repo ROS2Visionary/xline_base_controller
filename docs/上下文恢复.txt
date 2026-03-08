@@ -1,0 +1,4 @@
+正确的恢复方式：                                                                                                                                                                                                              
+  开启新对话后，直接告诉 Claude：                                                                                                                                                                                 
+  "读 circle_tuning/HANDOFF.md，然后运行 python3 circle_tuning/analyze.py，准备继续圆弧控制器调优"
+  Claude 会自动从 MEMORY.md 加载已保存的项目背景，再读 HANDOFF.md 和数据，就能快速恢复完整上下文。

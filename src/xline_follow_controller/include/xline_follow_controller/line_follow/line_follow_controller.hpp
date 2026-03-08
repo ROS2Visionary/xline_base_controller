@@ -341,9 +341,7 @@ private:
   // 旋转参数
   inline double rotationMaxW() const { return params_.rotation.max_w; }
   inline double rotationMinW() const { return params_.rotation.min_w; }
-  inline double rotationFactor() const { return params_.rotation.factor; }
-  inline double rotationAngleThreshold() const { return params_.rotation.angle_threshold; }
-  inline double rotationSmoothFactor() const { return params_.rotation.smooth_factor; }
+  inline double rotationDecel() const { return params_.rotation.decel; }
   
   // 距离参数
   inline double lookaheadDist() const { return params_.distance.lookahead; }

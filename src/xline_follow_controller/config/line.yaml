@@ -98,13 +98,13 @@ phase:
     smoother_damping: 0.8           # 平滑器阻尼比
 
 
-# 原地旋转控制
+# 原地旋转控制（梯形速度规划）
 rotation:
-  max_w: 0.85                         # 最大角速度 [rad/s]
-  min_w: 0.1                        # 最小角速度 [rad/s]
-  factor: 1.2                        # 角速度调节因子
-  angle_threshold: 0.6               # 角度阈值 [rad]
-  smooth_factor: 0.6                 # 平滑因子
+  max_w: 0.85                        # 最大角速度 [rad/s]
+  min_w: 0.1                         # 最小角速度 [rad/s]（固定下限，克服静摩擦）
+  decel: 1.6                         # 最大角减速度 [rad/s²]
+                                     # 公式：ω = sqrt(2 * decel * |e|)
+                                     # 调参：decel = max_w² / (2 × 期望制动角度)
 
 
 # e_y 输入滤波

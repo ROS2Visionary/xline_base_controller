@@ -158,17 +158,11 @@ private:
     double stage1_reentry_max_angular_vel;  // 重入时最大角速度 [rad/s]
 
     // 阶段2航向对准（原地旋转，对齐终点朝向）
-    // 计算方式与 LineFollowController::calculateRotationVelocity 一致（sigmoid + 近零平滑 + min/max 限幅）
-    bool rotation_enabled;             // 是否启用 rotation 方式（false 则使用 k_angular 比例控制）
+    // 计算方式与 LQRCircleController::calculateRotationVelocity 一致（梯形速度规划：ω=sqrt(2*decel*|e|)）
+    bool rotation_enabled;             // 是否启用梯形速度规划（false 则使用 k_angular 比例控制）
     double rotation_max_w;             // 最大角速度 [rad/s]
-    double rotation_min_w;             // 最小角速度 [rad/s]（会被动态缩减）
-    double rotation_absolute_min_w;    // 绝对最小角速度 [rad/s]（不会被动态缩减，保证机器人始终能动）
-    double rotation_factor;            // sigmoid 因子
-    double rotation_angle_threshold;   // 近零平滑阈值 [rad]
-    double rotation_smooth_factor;     // 近零平滑系数
-    double rotation_stop_tolerance;    // 认为"已对准"的角度阈值 [rad]（建议与 arrival_angle_tolerance 一致）
-    bool rotation_use_crossing_stop;   // 是否允许"过零即认为对准"（防止来回抖动）
-    double rotation_crossing_window;   // 过零判定窗口 [rad]（仅在误差均小于该值时允许过零判定）
+    double rotation_min_w;             // 最小角速度 [rad/s]（固定下限，克服静摩擦）
+    double rotation_decel;             // 最大角减速度 [rad/s²]（梯形规划制动参数）
 
     // 后退模式
     bool enable_backward;          // 是否启用后退模式
@@ -243,7 +237,6 @@ private:
   double stall_check_start_distance_;     // 计时开始时的距离
 
   // 阶段2控制状态
-  double last_stage2_yaw_error_;      // 阶段2航向误差（用于过零判定）
   double stage2_entry_distance_;      // 进入阶段2时的距离（用于放宽位置容差）
   bool stage2_position_relaxed_;      // 是否已进入阶段2并放宽位置容差
   bool stage1_reentry_mode_;          // 是否处于阶段1重入模式（从阶段2退回，需要限制速度）

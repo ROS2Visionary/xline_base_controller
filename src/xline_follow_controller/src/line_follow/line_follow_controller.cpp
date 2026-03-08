@@ -184,12 +184,10 @@ void LineFollowController::updateParameters()
     // ================================
     // 5. 原地旋转参数
     // ================================
-    // 旋转参数 (rotation.*)
+    // 旋转参数 (rotation.*)（梯形速度规划）
     params_.rotation.max_w = parser.getParameter<double>("rotation.max_w");
     params_.rotation.min_w = parser.getParameter<double>("rotation.min_w");
-    params_.rotation.factor = parser.getParameter<double>("rotation.factor");
-    params_.rotation.angle_threshold = parser.getParameter<double>("rotation.angle_threshold");
-    params_.rotation.smooth_factor = parser.getParameter<double>("rotation.smooth_factor");
+    params_.rotation.decel  = parser.getParameter<double>("rotation.decel");
 
     // ================================
     // 6. 滤波器参数
@@ -1080,18 +1078,10 @@ double LineFollowController::computeAngularVelocity(double yaw_error, double dt,
 
 double LineFollowController::calculateRotationVelocity(const double& angle_diff)
 {
-  double factor = 1.0 / (1.0 + std::exp(-rotationFactor() * std::abs(angle_diff)));
-
-  if (std::abs(angle_diff) < rotationAngleThreshold())
-  {
-    double cosine_factor = rotationSmoothFactor() *
-        (1.0 - std::cos(M_PI * std::abs(angle_diff) / rotationAngleThreshold()));
-    factor *= cosine_factor;
-  }
-
-  double rot_vel = rotationMaxW() * factor;
-  rot_vel = std::max(rot_vel, rotationMinW());
-
+  // 梯形速度规划：制动速度 = sqrt(2 * decel * |e|)
+  // 物理保证：以 rotation_decel 减速时，在剩余角度内能精确刹停，不过冲
+  double rot_vel = std::sqrt(2.0 * rotationDecel() * std::abs(angle_diff));
+  rot_vel = std::clamp(rot_vel, rotationMinW(), rotationMaxW());
   return (angle_diff > 0.0) ? rot_vel : -rot_vel;
 }
 

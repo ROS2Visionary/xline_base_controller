@@ -124,20 +124,15 @@ struct LQRParams
   // 原地旋转控制参数
   // ================================
 
-  /// 旋转速度调节因子（sigmoid函数增益）
-  double rotation_factor = 1.2;
-
   /// 旋转最大角速度 (rad/s)
   double rotation_max_w = 0.8;
 
-  /// 旋转最小角速度 (rad/s)
+  /// 旋转最小角速度 (rad/s)（固定下限，克服静摩擦）
   double rotation_min_w = 0.15;
 
-  /// 角度阈值 (rad)
-  double rotation_angle_threshold = 0.5;
-
-  /// 平滑因子（小角度时的余弦平滑系数）
-  double rotation_smooth_factor = 0.6;
+  /// 旋转最大角减速度 (rad/s²)（梯形速度规划制动参数）
+  /// 物理含义：剩余角度 e 时的制动速度 = sqrt(2 * decel * e)，保证不过冲
+  double rotation_decel = 1.5;
 
   // ================================
   // 路径类型参数
