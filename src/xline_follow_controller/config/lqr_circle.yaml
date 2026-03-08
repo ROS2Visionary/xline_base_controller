@@ -5,9 +5,9 @@
 # 优化元信息（每次调参必须更新这三个字段）
 # id 格式：circle_C<批次号>_<简短标签>
 optimization:
-  id: "circle_C01_limit_ratio_after_0p20"
-  parent_batch_id: "circle_C00_baseline"
-  change_note: "喷后反馈限制从5%提升到20%：C00全部圆饱和率99%+，LQR形同bang-bang，修正能力不足"
+  id: "circle_C19_final_lock"
+  parent_batch_id: "circle_C18_integral_max_0p056"
+  change_note: "【收尾锁定】C18失败(0/5,avg_p90=6.83mm)：integral_max=0.056使circle_01积分≈int_limit(56≈57mrad/s)→积分过冲→振荡（circle_01 std 3.28→5.37mm翻倍，e_theta_std 0.036→0.057rad翻倍，侧向波动7→17mm），integral_max=0.040是安全上限（对circle_01有17mrad/s安全裕度）。收尾：integral_max回退0.056→0.040，savgol保持7（C18实测即为7）。最终配置集成：C10(alpha=0.82)+C12/C16(after=0.50)+C13(before=0.30)+C14(integral_max=0.040)。历史最优实测C13=4/5,4.79mm，circle_02/03 Q4为物理噪声本底限制，不可优化"
 
 # LQR 权重参数
 lqr:
@@ -23,22 +23,34 @@ lqr:
   # 直接指定增益
   # 如果 use_direct_gains=true，则直接使用 K1_direct 和 K2_direct
   # 如果 use_direct_gains=false，则从 q1, q2, r 计算增益
-  use_direct_gains: false
+  use_direct_gains: true
 
-  # 横向误差增益
-  K1_direct: 20.0
+  # 横向误差增益（比例路径：配合tanh+8%限制，实现 ω_ff±5~6% 评判标准）
+  # K1=6：e_y=2mm → raw=12mrad/s；limit=8%×ω_ff(100mrad/s)=8mrad/s → tanh(12/8)×8=7.4mrad/s=7.4%ff
+  #        e_y=1mm → raw=6mrad/s  → tanh(6/8)×8=5.2mrad/s=5.2%ff ✓在±5%内（典型稳态误差）
+  #        e_y=5mm → raw=30mrad/s → tanh(30/8)×8≈8mrad/s=8%ff（大误差平滑饱和）
+  K1_direct: 6.0
 
   # 航向误差增益 K2
-  K2_direct: 15.0
+  # 稳定性约束：临界阻尼需 K2 >= 2*sqrt(K1*v)
+  #   v=0.05m/s: K2_crit=1.095（circle_01/04/05）
+  #   v=0.09m/s: K2_crit=1.470（circle_02，最严苛）
+  # C08教训：K2=0.8→zeta=0.54~0.73（欠阻尼），振荡周期10-17s，e_theta_std翻倍→精度崩溃
+  # K2=1.5: zeta=1.02~1.37（全部临界/过阻尼），K2×e_theta≈prop_limit（必要代价）
+  K2_direct: 1.5
 
 
-  # 积分项参数（LQI，可选）
-  enable_integral: false
-  # 积分增益
-  Ki: 0.5
-  # 积分饱和限制 (rad/s)
-  integral_max: 0.1
-  # 积分衰减系数（0-1之间，越小衰减越快）
+  # 积分项参数（独立路径，不受比例 tanh 约束，专门修正系统性稳态偏差）
+  enable_integral: true
+  # 积分增益（Ki=8，时间常数 ≈ 1.5s）
+  Ki: 8.0
+  # 积分饱和限制 (rad/s)（限制积分状态量）
+  # C13分析：R=0.705m 外部侧推力≈35mrad/s，当前上限25mrad/s不足以完全修正+2.38mm偏外
+  # 0.025→0.040：max omega_i = Ki×(0.040/8) = 40mrad/s，突破35mrad/s平衡点
+  # C14: 0.025→0.040（state_cap 0.003→0.005 m·s，突破R=0.705m外推力平衡点）
+  # C18教训：0.056→circle_01积分≈int_limit(56≈57mrad/s)→振荡，0.040是安全上限
+  integral_max: 0.040
+  # 积分衰减系数（0-1之间，防止 windup）
   integral_decay: 0.99
 
 # 速度限制参数
@@ -82,6 +94,8 @@ velocity_schedule:
   radius_step: 0.1
 
   # 速度步长 (m/s)：每个半径步长对应的速度增量
+  # C10实测：velocity_step=0.02使R=0.7m以0.09m/s运行→积分有效率仅7.7%→Q4 P90=8mm
+  # C11回退至0.01：R=0.7m→0.07m/s，R=0.6m→0.06m/s（恢复原始HANDOFF基线值）
   velocity_step: 0.01
 
 # 机器人参数
@@ -147,12 +161,42 @@ feedback:
   # 喷墨前的反馈角速度限制比例（相对于前馈的百分比）
   # 喷墨前可以设置较大值（如10%），允许更强的反馈调整以快速对齐路径
   # 推荐范围: 0.05 - 0.20 (5% - 20%)
-  limit_ratio_before_print: 0.20
+  # 【比例路径限制】tanh软饱和，决定比例项的平滑区间
+  # C06根因：C05的8%/12%使prop_limit仅为omega_fb_raw的1/5~1/9，比例路径硬饱和(bang-bang)
+  # 恢复C02历史最优30%：omega_fb_raw/prop_limit≈1.5，tanh≈0.9，软饱和区，恢复比例性
+  # 喷墨前：30%（C13：从40%回退，防止入圆期过校正）
+  # C12教训：before=40%使circle_05 Q1入圆P90从9.06mm→11.48mm（激进反馈→入圆过冲）
+  limit_ratio_before_print: 0.30
 
-  # 喷墨后的反馈角速度限制比例（相对于前馈的百分比）
-  # 喷墨后应设置较小值（如5%），保证喷印质量的稳定性和精度
-  # 推荐范围: 0.03 - 0.10 (3% - 10%)
-  limit_ratio_after_print: 0.20
+  # 喷墨后：40%（保留C12效益：prop_limit 29.7→39.6mrad/s，硬饱和22.5%→1.3%）
+  # C12实证：circle_04 P90 5.88→4.26mm✓；circle_02线性区39%→75%，波动4.08→0.66mm
+  # C16: 0.40→0.50；不加滤波lag，直接扩大比例路径容量（prop_limit +25%）
+  # circle_04 K2×σ/limit: 1.22x→0.98x → 线性区; circle_05: 1.21x→0.97x → 线性区
+  # circle_02: 1.72x→1.38x（仍饱和但改善）; circle_03: 1.63x→1.30x
+  # C12实证：0.30→0.40使circle_04 P90 5.88→4.26mm✓；0.40→0.50同向继续改善
+  limit_ratio_after_print: 0.50
+
+  # 【积分路径独立限制】(相对于前馈的百分比)
+  # 积分路径独立于比例路径，可修正比例路径无法覆盖的系统性稳态偏差（+2~8mm）
+  # 积分天然平滑（每周期微小变化），不影响 omega 的瞬时平滑性
+  # C06实测：积分在73~89%天花板徘徊仍偏外+0.6~+1.6mm，上限是瓶颈
+  # C07：0.20→0.35，积分修正空间+75%（R=0.7m: 25.5→44.7mrad/s）
+  int_limit_ratio: 0.35
+
+  # e_y 跳变检测阈值 (m)（单周期横向误差变化超过此值=定位异常/地面跳变）
+  # 触发时：限制跳变幅度 + 冻结积分更新，防止控制器响应虚假扰动
+  # 物理依据：v=0.05~0.09m/s时单周期(1/18s)机器人最大横向位移<4mm
+  # >5mm必为定位跳变噪声（C07实测每圈6-10次5-8mm跳变漏过8mm阈值）
+  # C09: 8mm→5mm，过滤5-8mm定位跳变，保护积分不被噪声污染
+  max_ey_jump_m: 0.005
+
+  # e_theta 一阶低通滤波系数（过滤定位系统高频航向噪声）
+  # 1.0 = 关闭（直通，不滤波）；0.82 = line控制器同款，tau≈280ms
+  # C10实测：硬饱和42-48%→0-5%；C15教训：0.88(tau=435ms)→heading振荡，禁区
+  # C15失败分析：prop_limit≈40mrad/s时，额外10.3°相位滞后引发环路振荡
+  #   e_theta_std 32→56mrad(+75%！)，硬饱和23%→61%，bias方向翻转
+  # DC分量完全保留，不影响积分修正能力
+  e_theta_lowpass_alpha: 0.82
 
   # 最小反馈限制 (rad/s)
   # 设置为0表示不使用最小限制，严格按照比例计算

@@ -394,6 +394,20 @@ private:
   /// 积分项状态
   double integral_e_y_;    ///< 横向误差积分
 
+  /// e_y 跳变检测状态
+  double last_e_y_;              ///< 上一周期控制误差（用于跳变检测）
+  bool   last_e_y_initialized_;  ///< 是否已初始化上次 e_y
+
+  /// e_theta 低通滤波状态
+  double e_theta_filtered_ = 0.0;  ///< 低通滤波后的航向误差（一阶IIR）
+
+  /// 喷墨触发预计算参数（setPlanForCircle 时一次性计算，避免每控制周期重复）
+  double start_trigger_angle_ = 0.0;  ///< 喷墨触发累计角度阈值（角度达到此值→触发提前量）
+  double start_lead_angle_    = 0.0;  ///< 喷墨提前量角度 = (v_scheduled/R) × print_start_delay
+
+  /// 比例限制平滑过渡（防止 start_print 切换时 prop_limit 阶跃导致 omega 突变）
+  double limit_ratio_smoothed_ = 0.1;  ///< 当前平滑后的 limit_ratio（一阶低通，时间常数 0.3s）
+
   /// 上次角速度（用于角加速度限幅）
   double last_omega_;
 

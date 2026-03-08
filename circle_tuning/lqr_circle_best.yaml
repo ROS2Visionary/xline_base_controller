@@ -1,0 +1,114 @@
+# ==============================================================================
+# 圆弧控制器最优配置备份（最终锁定版本）
+# ==============================================================================
+#
+# ★ 最终锁定：调优已收尾，此文件为最终定稿，不再更新 ★
+#
+# === 历史最优实测 ===
+# C13新地形 — 4/5通过，avg_p90=4.79mm，avg<3mm%=68.1%（历史最优）
+# C16        — 1/5通过，avg_p90=5.64mm（after_print 0.40→0.50，扩容有效，噪声环境较差）
+# C13最差路段限制：circle_02/03 Q4为物理噪声本底，P90=7-10mm，参数无法优化
+#
+# === 跨地形鲁棒性 ===
+# 旧地形(center≈1.78,4.46)：C10=3/5, C11=2/5, C12=3/5
+# 新地形(center≈0.98,3.59)：C13=4/5 ← 最优实测，具备跨地形泛化性
+#
+# === 参数进化链路（C00→C19） ===
+# C08: K2=0.8→欠阻尼崩溃（K2≥2√(K1×v)是硬约束，禁止降低K2）
+# C09: K2=1.5 + max_ey_jump_m=5mm（临界阻尼+跳变保护）
+# C10: alpha=0.82 → 硬饱和47%→0~5%，1/5→3/5✓（alpha>0.83-0.85禁区：相位滞后→振荡）
+# C11: velocity_step=0.01 → 大半径圆速度自适应
+# C12: after_print=0.40 → circle_04硬饱和22.5%→1.3%，P90 5.88→4.26mm✓
+# C13: before_print=0.30 → circle_05入圆P90 11.48→4.40mm✓，4/5通过✓（历史最优）
+# C14: integral_max=0.040 → state_cap 0.003→0.005 m·s，circle_03 bias+2.38→+1.16mm✓
+# C15: alpha=0.88→振荡崩溃（circle_04/05 e_theta_std+75%，禁区确认）
+# C16: after_print=0.50 → 硬饱和33-36%→0-3%，prop_limit扩容25%（无相位滞后风险）
+# C17: savgol=9→无效（定位噪声本底非可滤波高频，savgol已达边界）
+# C18: integral_max=0.056→circle_01振荡（积分≈int_limit，0.040是安全上限）
+# C19: 收尾锁定（integral_max回退0.040，其余保留C16成果）
+#
+# === 关键禁区（勿踩） ===
+# 1. alpha > 0.83-0.85：prop_limit≈40mrad/s圆弧heading振荡（C15实证）
+# 2. K2 < K2_crit=2√(K1×v)：欠阻尼振荡（C08实证）
+# 3. integral_max > 0.040：circle_01 int_limit=57mrad/s，积分过冲振荡（C18实证）
+# 4. before_print > 0.30：小半径入圆过冲（C12实证）
+# ==============================================================================
+
+optimization:
+  id: "circle_C19_final_lock"
+  parent_batch_id: "circle_C18_integral_max_0p056"
+  change_note: "最终锁定配置：历史最优参数集成。C18教训：integral_max=0.056使circle_01积分≈int_limit(57mrad/s)→振荡。0.040是安全上限。circle_02/03 Q4物理噪声本底(P90=7-10mm)为地形限制，不可通过参数优化"
+
+lqr:
+  q1: 200.0
+  q2: 300.0
+  r:  1.0
+  use_direct_gains: true
+  K1_direct: 6.0    # 线性区工作；典型e_y=2mm时raw=12mrad/s
+  K2_direct: 1.5    # 全速度范围临界/过阻尼(zeta=1.02~1.37)；禁止降低
+
+  enable_integral: true
+  Ki: 8.0
+  integral_max: 0.040   # state_cap=0.005 m·s；C18实证0.056触发circle_01振荡，此为安全上限
+  integral_decay: 0.99
+
+velocity:
+  max: 0.10
+  min: 0.05
+  omega_max: 0.3
+  omega_dot_max: 0.5
+
+# 速度调度：R<0.5m→0.05m/s | R=0.6m→0.06m/s | R=0.7m→0.07m/s | R=1.0m→0.10m/s(封顶)
+velocity_schedule:
+  enable_radius_schedule: true
+  radius_threshold: 0.5
+  radius_step: 0.1
+  velocity_step: 0.01
+
+robot:
+  wheel_base: 0.31
+
+lookahead:
+  distance: 0.015
+  time: 0.05
+
+search:
+  window_back: 10
+  window_forward: 50
+
+goal:
+  dist_tolerance: 0.01
+  angle_tolerance: 0.05
+
+control:
+  frequency: 18.0
+
+rotation:
+  factor: 1.2
+  max_w: 0.8
+  min_w: 0.15
+  angle_threshold: 0.5
+  smooth_factor: 0.6
+
+feedback:
+  # 喷墨前30%：防止小半径入圆过冲（C13实证，C12 before=40%→R=0.405m P90=11.48mm）
+  limit_ratio_before_print: 0.30
+  # 喷墨后50%：C16实证，硬饱和33-36%→0-3%，prop_limit比C12扩容25%（无相位滞后）
+  limit_ratio_after_print: 0.50
+  int_limit_ratio: 0.35
+  max_ey_jump_m: 0.005      # 物理跳变保护：v≤0.09m/s单周期<4mm，>5mm=定位跳变
+  e_theta_lowpass_alpha: 0.82  # tau≈280ms；禁区：>0.83-0.85会引发heading环路振荡(C15)
+  min_limit: 0.0
+
+filter:
+  position:
+    hampel_window: 5
+    hampel_k: 3.0
+    savgol_window: 7    # C17实证savgol=9无效，定位噪声本底非高频可滤波成分
+    savgol_order: 3
+
+debug:
+  enable: true
+  verbose: true
+  enable_grid_map: true
+  grid_map_path: 'grid_maps'

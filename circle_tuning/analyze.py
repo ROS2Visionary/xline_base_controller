@@ -301,17 +301,30 @@ def layer3_samples(df: pd.DataFrame, circle_tag: str):
           f"（{'偏左' if ey_mm.mean() < 0 else '偏右'}）")
     print(f"    标准差      : {ey_mm.std():.3f} mm  （位置噪声水平）")
 
-    # 反馈饱和分析
-    if "omega_correction_rps" in df.columns and "feedback_limit_rps" in df.columns:
-        sat_mask = (df["omega_correction_rps"].abs() >=
-                    df["feedback_limit_rps"] * 0.99)
-        sat_rate = sat_mask.sum() / n * 100.0
+    # 反馈饱和分析（C05+双路架构：比例路径饱和 vs 积分贡献）
+    if "omega_fb_raw_rps" in df.columns and "feedback_limit_rps" in df.columns:
+        fb_raw  = df["omega_fb_raw_rps"].values
+        fb_lim  = df["feedback_limit_rps"].values
+        # 比例路径实际输出（tanh软饱和）
+        prop_out = np.tanh(fb_raw / np.where(fb_lim > 1e-9, fb_lim, 1e-9)) * fb_lim
+        # 积分路径贡献（omega_correction - omega_prop）
+        if "omega_correction_rps" in df.columns:
+            omega_int_est = df["omega_correction_rps"].values - prop_out
+        else:
+            omega_int_est = np.zeros(n)
+        # 比例路径软饱和率：|raw| > 2×limit 时 tanh(2)=0.96，基本已饱和
+        prop_sat_mask = np.abs(fb_raw) > 2.0 * np.where(fb_lim > 1e-9, fb_lim, 1e-9)
+        prop_sat_rate = prop_sat_mask.sum() / n * 100.0
+        int_contrib_mean = np.abs(omega_int_est).mean() * 1000.0  # mrad/s
+        ff_mean_local = df["omega_ff_rps"].abs().mean() if "omega_ff_rps" in df.columns else 1.0
+        int_contrib_pct = (np.abs(omega_int_est).mean() / (ff_mean_local + 1e-9)) * 100.0
         print()
-        print(f"  反馈饱和率（|correction| ≈ limit）：{sat_rate:.1f}%")
-        if sat_rate > 30.0:
-            print("    ⚠ 饱和率>30%：feedback_limit 过紧，LQR 纠偏受限")
-        elif sat_rate < 5.0:
-            print("    √ 饱和率低：feedback_limit 余量充足")
+        print(f"  比例路径软饱和率（|raw|>2×limit，tanh≥0.96）：{prop_sat_rate:.1f}%")
+        if prop_sat_rate > 60.0:
+            print("    ⚠ 比例路径基本饱和：K1偏大或limit_ratio偏小，纠偏效果退化")
+        elif prop_sat_rate < 20.0:
+            print("    ✓ 比例路径工作在线性区（tanh比例控制有效）")
+        print(f"  积分路径贡献（估算）：均值={int_contrib_mean:.1f}mrad/s = {int_contrib_pct:.1f}%ω_ff")
 
     # 前馈 vs 反馈量级
     if "omega_ff_rps" in df.columns and "omega_correction_rps" in df.columns:
@@ -349,6 +362,88 @@ def layer3_samples(df: pd.DataFrame, circle_tag: str):
         print(f"    最大绝对值  : {ist.abs().max():.6f} m·s")
         if ist.abs().max() > 0.01:
             print("    ⚠ 积分量较大，注意 windup（检查 integral_max 设置）")
+
+    # ── 角速度连续性与平滑度分析（线条顺滑性）──
+    if "angular_cmd_rps" in df.columns and "t_s" in df.columns and n > 2:
+        omega_arr  = df["angular_cmd_rps"].values
+        t_arr      = df["t_s"].values
+        dt_med     = float(np.median(np.diff(t_arr)))
+        d_omega    = np.diff(omega_arr)
+        omega_dot  = d_omega / dt_med  # rad/s²
+
+        omega_dot_max_cfg = 0.5  # rad/s²（yaml配置值）
+        clip_pct  = np.sum(np.abs(omega_dot) >= omega_dot_max_cfg * 0.99) / len(omega_dot) * 100.0
+        smooth_std = np.std(d_omega) * 1000  # mrad/s
+
+        # bang-bang 换向特征
+        omega_corr_arr = df["omega_correction_rps"].values if "omega_correction_rps" in df.columns else omega_arr
+        flip_n    = np.sum(np.diff(np.sign(omega_corr_arr)) != 0)
+        flip_freq = flip_n / (t_arr[-1] - t_arr[0] + 1e-9)
+
+        # 平均单侧持续时间
+        fb_lim_arr = df["feedback_limit_rps"].values if "feedback_limit_rps" in df.columns else np.ones(n) * 0.02
+        fb_lim_med = float(np.median(fb_lim_arr))
+        at_pos = omega_corr_arr >= fb_lim_med * 0.99
+        at_neg = omega_corr_arr <= -fb_lim_med * 0.99
+        sign_a = np.where(at_pos, 1, np.where(at_neg, -1, 0))
+        runs = []
+        cv, cl = sign_a[0], 1
+        for i in range(1, len(sign_a)):
+            if sign_a[i] == cv and cv != 0:
+                cl += 1
+            else:
+                if cv != 0:
+                    runs.append(cl)
+                cv, cl = sign_a[i], 1
+        if cv != 0:
+            runs.append(cl)
+        avg_run_ms = float(np.mean(runs)) * dt_med * 1000 if runs else 0
+
+        # 路径侧向波动简化估计
+        flip_idxs = np.where(np.diff(np.sign(omega_corr_arr)) != 0)[0]
+        if len(flip_idxs) > 1:
+            T_half = float(np.mean(np.diff(t_arr[flip_idxs])))
+            v_mean = df["linear_speed_mps"].mean() if "linear_speed_mps" in df.columns else 0.06
+            lat_osc_mm = v_mean * fb_lim_med * (T_half ** 2) / 2 * 1000
+        else:
+            lat_osc_mm = 0.0
+
+        # ── 核心平滑度指标：omega 落在 ff 附近的比例 ──
+        omega_arr2  = df["angular_cmd_rps"].values
+        omega_ff2   = df["omega_ff_rps"].values if "omega_ff_rps" in df.columns else np.ones(n) * 0.1
+        ff_mean2    = float(np.abs(omega_ff2).mean())
+        delta_ff    = omega_arr2 - omega_ff2
+        near_ff_5pct  = np.sum(np.abs(delta_ff) < 0.05 * ff_mean2) / n * 100
+        near_ff_15pct = np.sum(np.abs(delta_ff) < 0.15 * ff_mean2) / n * 100
+        near_ff_25pct = np.sum(np.abs(delta_ff) < 0.25 * ff_mean2) / n * 100
+        delta_p50_pct = float(np.percentile(np.abs(delta_ff), 50)) / (ff_mean2 + 1e-9) * 100
+        delta_p90_pct = float(np.percentile(np.abs(delta_ff), 90)) / (ff_mean2 + 1e-9) * 100
+
+        # 控制模式判断：比例区比例
+        # C05+双路架构：比例区判断基于 omega_fb_raw vs prop_limit（tanh线性区）
+        fb_raw2     = df["omega_fb_raw_rps"].values if "omega_fb_raw_rps" in df.columns else np.zeros(n)
+        fb_lim2     = df["feedback_limit_rps"].values if "feedback_limit_rps" in df.columns else np.ones(n)*0.05
+        fb_lim_med2 = float(np.median(fb_lim2))
+        # 比例区：|raw_fb| < limit（tanh输入<1，输出线性）；饱和区：|raw_fb| > 2×limit
+        in_prop_zone = np.abs(fb_raw2) < fb_lim_med2
+        prop_pct  = in_prop_zone.sum() / n * 100
+        bang_pct  = (np.abs(fb_raw2) > 2.0 * fb_lim_med2).sum() / n * 100
+
+        print()
+        print("  ── 角速度连续性与平滑度──")
+        print(f"    控制模式     : 比例线性区={prop_pct:.1f}%  软饱和区={100-prop_pct-bang_pct:.1f}%  硬饱和区≈{bang_pct:.1f}%  "
+              f"{'✓ 比例为主' if prop_pct > 50 else ('⚠ 软饱和为主' if bang_pct < 30 else '⚠ 接近饱和')}")
+        print(f"    |Δ from ff| P50/P90  : {delta_p50_pct:.1f}% / {delta_p90_pct:.1f}% of ω_ff")
+        print(f"    落在ff±5%内  : {near_ff_5pct:.1f}%  "
+              f"落在ff±15%内: {near_ff_15pct:.1f}%  "
+              f"落在ff±25%内: {near_ff_25pct:.1f}%")
+        smooth_target = near_ff_15pct > 60
+        print(f"    平滑目标(ff±15%>60%) : {'✓ 达到' if smooth_target else '✗ 未达到，仍以bang-bang为主'}")
+        print(f"    omega_dot_max截断率  : {clip_pct:.1f}%")
+        print(f"    反馈换向频率         : {flip_freq:.2f} Hz  "
+              f"{'⚠ >3Hz 高频抖动' if flip_freq > 3.0 else '✓ 低频换向'}")
+        print(f"    路径侧向波动估计     : {lat_osc_mm:.2f} mm  "
+              f"{'⚠ >1mm 线条可见摆动' if lat_osc_mm > 1.0 else '✓ <1mm 顺滑'}")
 
     # e_theta 分析
     if "e_theta_rad" in df.columns:

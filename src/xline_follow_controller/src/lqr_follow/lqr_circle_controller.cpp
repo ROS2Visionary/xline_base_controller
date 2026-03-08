@@ -27,6 +27,8 @@ LQRCircleController::LQRCircleController()
   , wait_duration_(0.2)
   , waiting_(false)
   , integral_e_y_(0.0)
+  , last_e_y_(0.0)
+  , last_e_y_initialized_(false)
   , last_omega_(0.0)
   , debug_e_y_(0.0)
   , debug_e_theta_(0.0)
@@ -58,6 +60,9 @@ void LQRCircleController::initialize()
 
   // 计算初始增益（使用默认速度）
   computeLQRGains(params_.v_max);
+
+  // 初始化平滑限制比例（喷墨前值）
+  limit_ratio_smoothed_ = params_.feedback_limit_ratio_before_print;
 
   // 创建栅格图保存目录
   if (params_.enable_grid_map)
@@ -158,6 +163,24 @@ void LQRCircleController::updateParameters(const std::string& config_path)
     }
 
     params_.feedback_min_limit = parser.getParameter<double>("feedback.min_limit");
+
+    // 加载积分路径独立限制（可选，不存在则使用默认值 0.20）
+    if (parser.hasParameter("feedback.int_limit_ratio"))
+    {
+      params_.int_limit_ratio = parser.getParameter<double>("feedback.int_limit_ratio");
+    }
+
+    // 加载 e_y 跳变检测阈值（可选，0 = 关闭）
+    if (parser.hasParameter("feedback.max_ey_jump_m"))
+    {
+      params_.max_ey_jump_m = parser.getParameter<double>("feedback.max_ey_jump_m");
+    }
+
+    // 加载 e_theta 低通滤波系数（可选，1.0 = 关闭）
+    if (parser.hasParameter("feedback.e_theta_lowpass_alpha"))
+    {
+      params_.e_theta_lowpass_alpha = parser.getParameter<double>("feedback.e_theta_lowpass_alpha");
+    }
 
     // 加载滤波器参数
     // 位置滤波器参数
@@ -330,12 +353,40 @@ bool LQRCircleController::setPlanForCircle(double circle_center_x, double circle
   bool result = setPlan(circle_path);
 
   // 再保存圆形路径特有的参数（在 reset() 之后保存，避免被清零）
-  // 这个半径用于 updateAccumulatedAngle() 中计算角速度补偿
   circle_radius_ = circle_radius;
 
   // 保存圆心坐标（用于径向误差计算）
   circle_center_x_ = circle_center_x;
   circle_center_y_ = circle_center_y;
+
+  // ── 修复1：覆盖曲率为精确值 1/R ──
+  // setPlan() 内部的 computePathCurvature() 使用三点差分（近似），
+  // 对已知圆弧直接赋值解析解，消除数值误差，前馈精度更高
+  {
+    const double exact_curvature = 1.0 / circle_radius;
+    for (auto& pt : path_)
+    {
+      pt.curvature = exact_curvature;
+    }
+  }
+
+  // ── 修复2：预计算喷墨触发参数（使用实际调度速度，而非 v_max）──
+  // omega_for_delay 此前错误地使用 v_max，导致提前量偏大（小半径误差最大2×）
+  {
+    constexpr double print_start_delay    = 1.0;   // 喷码机出墨延时 (秒)
+    constexpr double arc_length_for_start = 0.4;   // 期望入圆弧长 (米)
+    const double v_scheduled = computeScheduledVelocity(circle_radius);
+    const double omega_at_speed = v_scheduled / circle_radius;  // 实际 ω = v/R
+    const double angle_from_arc = arc_length_for_start / circle_radius;
+    const double desired_start_angle = std::min(angle_from_arc, 0.5 * M_PI);
+    start_lead_angle_   = omega_at_speed * print_start_delay;
+    start_trigger_angle_ = std::max(0.0, desired_start_angle - start_lead_angle_);
+    limit_ratio_smoothed_ = params_.feedback_limit_ratio_before_print;
+    RCLCPP_INFO(get_logger(),
+                "喷墨触发预计算: v_sched=%.3fm/s, trigger=%.3frad(%.1f°), lead=%.3frad(%.1f°)",
+                v_scheduled, start_trigger_angle_, start_trigger_angle_ * 180.0 / M_PI,
+                start_lead_angle_, start_lead_angle_ * 180.0 / M_PI);
+  }
 
   // 准备数据采集槽位（在 reset() 之后调用，避免被清零）
   prepareCircleSlot();
@@ -514,53 +565,137 @@ bool LQRCircleController::computeVelocityCommands(
   // 3. 获取前瞻参考点（带插值）
   PathPointWithCurvature ref = findLookaheadPoint(nearest_idx, lookahead_dist);
 
-  // 4. 计算误差
+  // 4. 计算 Frenet 误差（e_y 用于 CSV 记录的 cross_track_mm）
   double e_y, e_theta;
   computeErrors(current_x, current_y, current_theta, ref, e_y, e_theta);
+
+  // 4.1. 对圆弧使用精确切线方向重算 e_theta（消除前瞻偏置）
+  // 前瞻点切线相比当前位置精确切线存在 L/(2R) 的偏置：
+  //   R=0.3m，L=18mm → 偏置 = 0.03 rad = 1.7°（显著）
+  //   R=1.0m，L=18mm → 偏置 = 0.009 rad（可忽略）
+  // 精确切线 = atan2(ry - cy, rx - cx) + π/2（逆时针圆弧）
+  if (circle_radius_ > 0.0)
+  {
+    const double angle_to_robot = std::atan2(current_y - circle_center_y_,
+                                             current_x - circle_center_x_);
+    const double exact_tangent = angle_to_robot + M_PI / 2.0;  // 逆时针切线方向
+    e_theta = normalizeAngle(current_theta - exact_tangent);
+
+    // e_theta 低通滤波：过滤定位系统高频航向噪声（DC/真实误差完全保留）
+    // alpha=0.82：tau≈280ms；对50ms宽噪声脉冲衰减至18%；对稳态航向偏差无影响
+    if (params_.e_theta_lowpass_alpha < 1.0)
+    {
+      e_theta_filtered_ = params_.e_theta_lowpass_alpha * e_theta_filtered_
+                        + (1.0 - params_.e_theta_lowpass_alpha) * e_theta;
+      e_theta = e_theta_filtered_;
+    }
+  }
+
+  // 4.5. 计算径向误差（控制用）+ e_y 跳变检测
+  //
+  // 【修复3：使用径向误差替代 Frenet e_y 作为控制输入】
+  // Frenet e_y 测量的是机器人相对于"前瞻点"的横向偏差，存在前瞻稀释效应：
+  //   前瞻距离 18mm 时，实际 5mm 径向误差被投影压缩为约 4mm
+  // 径向误差 = dist(robot, center) - R，与精度指标（p90_radial_mm）完全一致
+  //
+  // 【符号约定】Frenet 坐标系中，路径左侧（逆时针=内侧）为正：
+  //   偏内（dist < R）→ Frenet e_y > 0
+  //   偏外（dist > R）→ Frenet e_y < 0
+  // radial_err = dist - R，偏外为正，与 Frenet e_y 符号相反！
+  // 因此必须取负号以保持控制方向正确（偏外→ω增大→转向内侧）
+  double radial_err_m = 0.0;   // 原始几何误差（偏外为正，用于 CSV 记录，不受跳变限制影响）
+  double e_y_ctrl = e_y;       // 控制输入（默认退化为 Frenet，下方对圆弧覆盖）
+  if (circle_radius_ > 0.0)
+  {
+    const double dist_to_center = std::hypot(current_x - circle_center_x_,
+                                             current_y - circle_center_y_);
+    radial_err_m = dist_to_center - circle_radius_;
+    // 取负号：使控制输入符号与 Frenet e_y 一致（偏外→负→-K1×负→正反馈→ω增大）
+    e_y_ctrl = -radial_err_m;
+  }
+
+  // 跳变检测：单周期径向误差变化超过阈值 → 限幅 + 冻结积分
+  bool freeze_integral = false;
+  if (params_.max_ey_jump_m > 0.0 && last_e_y_initialized_)
+  {
+    const double ey_delta = e_y_ctrl - last_e_y_;
+    if (std::abs(ey_delta) > params_.max_ey_jump_m)
+    {
+      e_y_ctrl = last_e_y_ + std::copysign(params_.max_ey_jump_m, ey_delta);
+      freeze_integral = true;
+      RCLCPP_WARN(get_logger(),
+                  "e_y 跳变检测: 径向Δ=%.1fmm > 阈值%.1fmm，限幅并冻结积分",
+                  ey_delta * 1000.0, params_.max_ey_jump_m * 1000.0);
+    }
+  }
+  last_e_y_ = e_y_ctrl;
+  last_e_y_initialized_ = true;
 
   // 5. 计算LQR增益（基于当前速度）
   computeLQRGains(current_v);
 
-  // 6. 前馈控制 ω_ff = v × κ
+  // 6. 前馈控制 ω_ff = v × κ（充分利用精确曲率 1/R，是圆弧跟踪的核心）
   double omega_ff = current_v * ref.curvature;
 
-  // 7. LQR反馈控制 ω_fb = -K₁·e_y - K₂·e_θ
-  double omega_fb = -K1_ * e_y - K2_ * e_theta;
+  // 7. LQR比例反馈（使用径向误差，消除前瞻稀释效应）
+  double omega_fb = -K1_ * e_y_ctrl - K2_ * e_theta;
 
-  // 8. 积分项（可选）
+  // 8. 积分项（使用径向误差，跳变帧冻结）
+  // 使用实际 ctrl_dt 而非固定 control_period，保证控制周期波动时积分量准确
+  // 衰减也按实际 dt 计算：decay_dt = decay^(dt/T) = exp(dt/T × ln(decay))
   double omega_i = 0.0;
-  if (params_.enable_integral)
+  if (params_.enable_integral && !freeze_integral)
   {
-    integral_e_y_ = params_.integral_decay * integral_e_y_ + e_y * params_.control_period;
-    // 积分限幅
+    const double decay_dt = std::pow(params_.integral_decay, ctrl_dt / params_.control_period);
+    integral_e_y_ = decay_dt * integral_e_y_ + e_y_ctrl * ctrl_dt;
     integral_e_y_ = std::clamp(integral_e_y_, -params_.integral_max / params_.Ki,
                                 params_.integral_max / params_.Ki);
     omega_i = -params_.Ki * integral_e_y_;
   }
 
-  // 9. 限制反馈量不超过前馈的指定比例（分段控制）
-  // 总反馈量 = LQR反馈 + 积分项
-  double omega_correction = omega_fb + omega_i;
+  // 9. 双路反馈限制（解耦比例平滑性与积分修正力）
+  //
+  // 【比例路径】tanh 软饱和：保证 omega 在 ff 附近连续平滑变化
+  //   - 喷前：宽松（快速收敛），喷后：收窄（趋向 ff±5% 评判标准）
+  //   - 切换时一阶低通平滑过渡，防止 omega 阶跃
+  //
+  // 【积分路径】独立 clamp：补偿系统性稳态偏差（可超过比例限制）
+  //   - 积分天然平滑（每周期缓慢变化），不影响比例路径的瞬时平滑性
 
-  // 根据喷墨状态选择不同的反馈限制比例
-  // start_print 是从 base_follow_controller 继承的成员变量
-  double current_limit_ratio = start_print
-      ? params_.feedback_limit_ratio_after_print   // 喷墨后：更严格的限制
-      : params_.feedback_limit_ratio_before_print;  // 喷墨前：更宽松的限制
-
-  // 计算反馈限制：前馈 × 限制比例
-  double feedback_limit = std::abs(omega_ff) * current_limit_ratio;
-
-  // 仅当配置了最小限制（>0）时才使用
-  if (params_.feedback_min_limit > 0.0 && feedback_limit < params_.feedback_min_limit)
+  // 【修复4：平滑过渡比例限制，防止 start_print 切换时 omega 阶跃】
+  // 一阶低通，时间常数 0.3s（约 5 个控制周期）
   {
-    feedback_limit = params_.feedback_min_limit;
+    const double target_ratio = start_print
+        ? params_.feedback_limit_ratio_after_print
+        : params_.feedback_limit_ratio_before_print;
+    const double lp_alpha = std::exp(-ctrl_dt / 0.3);
+    limit_ratio_smoothed_ = lp_alpha * limit_ratio_smoothed_ + (1.0 - lp_alpha) * target_ratio;
+  }
+  const double current_limit_ratio = limit_ratio_smoothed_;
+
+  // 比例路径限制（前馈 × 比例）
+  double prop_limit = std::abs(omega_ff) * current_limit_ratio;
+  if (params_.feedback_min_limit > 0.0 && prop_limit < params_.feedback_min_limit)
+  {
+    prop_limit = params_.feedback_min_limit;
   }
 
-  // 限幅反馈控制量
-  omega_correction = std::clamp(omega_correction, -feedback_limit, feedback_limit);
+  // 比例路径：tanh 软饱和（核心平滑机制）
+  double omega_prop = 0.0;
+  if (prop_limit > 1e-6)
+  {
+    omega_prop = std::tanh(omega_fb / prop_limit) * prop_limit;
+  }
 
-  // 10. 总控制量 = 前馈 + 限幅后的反馈
+  // 积分路径：独立 clamp（稳态扰动修正，不受比例限制约束）
+  double int_limit = std::abs(omega_ff) * params_.int_limit_ratio;
+  double omega_int = std::clamp(omega_i, -int_limit, int_limit);
+
+  // 合并两路反馈（用于数据记录和最终控制）
+  const double feedback_limit = prop_limit;  // 记录用：与喷前后状态对应的比例限制
+  double omega_correction = omega_prop + omega_int;
+
+  // 10. 总控制量 = 前馈 + 双路反馈
   double omega = omega_ff + omega_correction;
 
   // 11. 应用角速度和角加速度限幅
@@ -576,15 +711,8 @@ bool LQRCircleController::computeVelocityCommands(
     tracking_elapsed_time_s_ += ctrl_dt;
     if (tracking_elapsed_time_s_ + 1e-9 >= next_tracking_sample_time_s_)
     {
-      // 径向误差：机器人到圆心距离 - 标称半径（正=偏外，负=偏内）
-      double radial_err_m = 0.0;
-      if (circle_radius_ > 0.0)
-      {
-        double dist_to_center = std::hypot(current_x - circle_center_x_,
-                                           current_y - circle_center_y_);
-        radial_err_m = dist_to_center - circle_radius_;
-      }
-
+      // radial_err_m 已在控制律步骤4.5中计算（真实几何误差，未受跳变限制影响）
+      // e_y 保留 Frenet 值（cross_track_mm 列，用于分析脚本向后兼容）
       sampleTrackingData(current_x, current_y,
                          e_y, radial_err_m,
                          current_v, omega,
@@ -988,6 +1116,11 @@ void LQRCircleController::reset()
   last_nearest_idx_ = 0;
   waiting_ = false;
   integral_e_y_ = 0.0;
+  last_e_y_ = 0.0;
+  last_e_y_initialized_ = false;
+  start_trigger_angle_ = 0.0;
+  start_lead_angle_ = 0.0;
+  limit_ratio_smoothed_ = params_.feedback_limit_ratio_before_print;
   last_omega_ = 0.0;
   debug_e_y_ = 0.0;
   debug_e_theta_ = 0.0;
@@ -1048,16 +1181,13 @@ geometry_msgs::msg::PoseStamped LQRCircleController::filterRobotPose(
   current_pose.header = robot_pose.header;
   current_pose.pose.orientation = robot_pose.pose.orientation;
 
-  // 应用Hampel滤波器
-  double filtered_x = h_x_filter.filter(robot_pose.pose.position.x);
-  double filtered_y = h_y_filter.filter(robot_pose.pose.position.y);
-
-  // 应用Savitzky-Golay滤波器
-  filtered_x = sg_x_filter_.filter(filtered_x);
-  filtered_y = sg_y_filter_.filter(filtered_y);
-
-  current_pose.pose.position.x = filtered_x;
-  current_pose.pose.position.y = filtered_y;
+  // 【修复5：去除 Savitzky-Golay 滤波，只保留 Hampel 异常值检测】
+  // SG 窗口7点在18Hz下引入约165ms延迟（约11.5mm at v=0.07m/s），与前瞻距离15mm量级相当，
+  // 导致控制器的"当前位置"实际滞后于真实位置，劣化精度。
+  // Hampel 滤波器负责剔除定位系统的短暂跳变（异常值检测），延迟仅1帧（~55ms），可接受。
+  // e_y 跳变检测（max_ey_jump_m）提供了额外的抗扰保护，弥补去掉 SG 的平滑损失。
+  current_pose.pose.position.x = h_x_filter.filter(robot_pose.pose.position.x);
+  current_pose.pose.position.y = h_y_filter.filter(robot_pose.pose.position.y);
 
   return current_pose;
 }
@@ -1279,33 +1409,16 @@ bool LQRCircleController::updateAccumulatedAngle(double current_yaw)
   // 更新上次航向角，用于下次计算
   last_yaw_ = current_yaw;
 
-  constexpr double print_start_delay = 1.0;  // 喷码机出墨延时 (秒)
-
-  // 根据弧长计算期望的开始角度
-  // 弧长公式: s = r × θ, 因此 θ = s / r
-  constexpr double arc_length_for_start = 0.4;  // 弧长 0.4m
-  const double angle_from_arc = arc_length_for_start / circle_radius_;  // θ = s / r
-  const double quarter_circle = 0.5 * M_PI;  // 四分之一圆
-  // 如果弧长对应的角度超过四分之一圆，则取四分之一圆
-  const double desired_start_angle = std::min(angle_from_arc, quarter_circle);
-
-  // 计算机器人沿圆形路径的角速度 ω = v / r
-  double omega_for_delay = params_.v_max / circle_radius_;  // 正常情况：ω = v_max / R0;
-
-  const double start_lead_angle = omega_for_delay * print_start_delay;
-
-  const double start_trigger_angle = std::max(0.0, desired_start_angle - start_lead_angle);
-
-  if (accumulated_angle_ > start_trigger_angle)
+  // 【修复2：使用预计算的触发参数（setPlanForCircle 时以实际调度速度计算，非 v_max）】
+  if (accumulated_angle_ > start_trigger_angle_)
   {
     if (!print_window_initialized_)
     {
       // 记录触发"开始打印"信号时的累计角度
       start_print_angle_ = accumulated_angle_;
 
-      // 计算有效开始喷印角度（考虑延时后的实际喷印位置）
-      // effective_start_print_angle = 触发角度 + 延时期间转过的角度
-      const double effective_start_print_angle = start_print_angle_ + start_lead_angle;
+      // 有效开始喷印角度 = 触发角度 + 延时期间转过的角度（使用预计算的 start_lead_angle_）
+      const double effective_start_print_angle = start_print_angle_ + start_lead_angle_;
 
       // 定义停止打印窗口参数
       constexpr double kStopArcLengthMeters = 0.03;        // 停止窗口弧长：3cm
