@@ -72,6 +72,8 @@ struct LineRotationParams
   double max_w = 0.8;                ///< 最大角速度 [rad/s]
   double min_w = 0.15;               ///< 最小角速度 [rad/s]（固定下限，克服静摩擦）
   double decel = 1.6;                ///< 最大角减速度 [rad/s²]（梯形规划制动参数）
+  double accel = 2.0;                ///< 加速度 [rad/s²]（slew rate 阻尼）
+  double pre_stop_angle = 0.05;      ///< 提前降至 min_w 的角度裕量 [rad]
 };
 
 // 滤波器参数 (filter.*)

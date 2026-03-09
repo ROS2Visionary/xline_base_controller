@@ -152,6 +152,13 @@ rotation:
   #   decel 越大：制动越晚、过程越"猛"；越小：制动越早、过程越平缓
   decel: 1.6
 
+  # 加速度 (rad/s²)（slew rate 阻尼，限制角速度变化率，平滑启停）
+  # accel 越大：启停越快（趋近"瞬间"）；越小：越柔和
+  accel: 2.0
+
+  # 提前降至 min_w 的角度裕量 [rad]（在此角度内以 min_w 匀速滑行至停止）
+  pre_stop_angle: 0.05
+
 
 # 反馈限制参数（分段控制）
 feedback:

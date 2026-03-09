@@ -43,6 +43,7 @@ TransitionController::TransitionController()
   , stall_detection_active_(false)
   , stall_check_start_distance_(0.0)
   , stage2_entry_distance_(0.0)
+  , prev_rotation_omega_(0.0)
   , stage2_position_relaxed_(false)
   , stage1_reentry_mode_(false)
 {
@@ -133,6 +134,10 @@ void TransitionController::updateParameters()
         parser.getParameter<double>("transition.rotation.min_w") : 0.1;
     params_.rotation_decel = parser.hasParameter("transition.rotation.decel") ?
         parser.getParameter<double>("transition.rotation.decel") : 1.5;
+    params_.rotation_accel = parser.hasParameter("transition.rotation.accel") ?
+        parser.getParameter<double>("transition.rotation.accel") : 2.0;
+    params_.rotation_pre_stop_angle = parser.hasParameter("transition.rotation.pre_stop_angle") ?
+        parser.getParameter<double>("transition.rotation.pre_stop_angle") : 0.05;
 
     // 保护性限幅：避免配置把控制器锁死或输出超限
     params_.max_velocity = std::max(0.0, params_.max_velocity);
@@ -146,6 +151,7 @@ void TransitionController::updateParameters()
     params_.rotation_max_w = std::clamp(params_.rotation_max_w, 0.0, params_.max_angular_vel);
     params_.rotation_min_w = std::clamp(params_.rotation_min_w, 0.0, params_.rotation_max_w);
     params_.rotation_decel  = std::max(0.01, params_.rotation_decel);
+    params_.rotation_accel  = std::max(0.01, params_.rotation_accel);
 
     // 阶段1重入速度限制
     params_.stage1_reentry_max_velocity = std::clamp(params_.stage1_reentry_max_velocity, 0.0, params_.max_velocity);
@@ -247,6 +253,8 @@ void TransitionController::updateParameters()
     params_.rotation_max_w = params_.max_angular_vel;
     params_.rotation_min_w = 0.1;
     params_.rotation_decel  = 1.5;
+    params_.rotation_accel  = 2.0;
+    params_.rotation_pre_stop_angle = 0.05;
     params_.enable_backward = true;
     params_.backward_angle_threshold = M_PI / 6.0;  // 30度
     params_.velocity_smooth_alpha = 0.7;
@@ -283,6 +291,7 @@ bool TransitionController::setGoal(double goal_x, double goal_y)
 
   stage2_entry_distance_ = 0.0;
   stage2_position_relaxed_ = false;
+  prev_rotation_omega_ = 0.0;
 
   LOG_INFO("设置目标点: (%.3f, %.3f) [只到点模式]", goal_x_, goal_y_);
 
@@ -315,6 +324,7 @@ bool TransitionController::setGoal(double goal_x, double goal_y, double goal_the
 
   stage2_entry_distance_ = 0.0;
   stage2_position_relaxed_ = false;
+  prev_rotation_omega_ = 0.0;
 
   LOG_INFO("设置目标姿态: (%.3f, %.3f, %.2f°) [%s]",
            goal_x_, goal_y_, goal_theta_ * 180.0 / M_PI,
@@ -974,6 +984,7 @@ void TransitionController::reset()
 
   stage2_entry_distance_ = 0.0;
   stage2_position_relaxed_ = false;
+  prev_rotation_omega_ = 0.0;
   stage1_reentry_mode_ = false;
 
   // 重置后退安全检测
@@ -1180,18 +1191,29 @@ void TransitionController::enforceHardCreepMin(
 
 double TransitionController::computeRotationVelocity(double angle_diff)
 {
-  // 梯形速度规划：制动速度 = sqrt(2 * decel * |e|)
-  // 物理保证：以 rotation_decel 减速，在剩余角度内能精确刹停，不过冲
-  double rot_vel = std::sqrt(2.0 * params_.rotation_decel * std::abs(angle_diff));
-  rot_vel = std::clamp(rot_vel, params_.rotation_min_w, params_.rotation_max_w);
+  constexpr double dt = 1.0 / 18.0;
+  const double abs_e = std::abs(angle_diff);
 
-  if (angle_diff > 0.0) {
-    return rot_vel;
-  }
-  if (angle_diff < 0.0) {
-    return -rot_vel;
-  }
-  return 0.0;
+  // 1. 速度上限随角度差线性缩放：接近 π 才用最大速度，小角度自动压低上限
+  double omega_ceiling = params_.rotation_min_w +
+      (params_.rotation_max_w - params_.rotation_min_w) * (abs_e / M_PI);
+  omega_ceiling = std::clamp(omega_ceiling, params_.rotation_min_w, params_.rotation_max_w);
+
+  // 2. 梯形制动：提前 pre_stop_angle 降至 min_w，在裕量角度内以 min_w 匀速滑行
+  double effective_e = std::max(0.0, abs_e - params_.rotation_pre_stop_angle);
+  double omega_brake = std::sqrt(2.0 * params_.rotation_decel * effective_e);
+
+  // 3. 目标速度取两者最小值
+  double omega_target = std::min(omega_ceiling, omega_brake);
+  omega_target = std::clamp(omega_target, params_.rotation_min_w, params_.rotation_max_w);
+
+  // 4. Slew rate 阻尼：限制每周期速度变化量，平滑加减速过程
+  double rot_vel = std::clamp(omega_target,
+                              prev_rotation_omega_ - params_.rotation_accel * dt,
+                              prev_rotation_omega_ + params_.rotation_accel * dt);
+  prev_rotation_omega_ = rot_vel;
+
+  return (angle_diff > 0.0) ? rot_vel : (angle_diff < 0.0) ? -rot_vel : 0.0;
 }
 
 void TransitionController::smoothVelocity(double& v, double& omega, double dt)

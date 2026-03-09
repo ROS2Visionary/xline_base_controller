@@ -177,6 +177,7 @@ private:
   double prev_angular_velocity_;      ///< 上一次角速度
   double prev_smoothed_angular_velocity_; ///< 上一次平滑后角速度
   double last_yaw_error_;             ///< 上一次航向误差
+  double prev_rotation_omega_;        ///< 上一周期旋转速度幅值（用于 slew rate 阻尼）
   double second_prev_angular_velocity_;
   std::deque<double> angular_vel_history_; ///< 角速度历史记录
   HampelFilter angular_vel_hampel_filter_; ///< 角速度Hampel滤波器
@@ -342,7 +343,9 @@ private:
   inline double rotationMaxW() const { return params_.rotation.max_w; }
   inline double rotationMinW() const { return params_.rotation.min_w; }
   inline double rotationDecel() const { return params_.rotation.decel; }
-  
+  inline double rotationAccel() const { return params_.rotation.accel; }
+  inline double rotationPreStopAngle() const { return params_.rotation.pre_stop_angle; }
+
   // 距离参数
   inline double lookaheadDist() const { return params_.distance.lookahead; }
   inline double waypointTolerance() const { return params_.distance.waypoint_tolerance; }

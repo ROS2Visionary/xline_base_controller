@@ -101,6 +101,12 @@ rotation:
   #   例：max_w=0.8, 期望在 0.2rad 内刹停 → decel = 0.64/0.4 = 1.6
   decel: 1.6
 
+  # 加速度 (rad/s²)（slew rate 阻尼，限制角速度变化率，平滑启停）
+  accel: 2.0
+
+  # 提前降至 min_w 的角度裕量 [rad]（在此角度内以 min_w 匀速滑行至停止）
+  pre_stop_angle: 0.05
+
 
 # 反馈限制参数
 feedback:

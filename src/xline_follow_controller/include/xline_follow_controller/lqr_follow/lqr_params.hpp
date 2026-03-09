@@ -134,6 +134,12 @@ struct LQRParams
   /// 物理含义：剩余角度 e 时的制动速度 = sqrt(2 * decel * e)，保证不过冲
   double rotation_decel = 1.5;
 
+  /// 旋转加速度 (rad/s²)（slew rate 阻尼，限制角速度变化率）
+  double rotation_accel = 2.0;
+
+  /// 提前降至 min_w 的角度裕量 [rad]（在此角度内以 min_w 匀速滑行至停止）
+  double rotation_pre_stop_angle = 0.05;
+
   // ================================
   // 路径类型参数
   // ================================

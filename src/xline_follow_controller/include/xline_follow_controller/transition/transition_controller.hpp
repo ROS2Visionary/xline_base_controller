@@ -163,6 +163,8 @@ private:
     double rotation_max_w;             // 最大角速度 [rad/s]
     double rotation_min_w;             // 最小角速度 [rad/s]（固定下限，克服静摩擦）
     double rotation_decel;             // 最大角减速度 [rad/s²]（梯形规划制动参数）
+    double rotation_accel;             // 加速度 [rad/s²]（slew rate 阻尼）
+    double rotation_pre_stop_angle;    // 提前降至 min_w 的角度裕量 [rad]
 
     // 后退模式
     bool enable_backward;          // 是否启用后退模式
@@ -239,6 +241,7 @@ private:
   // 阶段2控制状态
   double stage2_entry_distance_;      // 进入阶段2时的距离（用于放宽位置容差）
   bool stage2_position_relaxed_;      // 是否已进入阶段2并放宽位置容差
+  double prev_rotation_omega_;        // 上一周期旋转速度幅值（用于 slew rate 阻尼）
   bool stage1_reentry_mode_;          // 是否处于阶段1重入模式（从阶段2退回，需要限制速度）
 
   // ================================

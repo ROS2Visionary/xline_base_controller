@@ -46,6 +46,7 @@ LineFollowController::LineFollowController()
   , current_angular_speed_(0.0)
   , prev_angular_velocity_(0.0)
   , last_yaw_error_(0.0)
+  , prev_rotation_omega_(0.0)
   , angular_vel_hampel_filter_(5, 3.0)
   , wait_duration_(0.2)
   , waiting_(false)
@@ -184,10 +185,13 @@ void LineFollowController::updateParameters()
     // ================================
     // 5. 原地旋转参数
     // ================================
-    // 旋转参数 (rotation.*)（梯形速度规划）
+    // 旋转参数 (rotation.*)（梯形速度规划 + slew rate 阻尼）
     params_.rotation.max_w = parser.getParameter<double>("rotation.max_w");
     params_.rotation.min_w = parser.getParameter<double>("rotation.min_w");
     params_.rotation.decel  = parser.getParameter<double>("rotation.decel");
+    params_.rotation.accel  = parser.getParameter<double>("rotation.accel");
+    params_.rotation.pre_stop_angle = parser.hasParameter("rotation.pre_stop_angle") ?
+        parser.getParameter<double>("rotation.pre_stop_angle") : 0.05;
 
     // ================================
     // 6. 滤波器参数
@@ -483,6 +487,7 @@ void LineFollowController::resetControllerState()
   current_linear_speed_ = 0.0;
   current_angular_speed_ = 0.0;
   last_yaw_error_ = 0.0;
+  prev_rotation_omega_ = 0.0;
   decel_phase_entered_ = false;
   start_line_aligned_ = false;
   start_line_aligned_count_ = 0;
@@ -1078,11 +1083,29 @@ double LineFollowController::computeAngularVelocity(double yaw_error, double dt,
 
 double LineFollowController::calculateRotationVelocity(const double& angle_diff)
 {
-  // 梯形速度规划：制动速度 = sqrt(2 * decel * |e|)
-  // 物理保证：以 rotation_decel 减速时，在剩余角度内能精确刹停，不过冲
-  double rot_vel = std::sqrt(2.0 * rotationDecel() * std::abs(angle_diff));
-  rot_vel = std::clamp(rot_vel, rotationMinW(), rotationMaxW());
-  return (angle_diff > 0.0) ? rot_vel : -rot_vel;
+  constexpr double dt = 1.0 / 18.0;
+  const double abs_e = std::abs(angle_diff);
+
+  // 1. 速度上限随角度差线性缩放：接近 π 才用最大速度，小角度自动压低上限
+  double omega_ceiling = rotationMinW() +
+      (rotationMaxW() - rotationMinW()) * (abs_e / M_PI);
+  omega_ceiling = std::clamp(omega_ceiling, rotationMinW(), rotationMaxW());
+
+  // 2. 梯形制动：提前 pre_stop_angle 降至 min_w，在裕量角度内以 min_w 匀速滑行
+  double effective_e = std::max(0.0, abs_e - rotationPreStopAngle());
+  double omega_brake = std::sqrt(2.0 * rotationDecel() * effective_e);
+
+  // 3. 目标速度取两者最小值
+  double omega_target = std::min(omega_ceiling, omega_brake);
+  omega_target = std::clamp(omega_target, rotationMinW(), rotationMaxW());
+
+  // 4. Slew rate 阻尼：限制每周期速度变化量，平滑加减速过程
+  double omega = std::clamp(omega_target,
+                            prev_rotation_omega_ - rotationAccel() * dt,
+                            prev_rotation_omega_ + rotationAccel() * dt);
+  prev_rotation_omega_ = omega;
+
+  return (angle_diff > 0.0) ? omega : -omega;
 }
 
 bool LineFollowController::shouldGoBackward(double curr_x, double curr_y, double curr_yaw,

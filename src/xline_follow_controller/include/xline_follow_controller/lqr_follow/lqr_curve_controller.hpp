@@ -349,9 +349,10 @@ private:
   size_t last_nearest_idx_; ///< 上次最近点索引（用于优化搜索）
 
   /// 航向预对准状态
-  bool need_yaw_prealign_;  ///< 是否需要航向预对准
-  bool yaw_prealign_done_;  ///< 航向预对准是否完成
-  double target_yaw_;       ///< 目标航向角
+  bool need_yaw_prealign_;      ///< 是否需要航向预对准
+  bool yaw_prealign_done_;      ///< 航向预对准是否完成
+  double target_yaw_;           ///< 目标航向角
+  double prev_rotation_omega_;  ///< 上一周期旋转速度幅值（用于 slew rate 阻尼）
 
   /// 积分项状态
   double integral_e_y_;    ///< 横向误差积分

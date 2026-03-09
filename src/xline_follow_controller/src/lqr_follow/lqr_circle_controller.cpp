@@ -24,6 +24,7 @@ LQRCircleController::LQRCircleController()
   , need_yaw_prealign_(true)
   , yaw_prealign_done_(false)
   , target_yaw_(0.0)
+  , prev_rotation_omega_(0.0)
   , wait_duration_(0.2)
   , waiting_(false)
   , integral_e_y_(0.0)
@@ -128,10 +129,13 @@ void LQRCircleController::updateParameters(const std::string& config_path)
     // 加载控制频率
     params_.control_frequency = parser.getParameter<double>("control.frequency");
 
-    // 加载原地旋转控制参数（梯形速度规划）
+    // 加载原地旋转控制参数（梯形速度规划 + slew rate 阻尼）
     params_.rotation_max_w = parser.getParameter<double>("rotation.max_w");
     params_.rotation_min_w = parser.getParameter<double>("rotation.min_w");
     params_.rotation_decel  = parser.getParameter<double>("rotation.decel");
+    params_.rotation_accel  = parser.getParameter<double>("rotation.accel");
+    params_.rotation_pre_stop_angle = parser.hasParameter("rotation.pre_stop_angle") ?
+        parser.getParameter<double>("rotation.pre_stop_angle") : 0.05;
 
     // 加载反馈限制参数（分段控制）
     // 优先加载分段参数，如果不存在则使用统一参数（向后兼容）
@@ -298,6 +302,7 @@ bool LQRCircleController::setPlan(const nav_msgs::msg::Path& orig_global_plan)
     target_yaw_ = path_[0].theta;
     need_yaw_prealign_ = true;
     yaw_prealign_done_ = false;
+    prev_rotation_omega_ = 0.0;
   }
 
   RCLCPP_INFO(get_logger(), "LQR路径设置完成 - 点数: %zu, 总长度: %.3fm, 起始朝向: %.2f°",
@@ -1072,10 +1077,28 @@ bool LQRCircleController::performYawPrealignment(const geometry_msgs::msg::PoseS
 
 double LQRCircleController::calculateRotationVelocity(double angle_diff)
 {
-  // 梯形速度规划：制动速度 = sqrt(2 * decel * |e|)
-  // 物理保证：在剩余角度内能以 rotation_decel 刹停，不过冲
-  double omega = std::sqrt(2.0 * params_.rotation_decel * std::abs(angle_diff));
-  omega = std::clamp(omega, params_.rotation_min_w, params_.rotation_max_w);
+  const double abs_e = std::abs(angle_diff);
+  const double dt = params_.control_period;
+
+  // 1. 速度上限随角度差线性缩放：接近 π 才用最大速度，小角度自动压低上限
+  double omega_ceiling = params_.rotation_min_w +
+      (params_.rotation_max_w - params_.rotation_min_w) * (abs_e / M_PI);
+  omega_ceiling = std::clamp(omega_ceiling, params_.rotation_min_w, params_.rotation_max_w);
+
+  // 2. 梯形制动：提前 pre_stop_angle 降至 min_w，在裕量角度内以 min_w 匀速滑行
+  double effective_e = std::max(0.0, abs_e - params_.rotation_pre_stop_angle);
+  double omega_brake = std::sqrt(2.0 * params_.rotation_decel * effective_e);
+
+  // 3. 目标速度取两者最小值
+  double omega_target = std::min(omega_ceiling, omega_brake);
+  omega_target = std::clamp(omega_target, params_.rotation_min_w, params_.rotation_max_w);
+
+  // 4. Slew rate 阻尼：限制每周期速度变化量，平滑加减速过程
+  double omega = std::clamp(omega_target,
+                            prev_rotation_omega_ - params_.rotation_accel * dt,
+                            prev_rotation_omega_ + params_.rotation_accel * dt);
+  prev_rotation_omega_ = omega;
+
   return (angle_diff > 0.0) ? omega : -omega;
 }
 
@@ -1101,6 +1124,7 @@ void LQRCircleController::reset()
   goal_reached_ = false;
   last_nearest_idx_ = 0;
   waiting_ = false;
+  prev_rotation_omega_ = 0.0;
   integral_e_y_ = 0.0;
   last_e_y_ = 0.0;
   last_e_y_initialized_ = false;

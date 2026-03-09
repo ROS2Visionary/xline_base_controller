@@ -105,6 +105,8 @@ rotation:
   decel: 1.6                         # 最大角减速度 [rad/s²]
                                      # 公式：ω = sqrt(2 * decel * |e|)
                                      # 调参：decel = max_w² / (2 × 期望制动角度)
+  accel: 2.0                         # 加速度 [rad/s²]（slew rate 阻尼，平滑启停）
+  pre_stop_angle: 0.05               # 提前降至 min_w 的角度裕量 [rad]（约3°）
 
 
 # e_y 输入滤波
