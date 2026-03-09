@@ -148,7 +148,7 @@ void TransitionController::updateParameters()
     params_.slow_down_distance = std::max(0.0, params_.slow_down_distance);
     params_.creep_distance = std::clamp(params_.creep_distance, 0.0, params_.slow_down_distance);
 
-    params_.rotation_max_w = std::clamp(params_.rotation_max_w, 0.0, params_.max_angular_vel);
+    params_.rotation_max_w = std::max(0.0, params_.rotation_max_w);
     params_.rotation_min_w = std::clamp(params_.rotation_min_w, 0.0, params_.rotation_max_w);
     params_.rotation_decel  = std::max(0.01, params_.rotation_decel);
     params_.rotation_accel  = std::max(0.01, params_.rotation_accel);
@@ -453,6 +453,7 @@ bool TransitionController::computeVelocityCommands(
 
   // 5. 根据模式选择控制策略
   double v, omega;
+  double angular_limit = params_.max_angular_vel;
   bool reached = false;
 
   if (!goal_theta_set_) {
@@ -593,9 +594,12 @@ bool TransitionController::computeVelocityCommands(
         // 如果偏差过大，先原地旋转对准"后退期望朝向"，避免横向倒车导致绕圈/离目标更远
         // 但在近目标时允许蠕动，避免打转
         if (std::abs(backward_heading_error) > M_PI / 2.0) {
-          omega = params_.rotation_enabled ?
-              computeRotationVelocity(backward_heading_error) :
-              computeAngularVelocity(backward_heading_error);
+          if (params_.rotation_enabled) {
+            omega = computeRotationVelocity(backward_heading_error, dt);
+            angular_limit = params_.rotation_max_w;
+          } else {
+            omega = computeAngularVelocity(backward_heading_error);
+          }
           // 扩大蠕动区域：当距离 < 10cm 时允许后退蠕动
           // 使用固定阈值 0.1m，确保即使 arrival_tolerance 很小（0.5cm）也能生效
           if (distance <= params_.creep_distance) {
@@ -635,9 +639,12 @@ bool TransitionController::computeVelocityCommands(
         // 但在近目标时（cm级）纯旋转会导致距离来回漂移，容易卡在严格阈值附近；
         // 因此允许做较大的前后蠕动来继续压缩距离，避免陷入打转。
         if (std::abs(approach_error) > M_PI / 2.0) {
-          omega = params_.rotation_enabled ?
-              computeRotationVelocity(approach_error) :
-              computeAngularVelocity(approach_error);
+          if (params_.rotation_enabled) {
+            omega = computeRotationVelocity(approach_error, dt);
+            angular_limit = params_.rotation_max_w;
+          } else {
+            omega = computeAngularVelocity(approach_error);
+          }
           // 扩大蠕动区域：当距离 < 10cm 时允许蠕动（避免在目标附近打转）
           // 使用固定阈值 0.1m，确保即使 arrival_tolerance 很小（0.5cm）也能生效
           if (distance <= params_.creep_distance) {
@@ -730,10 +737,14 @@ bool TransitionController::computeVelocityCommands(
         omega = 0.0;
         prev_linear_vel_ = 0.0;
         prev_angular_vel_ = 0.0;
+        prev_rotation_omega_ = 0.0;
       } else {
-        omega = params_.rotation_enabled ?
-            computeRotationVelocity(final_heading_error) :
-            computeAngularVelocity(final_heading_error);
+        if (params_.rotation_enabled) {
+          omega = computeRotationVelocity(final_heading_error, dt);
+          angular_limit = params_.rotation_max_w;
+        } else {
+          omega = computeAngularVelocity(final_heading_error);
+        }
       }
     }
 
@@ -814,7 +825,7 @@ bool TransitionController::computeVelocityCommands(
   }
 
   // 8. 速度平滑
-  smoothVelocity(v, omega, dt);
+  smoothVelocity(v, omega, dt, angular_limit);
 
   // 8.1 近目标蠕动速度硬下限（优先级高于平滑/角度衰减）
   enforceHardCreepMin(v, distance, curr_x, curr_y, curr_theta);
@@ -1189,9 +1200,11 @@ void TransitionController::enforceHardCreepMin(
   prev_linear_vel_ = v;
 }
 
-double TransitionController::computeRotationVelocity(double angle_diff)
+double TransitionController::computeRotationVelocity(double angle_diff, double dt)
 {
-  constexpr double dt = 1.0 / 18.0;
+  if (dt <= 1e-6 || std::isnan(dt) || std::isinf(dt)) {
+    dt = 1.0 / 18.0;
+  }
   const double abs_e = std::abs(angle_diff);
 
   // 1. 速度上限随角度差线性缩放：接近 π 才用最大速度，小角度自动压低上限
@@ -1216,9 +1229,10 @@ double TransitionController::computeRotationVelocity(double angle_diff)
   return (angle_diff > 0.0) ? rot_vel : (angle_diff < 0.0) ? -rot_vel : 0.0;
 }
 
-void TransitionController::smoothVelocity(double& v, double& omega, double dt)
+void TransitionController::smoothVelocity(double& v, double& omega, double dt, double angular_limit)
 {
   const double alpha = std::clamp(params_.velocity_smooth_alpha, 0.0, 1.0);
+  angular_limit = std::max(0.0, angular_limit);
 
   // 记录滤波前的历史输出，用于 slew-rate 限制
   const double prev_v = prev_linear_vel_;
@@ -1264,12 +1278,13 @@ void TransitionController::smoothVelocity(double& v, double& omega, double dt)
   if (stop_angular) {
     omega = 0.0;
     prev_angular_vel_ = 0.0;
+    prev_rotation_omega_ = 0.0;
   } else {
     bool is_first_call = (std::abs(prev_omega) < 1e-12);
     if (!is_first_call) {
       omega = alpha * omega + (1.0 - alpha) * prev_omega;
     }
-    omega = std::clamp(omega, -params_.max_angular_vel, params_.max_angular_vel);
+    omega = std::clamp(omega, -angular_limit, angular_limit);
     prev_angular_vel_ = omega;
   }
 }

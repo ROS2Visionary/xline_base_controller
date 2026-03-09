@@ -286,12 +286,12 @@ private:
   /**
    * @brief 阶段2原地对准航向角速度（与 LineFollowController 对齐方式一致）
    */
-  double computeRotationVelocity(double angle_diff);
+  double computeRotationVelocity(double angle_diff, double dt);
 
   /**
    * @brief 平滑速度输出
    */
-  void smoothVelocity(double& v, double& omega, double dt);
+  void smoothVelocity(double& v, double& omega, double dt, double angular_limit);
 
   /**
    * @brief 判断是否应该使用后退模式

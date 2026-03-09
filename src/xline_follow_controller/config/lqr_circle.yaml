@@ -140,24 +140,24 @@ control:
 # 原地旋转控制参数（梯形速度规划）
 rotation:
   # 旋转最大角速度 (rad/s)
-  max_w: 0.8
+  max_w: 1.0
 
   # 旋转最小角速度 (rad/s)（固定下限，克服静摩擦）
-  min_w: 0.15
+  min_w: 0.1
 
   # 最大角减速度 (rad/s²)
   # 制动速度公式：ω = sqrt(2 * decel * |e|)
   # 调参参考：decel = max_w² / (2 * 期望制动角度)
   #   例：max_w=0.8, 期望在 0.2rad 内刹停 → decel = 0.64/0.4 = 1.6
   #   decel 越大：制动越晚、过程越"猛"；越小：制动越早、过程越平缓
-  decel: 1.6
+  decel: 2.0
 
   # 加速度 (rad/s²)（slew rate 阻尼，限制角速度变化率，平滑启停）
   # accel 越大：启停越快（趋近"瞬间"）；越小：越柔和
   accel: 2.0
 
   # 提前降至 min_w 的角度裕量 [rad]（在此角度内以 min_w 匀速滑行至停止）
-  pre_stop_angle: 0.05
+  pre_stop_angle: 0.2
 
 
 # 反馈限制参数（分段控制）
