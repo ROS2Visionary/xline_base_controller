@@ -18,6 +18,10 @@
 #include <cmath>
 #include <algorithm>
 #include <filesystem>
+#include <mutex>
+#include <fstream>
+#include <chrono>
+#include <numeric>
 
 namespace xline
 {
@@ -204,10 +208,11 @@ private:
 
   /**
    * @brief 应用控制量限幅
-   * @param omega 角速度
+   * @param omega    角速度
+   * @param ctrl_dt  实测控制周期（秒），用于精确角加速度限幅
    * @return 限幅后的角速度
    */
-  double applyLimits(double omega);
+  double applyLimits(double omega, double ctrl_dt);
 
   /**
    * @brief 角度归一化到 [-π, π]
@@ -360,6 +365,37 @@ private:
   /// 上次角速度（用于角加速度限幅）
   double last_omega_;
 
+  // ================================
+  // 圆弧控制器算法移植 - 新增状态
+  // ================================
+
+  /// e_theta IIR 低通滤波器状态
+  double e_theta_filtered_ = 0.0;
+
+  /// 上次横向误差（e_y 跳变检测用）
+  double last_e_y_ = 0.0;
+
+  /// 是否已初始化 last_e_y_
+  bool last_e_y_initialized_ = false;
+
+  /// 平滑后的反馈限制比例（before/after print 平滑切换，τ=0.3s）
+  double limit_ratio_smoothed_ = 0.10;
+
+  /// 上次控制时刻（用于实际 ctrl_dt 测量）
+  rclcpp::Time last_ctrl_time_;
+
+  /// 是否已初始化控制时刻
+  bool ctrl_time_initialized_ = false;
+
+  /// 追踪累计时间（秒），用于 50ms 采样门控
+  double tracking_elapsed_time_s_ = 0.0;
+
+  /// 下次触发采样的时间阈值（秒）
+  double next_tracking_sample_time_s_ = 0.0;
+
+  /// 固定采样间隔 50ms
+  static constexpr double kTrackingSampleInterval = 0.05;
+
   /// 调试信息
   double debug_e_y_;       ///< 当前横向误差
   double debug_e_theta_;   ///< 当前航向误差
@@ -459,6 +495,60 @@ private:
    * @return 是否完成 Spline 路径
    */
   bool updateAccumulatedDistanceForSpline(double current_x, double current_y);
+
+  // ================================
+  // 数据采集与导出
+  // ================================
+
+  /// 跟踪误差绝对值（统计用，单位 m）
+  std::vector<double> tracking_error_abs_m_;
+
+  /// 跟踪误差有符号（偏向诊断，单位 m）
+  std::vector<double> tracking_error_signed_m_;
+
+  /// 各采样点的累计弧长（路径段分析用，单位 m）
+  std::vector<double> tracking_arc_length_at_sample_;
+
+  /// CSV 行缓冲
+  std::vector<std::string> tracking_sample_rows_;
+
+  /// 批次 ID（毫秒时间戳字符串）
+  std::string curve_batch_id_;
+
+  /// 曲线编号（来自 yaml tracking.curve_slot）
+  int curve_slot_ = 0;
+
+  /// 曲线路径总长度（m）
+  double curve_total_length_ = 0.0;
+
+  /// 追踪开始时间（秒，来自 rclcpp::Time）
+  double tracking_start_time_ = -1.0;
+
+  /// 是否正在追踪记录
+  bool is_tracking_ = false;
+
+  /// 文件写入互斥锁
+  std::mutex file_mutex_;
+
+  /**
+   * @brief 路径跟踪完成后导出指标和样本 CSV
+   */
+  void exportTrackingMetrics();
+
+  /**
+   * @brief 获取跟踪数据根目录（优先 XLINE_WS_ROOT 环境变量）
+   */
+  std::string getTrackingRecordDir() const;
+
+  /**
+   * @brief 计算百分位数
+   */
+  double computePercentile(const std::vector<double>& values, double percentile) const;
+
+  /**
+   * @brief 计算低于阈值的比例
+   */
+  double computeShareBelow(const std::vector<double>& values, double threshold_m) const;
 };
 
 }  // namespace follow_controller

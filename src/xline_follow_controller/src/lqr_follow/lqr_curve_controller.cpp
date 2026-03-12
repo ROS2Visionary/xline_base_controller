@@ -4,6 +4,7 @@
 
 #include <sstream>
 #include <iomanip>
+#include <ctime>
 
 namespace xline
 {
@@ -132,6 +133,20 @@ void LQRCurveController::updateParameters(const std::string& config_path)
     params_.feedback_limit_ratio = parser.getParameter<double>("feedback.limit_ratio");
     params_.feedback_min_limit = parser.getParameter<double>("feedback.min_limit");
 
+    // 加载精细反馈参数（圆弧控制器移植）
+    if (parser.hasParameter("feedback.e_theta_lowpass_alpha"))
+      params_.e_theta_lowpass_alpha = parser.getParameter<double>("feedback.e_theta_lowpass_alpha");
+    if (parser.hasParameter("feedback.max_ey_jump_m"))
+      params_.max_ey_jump_m = parser.getParameter<double>("feedback.max_ey_jump_m");
+    if (parser.hasParameter("feedback.int_limit_ratio"))
+      params_.int_limit_ratio = parser.getParameter<double>("feedback.int_limit_ratio");
+    if (parser.hasParameter("feedback.limit_ratio_before_print"))
+      params_.feedback_limit_ratio_before_print =
+          parser.getParameter<double>("feedback.limit_ratio_before_print");
+    if (parser.hasParameter("feedback.limit_ratio_after_print"))
+      params_.feedback_limit_ratio_after_print =
+          parser.getParameter<double>("feedback.limit_ratio_after_print");
+
     // 加载滤波器参数
     // 位置滤波器参数
     params_.hampel_window = parser.getParameter<int>("filter.position.hampel_window");
@@ -148,6 +163,18 @@ void LQRCurveController::updateParameters(const std::string& config_path)
       params_.grid_map_path = xline::path_utils::resolve_path(
           parser.getParameter<std::string>("debug.grid_map_path"));
     }
+
+    // 加载优化元信息
+    if (parser.hasParameter("optimization.id"))
+      params_.optimization.id = parser.getParameter<std::string>("optimization.id");
+    if (parser.hasParameter("optimization.parent_batch_id"))
+      params_.optimization.parent_batch_id = parser.getParameter<std::string>("optimization.parent_batch_id");
+    if (parser.hasParameter("optimization.change_note"))
+      params_.optimization.change_note = parser.getParameter<std::string>("optimization.change_note");
+
+    // 加载曲线追踪编号
+    if (parser.hasParameter("tracking.curve_slot"))
+      curve_slot_ = parser.getParameter<int>("tracking.curve_slot");
 
     RCLCPP_INFO(get_logger(), "LQR参数已从配置文件加载: %s", full_path.c_str());
   }
@@ -175,6 +202,7 @@ bool LQRCurveController::setPlan(const nav_msgs::msg::Path& orig_global_plan)
 
   // 转换路径格式并计算曲率
   path_.clear();
+  last_nearest_idx_ = 0;  // 新路径点数可能不同，必须重置，否则越界访问
   path_.reserve(orig_global_plan.poses.size());
 
   double accumulated_arc_length = 0.0;
@@ -216,6 +244,39 @@ bool LQRCurveController::setPlan(const nav_msgs::msg::Path& orig_global_plan)
 
   RCLCPP_INFO(get_logger(), "LQR路径设置完成 - 点数: %zu, 总长度: %.3fm, 起始朝向: %.2f°",
               path_.size(), accumulated_arc_length, target_yaw_ * 180.0 / M_PI);
+
+  // 初始化数据追踪
+  {
+    // 生成批次 ID（毫秒时间戳）
+    auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    curve_batch_id_ = std::to_string(now_ms);
+
+    // 记录路径总长度（供段分析使用）
+    curve_total_length_ = accumulated_arc_length;
+
+    // 清空缓冲
+    tracking_error_abs_m_.clear();
+    tracking_error_signed_m_.clear();
+    tracking_arc_length_at_sample_.clear();
+    tracking_sample_rows_.clear();
+    tracking_start_time_ = -1.0;
+    is_tracking_ = false;
+
+    // 若 slot==0，清除旧的 curve_tracking_latest 目录（新一轮批次）
+    if (curve_slot_ == 0)
+    {
+      const std::string latest_dir = getTrackingRecordDir() + "/curve_tracking_latest";
+      std::lock_guard<std::mutex> lock(file_mutex_);
+      std::error_code ec;
+      if (std::filesystem::exists(latest_dir))
+      {
+        std::filesystem::remove_all(latest_dir, ec);
+      }
+    }
+    RCLCPP_INFO(get_logger(), "曲线追踪批次初始化: batch_id=%s, slot=%d, 总长度=%.3fm",
+                curve_batch_id_.c_str(), curve_slot_, curve_total_length_);
+  }
 
   // 初始化栅格图
   if (params_.enable_grid_map)
@@ -281,6 +342,25 @@ bool LQRCurveController::computeVelocityCommands(
     return true;  // 预对准期间返回 true，继续执行预对准
   }
 
+  // 预对准完成后启动数据追踪
+  if (!is_tracking_)
+  {
+    is_tracking_ = true;
+    tracking_start_time_ = this->now().seconds();
+    tracking_elapsed_time_s_ = 0.0;
+    next_tracking_sample_time_s_ = kTrackingSampleInterval;
+  }
+
+  // 实际控制周期测量（用于时变积分衰减和平滑切换）
+  double ctrl_dt = params_.control_period;  // 默认值：防止首次调用异常
+  if (ctrl_time_initialized_)
+  {
+    double dt = (this->now() - last_ctrl_time_).seconds();
+    ctrl_dt = std::clamp(dt, 0.005, 0.2);  // 5ms ~ 200ms 合理范围
+  }
+  last_ctrl_time_ = this->now();
+  ctrl_time_initialized_ = true;
+
   // 1. 找到最近的路径点
   size_t nearest_idx = findNearestPoint(current_x, current_y);
 
@@ -290,9 +370,30 @@ bool LQRCurveController::computeVelocityCommands(
   // 3. 获取前瞻参考点（带插值）
   PathPointWithCurvature ref = findLookaheadPoint(nearest_idx, lookahead_dist);
 
-  // 4. 计算误差
+  // 4. 计算误差（使用最近点，omega_ff 仍用前瞻点曲率）
+  //
+  // 【设计决策】LQR 状态反馈必须基于当前实际偏差（最近点），而非前瞻点：
+  //   - 前瞻点切线 theta_la = theta_nn + κ·L，当机器人完美在路径上时仍有
+  //     e_theta = -κ·L ≠ 0 的系统性偏置（κ=5/m,L=20mm → 0.10rad=5.7°）
+  //   - 该偏置经 K2=1.5 放大后进入 tanh，导致持续向曲线内侧推力
+  //   - 稳态内侧偏差：κ·L·K2/K1 ≈ 0.01~0.09m（κ=2~7.5/m），超出精度目标
+  // 前馈 omega_ff = v·κ_la 保留前瞻曲率（曲率预见性），不受影响。
   double e_y, e_theta;
-  computeErrors(current_x, current_y, current_theta, ref, e_y, e_theta);
+  computeErrors(current_x, current_y, current_theta, path_[nearest_idx], e_y, e_theta);
+
+  // 4a. e_y 跳变检测（防止积分 windup，如传感器突变或滤波器暂态）
+  bool freeze_integral = false;
+  if (params_.max_ey_jump_m > 0.0 && last_e_y_initialized_)
+  {
+    if (std::abs(e_y - last_e_y_) > params_.max_ey_jump_m)
+      freeze_integral = true;
+  }
+  last_e_y_ = e_y;
+  last_e_y_initialized_ = true;
+
+  // 4b. e_theta IIR 低通滤波（α=0.82 时 τ ≈ 280ms，抑制高频抖动）
+  e_theta_filtered_ = params_.e_theta_lowpass_alpha * e_theta_filtered_
+                    + (1.0 - params_.e_theta_lowpass_alpha) * e_theta;
 
   // 5. 计算LQR增益（基于当前速度）
   computeLQRGains(current_v);
@@ -300,43 +401,60 @@ bool LQRCurveController::computeVelocityCommands(
   // 6. 前馈控制 ω_ff = v × κ
   double omega_ff = current_v * ref.curvature;
 
-  // 7. LQR反馈控制 ω_fb = -K₁·e_y - K₂·e_θ
-  double omega_fb = -K1_ * e_y - K2_ * e_theta;
+  // 7. 平滑切换反馈限制比例（打印前/打印中，τ=0.3s）
+  {
+    double target_ratio = start_print
+        ? params_.feedback_limit_ratio_after_print
+        : params_.feedback_limit_ratio_before_print;
+    const double alpha_r = std::exp(-ctrl_dt / 0.3);
+    limit_ratio_smoothed_ = alpha_r * limit_ratio_smoothed_ + (1.0 - alpha_r) * target_ratio;
+  }
 
-  // 8. 积分项（可选）
+  // 8. 比例反馈限制（基于平滑后的比例）
+  double prop_limit = std::abs(omega_ff) * limit_ratio_smoothed_;
+  if (params_.feedback_min_limit > 0.0 && prop_limit < params_.feedback_min_limit)
+    prop_limit = params_.feedback_min_limit;
+
+  // 9. LQR 比例反馈（tanh 软饱和，替代硬 clamp）
+  double omega_fb_raw = -K1_ * e_y - K2_ * e_theta_filtered_;
+  double omega_prop = (prop_limit > 1e-9)
+      ? std::tanh(omega_fb_raw / prop_limit) * prop_limit
+      : 0.0;
+
+  // 10. 积分项（可选，双路径独立限幅）
   double omega_i = 0.0;
   if (params_.enable_integral)
   {
-    integral_e_y_ = params_.integral_decay * integral_e_y_ + e_y * params_.control_period;
-    // 积分限幅
-    integral_e_y_ = std::clamp(integral_e_y_, -params_.integral_max / params_.Ki,
-                                params_.integral_max / params_.Ki);
+    if (!freeze_integral)
+    {
+      // 时变衰减：decay^(ctrl_dt/T)，对控制频率抖动不敏感
+      double decay_dt = std::pow(params_.integral_decay,
+                                 ctrl_dt / params_.control_period);
+      integral_e_y_ = decay_dt * integral_e_y_ + e_y * ctrl_dt;
+      // 防止累积量无界增长
+      double max_accum = params_.integral_max / std::max(params_.Ki, 1e-9);
+      integral_e_y_ = std::clamp(integral_e_y_, -max_accum, max_accum);
+    }
+    // 积分输出独立限幅（与比例路径解耦）
+    double int_limit = std::abs(omega_ff) * params_.int_limit_ratio;
+    if (params_.feedback_min_limit > 0.0 && int_limit < params_.feedback_min_limit)
+      int_limit = params_.feedback_min_limit;
     omega_i = -params_.Ki * integral_e_y_;
+    omega_i = std::clamp(omega_i, -int_limit, int_limit);
   }
 
-  // 9. 限制反馈量不超过前馈的指定比例
-  // 总反馈量 = LQR反馈 + 积分项
-  double omega_correction = omega_fb + omega_i;
+  // 11. 总反馈量（比例+积分，用于调试和饱和率分析）
+  double omega_correction = omega_prop + omega_i;
+  // feedback_limit 在新算法中为比例路径的 prop_limit（兼容 analyze.py）
+  double feedback_limit = prop_limit;
 
-  // 计算反馈限制：前馈 × 限制比例（默认5%）
-  double feedback_limit = std::abs(omega_ff) * params_.feedback_limit_ratio;
+  // 12. 总控制量 = 前馈 + 比例反馈 + 积分
+  double omega_before_limits = omega_ff + omega_prop + omega_i;
 
-  // 仅当配置了最小限制（>0）时才使用
-  if (params_.feedback_min_limit > 0.0 && feedback_limit < params_.feedback_min_limit)
-  {
-    feedback_limit = params_.feedback_min_limit;
-  }
+  // 13. 应用角速度和角加速度限幅（传入实测 ctrl_dt）
+  double omega = applyLimits(omega_before_limits, ctrl_dt);
 
-  // 限幅反馈控制量
-  omega_correction = std::clamp(omega_correction, -feedback_limit, feedback_limit);
-
-  // 10. 总控制量 = 前馈 + 限幅后的反馈
-  double omega = omega_ff + omega_correction;
-
-  // 11. 应用角速度和角加速度限幅
-  omega = applyLimits(omega);
-
-  // 12. 根据路径类型检查是否完成
+  // 14. 根据路径类型检查是否完成
   bool completed = false;
   if (is_spline_path_)
   {
@@ -348,6 +466,9 @@ bool LQRCurveController::computeVelocityCommands(
       cmd_vel.header.frame_id = pose.header.frame_id;
       cmd_vel.twist.linear.x = 0.0;
       cmd_vel.twist.angular.z = 0.0;
+
+      // 导出追踪指标
+      if (is_tracking_) exportTrackingMetrics();
 
       RCLCPP_INFO(get_logger(), "Spline路径完成 - 累计距离: %.4f m",
                   accumulated_distance_);
@@ -364,6 +485,9 @@ bool LQRCurveController::computeVelocityCommands(
       cmd_vel.header.frame_id = pose.header.frame_id;
       cmd_vel.twist.linear.x = 0.0;
       cmd_vel.twist.angular.z = 0.0;
+
+      // 导出追踪指标
+      if (is_tracking_) exportTrackingMetrics();
 
       RCLCPP_INFO(get_logger(), "椭圆路径完成 - 累计距离: %.4f m",
                   accumulated_distance_);
@@ -384,6 +508,51 @@ bool LQRCurveController::computeVelocityCommands(
   debug_omega_fb_ = omega_correction;  // 保存限幅后的反馈量
   debug_ref_curvature_ = ref.curvature;
   debug_ref_index_ = nearest_idx;  // 使用最近点索引作为参考
+
+  // 14. 记录追踪采样（50ms 间隔，减少 CSV 体积并对齐圆弧控制器数据格式）
+  if (is_tracking_)
+  {
+    tracking_elapsed_time_s_ += ctrl_dt;
+    if (tracking_elapsed_time_s_ >= next_tracking_sample_time_s_)
+    {
+      next_tracking_sample_time_s_ += kTrackingSampleInterval;
+
+      // 误差统计（供 exportTrackingMetrics 计算 p90/mean 等）
+      tracking_error_abs_m_.push_back(std::abs(e_y));
+      tracking_error_signed_m_.push_back(e_y);
+      tracking_arc_length_at_sample_.push_back(accumulated_distance_);
+
+      double t_s = this->now().seconds() - tracking_start_time_;
+      double path_progress = (curve_total_length_ > 1e-6)
+          ? std::clamp(accumulated_distance_ / curve_total_length_, 0.0, 1.0)
+          : 0.0;
+
+      std::ostringstream row;
+      row << std::fixed << std::setprecision(6)
+          << t_s                      << ","
+          << current_x                << ","
+          << current_y                << ","
+          << accumulated_distance_    << ","
+          << path_progress            << ","
+          << e_y * 1000.0             << ","   // cross_track_mm
+          << current_v                << ","
+          << omega                    << ","
+          << path_[nearest_idx].theta << ","   // nearest point theta（误差计算参考系）
+          << e_theta                  << ","
+          << omega_ff                 << ","
+          << omega_correction         << ","   // omega_prop + omega_i
+          << feedback_limit           << ","   // prop_limit
+          << K1_                      << ","
+          << K2_                      << ","
+          << nearest_idx              << ","
+          << integral_e_y_            << ","
+          << omega_fb_raw             << ","   // 原始 LQR 反馈（tanh 前）
+          << omega_i                  << ","   // 积分输出
+          << omega_before_limits      << ","   // applyLimits 前的总量
+          << (start_print ? 1 : 0);            // 打印状态标志
+      tracking_sample_rows_.push_back(row.str());
+    }
+  }
 
   // 调试输出
   if (params_.enable_debug && params_.verbose)
@@ -635,14 +804,15 @@ void LQRCurveController::computeErrors(double current_x, double current_y,
   e_theta = normalizeAngle(current_theta - ref.theta);
 }
 
-double LQRCurveController::applyLimits(double omega)
+double LQRCurveController::applyLimits(double omega, double ctrl_dt)
 {
   // 角速度限幅
   omega = std::clamp(omega, -params_.omega_max, params_.omega_max);
 
-  // 角加速度限幅（平滑控制）
+  // 角加速度限幅（使用实测 ctrl_dt，而非固定 control_period）
+  // 实测周期在 18Hz 时约 ±10ms 抖动，固定值会导致 ±18% 限幅误差
   double omega_change = omega - last_omega_;
-  double max_change = params_.omega_dot_max * params_.control_period;
+  double max_change = params_.omega_dot_max * ctrl_dt;
 
   if (std::abs(omega_change) > max_change)
   {
@@ -729,12 +899,31 @@ void LQRCurveController::reset()
   prev_rotation_omega_ = 0.0;
   integral_e_y_ = 0.0;
   last_omega_ = 0.0;
+
+  // 重置圆弧控制器移植算法状态
+  e_theta_filtered_ = 0.0;
+  last_e_y_ = 0.0;
+  last_e_y_initialized_ = false;
+  limit_ratio_smoothed_ = params_.feedback_limit_ratio_before_print;
+  ctrl_time_initialized_ = false;
+  tracking_elapsed_time_s_ = 0.0;
+  next_tracking_sample_time_s_ = 0.0;
+
   debug_e_y_ = 0.0;
   debug_e_theta_ = 0.0;
   debug_omega_ff_ = 0.0;
   debug_omega_fb_ = 0.0;
   debug_ref_curvature_ = 0.0;
   debug_ref_index_ = 0;
+
+  // 重置数据追踪
+  tracking_error_abs_m_.clear();
+  tracking_error_signed_m_.clear();
+  tracking_arc_length_at_sample_.clear();
+  tracking_sample_rows_.clear();
+  tracking_start_time_ = -1.0;
+  is_tracking_ = false;
+  curve_total_length_ = 0.0;
 
   // 重置椭圆路径参数
   ellipse_a_ = 0.0;
@@ -787,13 +976,12 @@ geometry_msgs::msg::PoseStamped LQRCurveController::filterRobotPose(
   current_pose.header = robot_pose.header;
   current_pose.pose.orientation = robot_pose.pose.orientation;
 
-  // 应用Hampel滤波器
+  // 仅保留 Hampel 异常值检测（约1帧延迟 ≈ 55ms），移除 SG 平滑滤波。
+  // 原因（对齐圆弧控制器修复7）：SG 窗口=7 @ 18Hz 引入 ~194ms 延迟，
+  // 相当于 v=0.05m/s 下 ~9.7mm 位置滞后，与 20mm 前瞻量级相当，劣化控制精度。
+  // e_y 跳变检测（5mm/周期）已承担异常值保护职能，无需 SG 冗余。
   double filtered_x = h_x_filter.filter(robot_pose.pose.position.x);
   double filtered_y = h_y_filter.filter(robot_pose.pose.position.y);
-
-  // 应用Savitzky-Golay滤波器
-  filtered_x = sg_x_filter_.filter(filtered_x);
-  filtered_y = sg_y_filter_.filter(filtered_y);
 
   current_pose.pose.position.x = filtered_x;
   current_pose.pose.position.y = filtered_y;
@@ -1689,6 +1877,277 @@ bool LQRCurveController::updateAccumulatedDistanceForSpline(double current_x, do
 
   // 路径未完成，继续跟踪
   return false;
+}
+
+// ============================================================================
+// 数据采集与导出
+// ============================================================================
+
+std::string LQRCurveController::getTrackingRecordDir() const
+{
+  const char* ws_root = std::getenv("XLINE_WS_ROOT");
+  if (ws_root && *ws_root) return std::string(ws_root);
+  return ".";
+}
+
+double LQRCurveController::computePercentile(
+    const std::vector<double>& values, double percentile) const
+{
+  if (values.empty()) return 0.0;
+  const double p = std::clamp(percentile, 0.0, 100.0);
+  std::vector<double> sorted(values.begin(), values.end());
+  std::sort(sorted.begin(), sorted.end());
+  if (sorted.size() == 1) return sorted.front();
+  const double rank = (p / 100.0) * static_cast<double>(sorted.size() - 1);
+  const size_t lo = static_cast<size_t>(std::floor(rank));
+  const size_t hi = static_cast<size_t>(std::ceil(rank));
+  const double t  = rank - static_cast<double>(lo);
+  return sorted[lo] + (sorted[hi] - sorted[lo]) * t;
+}
+
+double LQRCurveController::computeShareBelow(
+    const std::vector<double>& values, double threshold_m) const
+{
+  if (values.empty()) return 0.0;
+  size_t hit = 0;
+  for (const double v : values)
+  {
+    if (std::isfinite(v) && std::abs(v) < threshold_m) ++hit;
+  }
+  return static_cast<double>(hit) / static_cast<double>(values.size());
+}
+
+void LQRCurveController::exportTrackingMetrics()
+{
+  if (tracking_error_abs_m_.empty())
+  {
+    RCLCPP_WARN(get_logger(), "曲线追踪数据为空，跳过导出");
+    return;
+  }
+
+  // ── 计算统计指标（单位：m） ──
+  const size_t n = tracking_error_abs_m_.size();
+  double p50_mm = computePercentile(tracking_error_abs_m_, 50) * 1000.0;
+  double p90_mm = computePercentile(tracking_error_abs_m_, 90) * 1000.0;
+  double p95_mm = computePercentile(tracking_error_abs_m_, 95) * 1000.0;
+  double max_mm = *std::max_element(tracking_error_abs_m_.begin(),
+                                     tracking_error_abs_m_.end()) * 1000.0;
+  double mean_mm = std::accumulate(tracking_error_abs_m_.begin(),
+                                    tracking_error_abs_m_.end(), 0.0) / n * 1000.0;
+  double ratio_lt_3mm = computeShareBelow(tracking_error_abs_m_, 0.003);
+  double ratio_lt_5mm = computeShareBelow(tracking_error_abs_m_, 0.005);
+
+  // 带符号均值（偏向诊断）
+  double mean_signed_mm = std::accumulate(tracking_error_signed_m_.begin(),
+                                           tracking_error_signed_m_.end(), 0.0) / n * 1000.0;
+
+  // 标准差
+  double variance = 0.0;
+  for (const double v : tracking_error_signed_m_)
+    variance += (v - mean_signed_mm / 1000.0) * (v - mean_signed_mm / 1000.0);
+  double std_mm = std::sqrt(variance / n) * 1000.0;
+
+  // 路径段分析（S1-S4，按弧长进度均分）
+  auto section_mean_mm = [&](double lo, double hi) -> double {
+    std::vector<double> sec_errs;
+    for (size_t i = 0; i < tracking_arc_length_at_sample_.size() && i < n; ++i)
+    {
+      double progress = (curve_total_length_ > 1e-6)
+          ? (tracking_arc_length_at_sample_[i] / curve_total_length_) : 0.0;
+      if (progress >= lo && progress < hi)
+        sec_errs.push_back(tracking_error_abs_m_[i]);
+    }
+    if (sec_errs.empty()) return 0.0;
+    return std::accumulate(sec_errs.begin(), sec_errs.end(), 0.0) / sec_errs.size() * 1000.0;
+  };
+  double s1_mean_mm = section_mean_mm(0.0,  0.25);
+  double s2_mean_mm = section_mean_mm(0.25, 0.50);
+  double s3_mean_mm = section_mean_mm(0.50, 0.75);
+  double s4_mean_mm = section_mean_mm(0.75, 1.01);
+
+  RCLCPP_INFO(get_logger(),
+              "曲线追踪统计 n=%zu: P50=%.3fmm P90=%.3fmm P95=%.3fmm MAX=%.3fmm",
+              n, p50_mm, p90_mm, p95_mm, max_mm);
+  RCLCPP_INFO(get_logger(),
+              "曲线覆盖统计: <3mm=%.1f%% <5mm=%.1f%%",
+              ratio_lt_3mm * 100.0, ratio_lt_5mm * 100.0);
+  RCLCPP_INFO(get_logger(),
+              "曲线段分布: S1=%.3fmm S2=%.3fmm S3=%.3fmm S4=%.3fmm",
+              s1_mean_mm, s2_mean_mm, s3_mean_mm, s4_mean_mm);
+
+  // ── 确定数据目录 ──
+  const std::string base_dir   = getTrackingRecordDir();
+  const std::string latest_dir = base_dir + "/curve_tracking_latest";
+
+  std::lock_guard<std::mutex> lock(file_mutex_);
+
+  try
+  {
+    std::filesystem::create_directories(latest_dir);
+  }
+  catch (const std::exception& e)
+  {
+    RCLCPP_ERROR(get_logger(), "无法创建指标目录 %s: %s", latest_dir.c_str(), e.what());
+    return;
+  }
+
+  // 时间戳字符串
+  const auto now_sys = std::chrono::system_clock::now();
+  const std::time_t now_t = std::chrono::system_clock::to_time_t(now_sys);
+  std::ostringstream ts_ss;
+  ts_ss << std::put_time(std::localtime(&now_t), "%Y%m%d_%H%M%S");
+  const std::string timestamp = ts_ss.str();
+
+  // 槽位标签
+  std::ostringstream slot_ss;
+  slot_ss << std::setw(2) << std::setfill('0') << curve_slot_;
+  const std::string curve_tag    = "curve_" + slot_ss.str();
+  const std::string metrics_file = latest_dir + "/" + curve_tag + "_metrics.csv";
+  const std::string samples_file = latest_dir + "/" + curve_tag + "_samples.csv";
+  const std::string batch_file   = latest_dir + "/batch_metrics.csv";
+
+  // CSV 文本消毒
+  auto sanitize = [](std::string s) {
+    for (char& c : s)
+      if (c == ',' || c == '\n' || c == '\r') c = ';';
+    return s;
+  };
+  const std::string opt_id     = sanitize(params_.optimization.id);
+  const std::string opt_parent = sanitize(params_.optimization.parent_batch_id);
+  const std::string opt_note   = sanitize(params_.optimization.change_note);
+  const std::string path_type_str = is_spline_path_ ? "SPLINE" : "ELLIPSE";
+
+  // 删除旧同槽位文件
+  for (const auto& f : {metrics_file, samples_file})
+  {
+    if (std::filesystem::exists(f))
+    {
+      std::error_code ec;
+      std::filesystem::remove(f, ec);
+    }
+  }
+
+  // ── metrics CSV ──
+  std::ofstream metrics(metrics_file, std::ios::out);
+  if (!metrics.is_open())
+  {
+    RCLCPP_ERROR(get_logger(), "无法写入指标文件: %s", metrics_file.c_str());
+    return;
+  }
+  metrics << "batch_id,curve_slot,timestamp,n_samples,path_type,path_total_length_m,"
+             "p50_mm,p90_mm,p95_mm,max_mm,mean_mm,"
+             "ratio_lt_3mm,ratio_lt_5mm,"
+             "mean_signed_mm,std_mm,"
+             "s1_mean_mm,s2_mean_mm,s3_mean_mm,s4_mean_mm,"
+             "target_p90_mm,pass_p90_lt_5mm,"
+             "v_max,omega_max,lookahead_dist,lookahead_time,sg_window,"
+             "feedback_limit_ratio,feedback_min_limit,"
+             "enable_integral,ki,integral_max,"
+             "q1_lqr,q2_lqr,r_lqr,"
+             "optimization_id,parent_batch_id,change_note\n";
+  metrics << std::fixed << std::setprecision(6)
+          << curve_batch_id_          << ","
+          << curve_slot_              << ","
+          << timestamp                << ","
+          << n                        << ","
+          << path_type_str            << ","
+          << curve_total_length_      << ","
+          << p50_mm                   << ","
+          << p90_mm                   << ","
+          << p95_mm                   << ","
+          << max_mm                   << ","
+          << mean_mm                  << ","
+          << ratio_lt_3mm             << ","
+          << ratio_lt_5mm             << ","
+          << mean_signed_mm           << ","
+          << std_mm                   << ","
+          << s1_mean_mm               << ","
+          << s2_mean_mm               << ","
+          << s3_mean_mm               << ","
+          << s4_mean_mm               << ","
+          << 5.0                      << ","
+          << (p90_mm < 5.0 ? 1 : 0)  << ","
+          << params_.v_max            << ","
+          << params_.omega_max        << ","
+          << params_.lookahead_distance << ","
+          << params_.lookahead_time   << ","
+          << params_.savgol_window    << ","
+          << params_.feedback_limit_ratio << ","
+          << params_.feedback_min_limit   << ","
+          << (params_.enable_integral ? 1 : 0) << ","
+          << params_.Ki               << ","
+          << params_.integral_max     << ","
+          << params_.q1               << ","
+          << params_.q2               << ","
+          << params_.r                << ","
+          << "\"" << opt_id     << "\","
+          << "\"" << opt_parent << "\","
+          << "\"" << opt_note   << "\""
+          << "\n";
+  metrics.close();
+
+  // ── samples CSV ──
+  std::ofstream samples(samples_file, std::ios::out);
+  if (!samples.is_open())
+  {
+    RCLCPP_ERROR(get_logger(), "无法写入样本文件: %s", samples_file.c_str());
+    return;
+  }
+  samples << "t_s,x_m,y_m,arc_length_m,path_progress,"
+             "cross_track_mm,"
+             "linear_speed_mps,angular_cmd_rps,ref_theta_rad,e_theta_rad,"
+             "omega_ff_rps,omega_correction_rps,"
+             "feedback_limit_rps,k1,k2,nearest_idx,"
+             "integral_state,"
+             "omega_fb_raw_rps,omega_i_rps,omega_before_limits_rps,is_printing\n";
+  for (const auto& row : tracking_sample_rows_)
+    samples << row << "\n";
+  samples.close();
+
+  // ── batch_metrics CSV（追加模式）──
+  const bool need_header = !std::filesystem::exists(batch_file) ||
+                           std::filesystem::file_size(batch_file) == 0;
+  std::ofstream batch(batch_file, std::ios::app);
+  if (batch.is_open())
+  {
+    if (need_header)
+    {
+      batch << "batch_id,curve_slot,timestamp,n_samples,path_type,path_total_length_m,"
+               "p50_mm,p90_mm,p95_mm,max_mm,mean_mm,"
+               "ratio_lt_3mm,ratio_lt_5mm,"
+               "mean_signed_mm,std_mm,"
+               "s1_mean_mm,s2_mean_mm,s3_mean_mm,s4_mean_mm,"
+               "pass_p90_lt_5mm,optimization_id,parent_batch_id,change_note\n";
+    }
+    batch << std::fixed << std::setprecision(6)
+          << curve_batch_id_          << ","
+          << curve_slot_              << ","
+          << timestamp                << ","
+          << n                        << ","
+          << path_type_str            << ","
+          << curve_total_length_      << ","
+          << p50_mm                   << ","
+          << p90_mm                   << ","
+          << p95_mm                   << ","
+          << max_mm                   << ","
+          << mean_mm                  << ","
+          << ratio_lt_3mm             << ","
+          << ratio_lt_5mm             << ","
+          << mean_signed_mm           << ","
+          << std_mm                   << ","
+          << s1_mean_mm               << ","
+          << s2_mean_mm               << ","
+          << s3_mean_mm               << ","
+          << s4_mean_mm               << ","
+          << (p90_mm < 5.0 ? 1 : 0)  << ","
+          << "\"" << opt_id     << "\","
+          << "\"" << opt_parent << "\","
+          << "\"" << opt_note   << "\""
+          << "\n";
+    batch.close();
+  }
+
+  RCLCPP_INFO(get_logger(), "曲线追踪数据已导出: %s", latest_dir.c_str());
 }
 
 }  // namespace follow_controller
