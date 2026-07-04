@@ -1,0 +1,23 @@
+# LY-RS485-IO 灯光模式控制服务
+# 对应文档「六. MODBUS寄存器详解」中的16种灯效
+uint8 GREEN_BREATH  = 1   # 绿色呼吸灯
+uint8 GREEN_SOLID   = 2   # 绿色灯常亮
+uint8 RUNNING_14    = 3   # 1,4流水灯
+uint8 RUNNING_23    = 4   # 2,3流水灯
+uint8 CHASE_13      = 5   # 1,3跑马灯
+uint8 CHASE_24      = 6   # 2,4跑马灯
+uint8 BLUE_FLASH    = 7   # 蓝灯闪烁
+uint8 RED_SOLID     = 8   # 红色灯常亮
+uint8 RED_FLASH     = 9   # 红色灯闪烁
+uint8 YELLOW_SOLID  = 10  # 黄色灯常亮
+uint8 YELLOW_FLASH  = 11  # 黄色灯闪烁
+uint8 WHITE_SOLID   = 12  # 白色灯常亮
+uint8 GREEN_FLASH   = 13  # 绿色灯闪烁
+uint8 CYAN_SOLID    = 14  # 天蓝色灯常亮
+uint8 PURPLE_SOLID  = 15  # 紫色灯常亮
+uint8 OFF           = 16  # 灭灯
+
+uint8 mode  # 灯效编号 1~16
+---
+bool success
+string message

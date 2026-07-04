@@ -1,0 +1,30 @@
+[Unit]
+Description=XLine ROS Nodes
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=XLINE_USER
+WorkingDirectory=DEPLOY_DIR
+
+Environment=ROS_DISTRO=XLINE_ROS_DISTRO
+Environment=ROS_NODES_CONF=DEPLOY_DIR/ros_nodes.conf
+Environment=HOME=XLINE_HOME
+
+ExecStartPre=/bin/bash -c "mkdir -p DEPLOY_DIR/logs && echo \"[$(date)] xline-ros 启动，ROS_NODES_CONF=$ROS_NODES_CONF\" >> DEPLOY_DIR/logs/boot.log"
+ExecStart=DEPLOY_DIR/xline_ros_watchdog.sh
+ExecStopPost=/bin/bash -c "echo \"[$(date)] xline-ros 已停止，退出码=$EXIT_STATUS\" >> DEPLOY_DIR/logs/boot.log"
+
+Restart=always
+RestartSec=5
+
+TimeoutStopSec=60
+KillMode=control-group
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=xline-ros
+
+[Install]
+WantedBy=multi-user.target

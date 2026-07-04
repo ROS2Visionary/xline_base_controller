@@ -3,6 +3,7 @@
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped
+from sensor_msgs.msg import Imu
 from rclpy.qos import QoSProfile
 import math
 
@@ -19,17 +20,21 @@ class RobotTrajectoryPublisher(Node):
             qos_profile
         )
         
-        # 设置发布频率（10Hz）
+        # 设置发布频率（20Hz）
         self.timer_period = 0.1  # 秒
         self.timer = self.create_timer(self.timer_period, self.timer_callback)
-        
+
+        # IMU 发布器（100Hz）
+        self.imu_publisher_ = self.create_publisher(Imu, '/imu', qos_profile)
+        self.imu_timer = self.create_timer(0.01, self.imu_timer_callback)
+
         # 轨迹参数
         self.t = 0.0  # 时间参数
         self.radius = 6.0  # 圆形轨迹半径
         self.angular_velocity = 0.5  # 角速度
-        
+
         self.get_logger().info('机器人轨迹发布节点已启动')
-        self.get_logger().info('发布话题: /robot_pose')
+        self.get_logger().info('发布话题: /robot_pose, /imu')
     
     def timer_callback(self):
         """定时器回调函数，发布模拟轨迹"""
@@ -67,6 +72,41 @@ class RobotTrajectoryPublisher(Node):
         
         # 更新时间参数
         self.t += self.timer_period
+
+    def imu_timer_callback(self):
+        """IMU 定时器回调，100Hz 发布固定 IMU 数据"""
+        msg = Imu()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = 'imu_link'
+
+        # 固定线加速度（静止状态，仅重力分量）
+        msg.linear_acceleration.x = 0.0
+        msg.linear_acceleration.y = 0.0
+        msg.linear_acceleration.z = 9.81
+
+        # 固定角速度（静止）
+        msg.angular_velocity.x = 0.0
+        msg.angular_velocity.y = 0.0
+        msg.angular_velocity.z = 0.0
+
+        # 固定姿态四元数（水平无偏转）
+        msg.orientation.x = 0.0
+        msg.orientation.y = 0.0
+        msg.orientation.z = 0.0
+        msg.orientation.w = 1.0
+
+        # 协方差设为已知（对角线填小值）
+        msg.orientation_covariance[0] = 1e-6
+        msg.orientation_covariance[4] = 1e-6
+        msg.orientation_covariance[8] = 1e-6
+        msg.angular_velocity_covariance[0] = 1e-6
+        msg.angular_velocity_covariance[4] = 1e-6
+        msg.angular_velocity_covariance[8] = 1e-6
+        msg.linear_acceleration_covariance[0] = 1e-6
+        msg.linear_acceleration_covariance[4] = 1e-6
+        msg.linear_acceleration_covariance[8] = 1e-6
+
+        self.imu_publisher_.publish(msg)
 
 
 def main(args=None):

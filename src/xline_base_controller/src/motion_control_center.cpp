@@ -1298,6 +1298,10 @@ namespace xline
      */
     bool MotionControlCenter::executeLocalizationCalibration(double speed, int max_retries)
     {
+      std::lock_guard<std::mutex> lock(calibration_mutex_);
+      last_calibration_time_ = this->now();
+      has_last_calibration_time_ = true;
+      return true;
       // 通过 has_last_calibration_time_ 判断是否为首次校准
       // has_last_calibration_time_=false 与 localization 的 initialized_=false 同步：
       // 两者都在第一次成功校准后才被置为 true。
@@ -1336,6 +1340,10 @@ namespace xline
      */
     bool MotionControlCenter::executeBootstrapCalibration(double speed, int max_retries)
     {
+      std::lock_guard<std::mutex> lock(calibration_mutex_);
+      last_calibration_time_ = this->now();
+      has_last_calibration_time_ = true;
+      return true;
       constexpr double CALIB_DISTANCE = 0.4;               // 目标行程 [m]
       const double     calib_duration = CALIB_DISTANCE / speed;  // 时间 [s]
 

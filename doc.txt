@@ -1,3 +1,5 @@
+鲁班猫：xlinerobot
+
 source install/setup.sh
 ros2 run xline_base_controller base_controller_node
 
@@ -26,11 +28,11 @@ export XLINE_WS_ROOT=/root/xline_ws/_xline_data_dir
 
   source install/setup.sh
   ros2 service call /printer/send_command xline_msgs/srv/PrinterCommand \
-    "{printer_name: 'printer_center', json_data: '{\"EU2L\":{\"setupEvent\":1}}'}"
+    "{printer_name: 'printer_right', json_data: '{\"EU2L\":{\"setupEvent\":1}}'}"
 
   source install/setup.sh
   ros2 service call /printer/send_command xline_msgs/srv/PrinterCommand \
-    "{printer_name: 'printer_center', json_data: '{\"EU2L\":{\"setupEvent\":0}}'}"
+    "{printer_name: 'printer_right', json_data: '{\"EU2L\":{\"setupEvent\":0}}'}"
 
 
 
